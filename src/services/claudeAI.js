@@ -8,21 +8,25 @@ const MODEL = 'claude-sonnet-4-5';
  * Generate a complete survey from a user's mission description
  */
 async function generateSurvey({ goal, description, targetingHints = {} }) {
-  const prompt = `You are a senior market researcher at a top-tier research consultancy. 
+  const prompt = `You are a senior market researcher at a top-tier research consultancy.
 A client has come to you with the following brief:
 
 Mission Goal: ${goal}
 Description: "${description}"
 ${targetingHints.countries?.length ? `Target Markets: ${targetingHints.countries.join(', ')}` : ''}
 
+First, extract a SHORT product/concept name (2-5 words max) from the description to use in questions.
+For example: "pineapple pizza" not "I want to validate pineapple pizza in dubai for my target customers".
+
 Your job is to design a professional survey. Return ONLY a valid JSON object with this exact structure:
 
 {
+  "productName": "Short product name extracted from description (2-5 words)",
   "missionStatement": "A clear, one-sentence research objective starting with 'To understand...' or 'To determine...' or 'To validate...'",
   "questions": [
     {
       "id": "q1",
-      "text": "Question text here",
+      "text": "Question text here — use the short productName, NEVER paste the full description",
       "type": "single",
       "options": ["Option A", "Option B", "Option C"],
       "isScreening": true,
@@ -31,7 +35,7 @@ Your job is to design a professional survey. Return ONLY a valid JSON object wit
     }
   ],
   "targetingSuggestions": {
-    "recommendedCountries": ["US", "UK"],
+    "recommendedCountries": ["AE", "US"],
     "recommendedAgeRanges": ["25-34", "35-44"],
     "recommendedGenders": [],
     "reasoning": "Brief explanation of why this targeting makes sense"
@@ -41,13 +45,19 @@ Your job is to design a professional survey. Return ONLY a valid JSON object wit
 
 Rules:
 - Generate exactly 5 questions (the first MUST be a screening question)
-- Question types: "single" (single choice), "multi" (multiple choice), "rating" (1-10 scale), "text" (open-ended), "nps" (0-10 net promoter), "yesno" (Yes/No), "opinion" (Yes/No/Maybe)
-- For "single", "multi", "opinion", "yesno" types: always include "options" array
-- For "rating" and "nps" types: options array can be empty
+- CRITICAL: In question text, ONLY use the short productName — never paste the raw description
+- Question types: "single" (single choice), "multi" (multiple choice), "rating" (1-5 scale), "opinion" (agree/disagree scale), "text" (open-ended)
+- For "single" and "multi" types: always include a relevant "options" array (3-5 options)
+- For "opinion" type: options = ["Strongly Agree", "Agree", "Neutral", "Disagree", "Strongly Disagree"]
+- For "rating" type: options array can be empty
 - For "text" type: options array can be empty
 - Questions must be specific, unbiased, and professionally worded
 - The screening question should filter for the most relevant respondents
-- Make questions flow logically from broad to specific`;
+- Make questions flow logically: screening → awareness → perception → intent → open feedback
+- CRITICAL for targetingSuggestions.recommendedCountries: use proper ISO 2-letter codes ONLY
+  Examples: "AE" (UAE/Dubai), "US" (USA), "GB" (UK), "SA" (Saudi Arabia), "IN" (India), "AU" (Australia)
+  If description mentions Dubai/UAE → use "AE". London/UK → "GB". USA/New York → "US"
+- suggestedRespondentCount: recommend 100-500 based on specificity of targeting`;
 
   const response = await client.messages.create({
     model: MODEL,
@@ -194,10 +204,10 @@ Mission: "${missionStatement}"
 Description: "${description}"
 Goal: ${goal}
 
-Return ONLY a JSON object:
+Return ONLY a JSON object. Use proper ISO 2-letter country codes (AE=UAE/Dubai, GB=UK, US=USA, SA=Saudi Arabia, FR=France, DE=Germany, IN=India, AU=Australia, CA=Canada, SG=Singapore):
 {
   "geography": {
-    "recommendedCountries": ["US", "UK"],
+    "recommendedCountries": ["AE", "US"],
     "reasoning": "Why these markets"
   },
   "demographics": {
