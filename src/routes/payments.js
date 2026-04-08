@@ -24,7 +24,7 @@ router.post('/create-intent', authenticate, async (req, res, next) => {
       .single();
 
     if (missionError || !mission) return res.status(404).json({ error: 'Mission not found' });
-    if (mission.status !== 'draft') return res.status(400).json({ error: 'Mission is not in draft status' });
+    if (mission.status?.toUpperCase() !== 'DRAFT') return res.status(400).json({ error: 'Mission is not in draft status' });
 
     // ALWAYS recalculate price server-side — never trust frontend price
     const pricing = calculatePricing({
@@ -105,7 +105,7 @@ router.post('/confirm', authenticate, async (req, res, next) => {
     await supabase
       .from('missions')
       .update({
-        status: 'active',
+        status: 'ACTIVE',
         pollfish_survey_id: pollfishResult.pollfishSurveyId,
         launched_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
