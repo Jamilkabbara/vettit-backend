@@ -23,4 +23,19 @@ const authenticate = async (req, res, next) => {
   }
 };
 
-module.exports = { authenticate };
+// Like authenticate but doesn't reject — sets req.user if token is valid, otherwise leaves it undefined
+const optionalAuthenticate = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.split(' ')[1];
+      const { data: { user } } = await supabase.auth.getUser(token);
+      if (user) req.user = user;
+    }
+  } catch (_) {
+    // Silently ignore — user just won't be set
+  }
+  next();
+};
+
+module.exports = { authenticate, optionalAuthenticate };
