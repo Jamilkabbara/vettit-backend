@@ -13,7 +13,6 @@ const authRoutes = require('./routes/auth');
 const missionRoutes = require('./routes/missions');
 const aiRoutes = require('./routes/ai');
 const paymentRoutes = require('./routes/payments');
-const pollfishRoutes = require('./routes/pollfish');
 const resultsRoutes = require('./routes/results');
 const uploadsRoutes = require('./routes/uploads');
 const profileRoutes = require('./routes/profile');
@@ -21,6 +20,7 @@ const webhookRoutes = require('./routes/webhooks');
 const notificationRoutes = require('./routes/notifications');
 const adminRoutes = require('./routes/admin');
 const blogRoutes = require('./routes/blog');
+const chatRoutes = require('./routes/chat');
 
 const app = express();
 
@@ -60,21 +60,28 @@ const aiLimiter = rateLimit({
   max: 10,
   message: { error: 'AI rate limit reached. Please wait a moment.' }
 });
+// Chat allows a higher burst — quota enforcement happens inside the service
+const chatLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  message: { error: 'Chat rate limit reached. Please wait a moment.' }
+});
 app.use('/api/', limiter);
 app.use('/api/ai', aiLimiter);
+app.use('/api/chat', chatLimiter);
 
 // ─── Routes ──────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
 app.use('/api/missions', missionRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/payments', paymentRoutes);
-app.use('/api/pollfish', pollfishRoutes);
 app.use('/api/results', resultsRoutes);
 app.use('/api/uploads', uploadsRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/blog', blogRoutes);
+app.use('/api/chat', chatRoutes);
 
 // ─── Health Check ────────────────────────────────────────────
 app.get('/health', (req, res) => {

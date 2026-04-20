@@ -1,0 +1,198 @@
+/**
+ * VETT — Chat routes.
+ * - POST /api/chat/message      Non-streaming: returns full reply
+ * - POST /api/chat/stream       SSE: streams reply token-by-token
+ * - GET  /api/chat/session      Fetch existing session + history
+ * - POST /api/chat/buy-overage  Create PaymentIntent for +50 messages ($5)
+ * - POST /api/chat/confirm-overage  Credit the session after payment succeeds
+ */
+
+const express = require('express');
+const router  = express.Router();
+const Stripe  = require('stripe');
+
+const { authenticate } = require('../middleware/auth');
+const supabase  = require('../db/supabase');
+const chat      = require('../services/ai/chat');
+const logger    = require('../utils/logger');
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+// Hard cap so a buggy frontend can't DOS the model
+const MAX_MESSAGE_LEN = 4000;
+
+// ─── POST /api/chat/message ──────────────────────────────────
+router.post('/message', authenticate, async (req, res, next) => {
+  try {
+    const { scope, missionId, message } = req.body;
+    if (!scope || !message)      return res.status(400).json({ error: 'scope and message are required' });
+    if (!chat.QUOTAS[scope])     return res.status(400).json({ error: `Unknown scope: ${scope}` });
+    if (message.length > MAX_MESSAGE_LEN) {
+      return res.status(400).json({ error: `Message too long (max ${MAX_MESSAGE_LEN} chars)` });
+    }
+
+    const result = await chat.sendMessage({
+      userId: req.user.id,
+      scope,
+      missionId: missionId || null,
+      userMessage: message,
+    });
+
+    if (result.blocked) return res.status(402).json(result);
+    res.json(result);
+  } catch (err) { next(err); }
+});
+
+// ─── POST /api/chat/stream ────────────────────────────────────
+// Server-Sent Events. Client reads `data: { "delta": "..." }` lines until `data: [DONE]`.
+router.post('/stream', authenticate, async (req, res, next) => {
+  try {
+    const { scope, missionId, message } = req.body;
+    if (!scope || !message)  return res.status(400).json({ error: 'scope and message are required' });
+    if (!chat.QUOTAS[scope]) return res.status(400).json({ error: `Unknown scope: ${scope}` });
+    if (message.length > MAX_MESSAGE_LEN) {
+      return res.status(400).json({ error: `Message too long (max ${MAX_MESSAGE_LEN} chars)` });
+    }
+
+    // SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    const writeEvent = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+
+    const result = await chat.streamMessage({
+      userId: req.user.id,
+      scope,
+      missionId: missionId || null,
+      userMessage: message,
+      onDelta: (chunk) => writeEvent({ delta: chunk }),
+    });
+
+    if (result.blocked) {
+      writeEvent({ blocked: true, ...result });
+    } else {
+      writeEvent({
+        done: true,
+        sessionId: result.sessionId,
+        quota: result.quota,
+        model: result.model,
+      });
+    }
+    res.write('data: [DONE]\n\n');
+    res.end();
+  } catch (err) {
+    logger.error('Chat stream error', { err: err.message });
+    try {
+      res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    } catch (_) { next(err); }
+  }
+});
+
+// ─── GET /api/chat/session ────────────────────────────────────
+router.get('/session', authenticate, async (req, res, next) => {
+  try {
+    const { scope, missionId } = req.query;
+    if (!scope || !chat.QUOTAS[scope]) {
+      return res.status(400).json({ error: 'scope is required (results|dashboard|setup)' });
+    }
+    const summary = await chat.getSessionSummary({
+      userId: req.user.id, scope, missionId: missionId || null,
+    });
+    res.json(summary);
+  } catch (err) { next(err); }
+});
+
+// ─── POST /api/chat/buy-overage ──────────────────────────────
+// Creates a $5 Stripe PaymentIntent. On success → POST /confirm-overage.
+router.post('/buy-overage', authenticate, async (req, res, next) => {
+  try {
+    const { sessionId } = req.body;
+    if (!sessionId) return res.status(400).json({ error: 'sessionId is required' });
+
+    // Verify ownership
+    const { data: session } = await supabase
+      .from('chat_sessions').select('id, user_id, scope, mission_id')
+      .eq('id', sessionId).single();
+    if (!session)                  return res.status(404).json({ error: 'Chat session not found' });
+    if (session.user_id !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
+
+    const { data: { user } } = await supabase.auth.admin.getUserById(req.user.id);
+
+    const pi = await stripe.paymentIntents.create({
+      amount: chat.OVERAGE_PRICE_USD * 100,
+      currency: 'usd',
+      metadata: {
+        purpose: 'chat_overage',
+        sessionId,
+        userId: req.user.id,
+        missionId: session.mission_id || '',
+        messagesGranted: chat.OVERAGE_MESSAGES,
+      },
+      receipt_email: user?.email,
+      description: `VETT chat overage +${chat.OVERAGE_MESSAGES} messages`,
+    });
+
+    res.json({
+      clientSecret: pi.client_secret,
+      paymentIntentId: pi.id,
+      amountUsd: chat.OVERAGE_PRICE_USD,
+      messagesGranted: chat.OVERAGE_MESSAGES,
+    });
+  } catch (err) { next(err); }
+});
+
+// ─── POST /api/chat/confirm-overage ──────────────────────────
+// Fallback for when the webhook is slow — client can confirm directly.
+// Webhook (see routes/webhooks.js) handles this primarily.
+router.post('/confirm-overage', authenticate, async (req, res, next) => {
+  try {
+    const { sessionId, paymentIntentId } = req.body;
+    if (!sessionId || !paymentIntentId) {
+      return res.status(400).json({ error: 'sessionId and paymentIntentId are required' });
+    }
+
+    const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
+    if (pi.status !== 'succeeded') {
+      return res.status(400).json({ error: `Payment status: ${pi.status}` });
+    }
+    if (pi.metadata.purpose !== 'chat_overage' || pi.metadata.sessionId !== sessionId) {
+      return res.status(400).json({ error: 'PaymentIntent does not match session' });
+    }
+
+    // Verify ownership
+    const { data: session } = await supabase
+      .from('chat_sessions').select('id, user_id').eq('id', sessionId).single();
+    if (!session || session.user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    // Idempotent credit — only grant if not already recorded against this PI
+    const { data: prior } = await supabase
+      .from('chat_sessions').select('metadata').eq('id', sessionId).maybeSingle();
+    const granted = prior?.metadata?.granted_payment_intents || [];
+    if (granted.includes(paymentIntentId)) {
+      const summary = await chat.getSessionSummary({
+        userId: req.user.id,
+        scope: req.body.scope || 'results',
+        missionId: req.body.missionId || null,
+      });
+      return res.json({ alreadyGranted: true, quota: summary.quota });
+    }
+
+    await chat.grantOverage(sessionId);
+    // Record PI to prevent double-grant
+    await supabase.from('chat_sessions').update({
+      metadata: { granted_payment_intents: [...granted, paymentIntentId] },
+    }).eq('id', sessionId);
+
+    logger.info('Chat overage granted', { sessionId, paymentIntentId });
+    res.json({ success: true, messagesGranted: chat.OVERAGE_MESSAGES });
+  } catch (err) { next(err); }
+});
+
+module.exports = router;

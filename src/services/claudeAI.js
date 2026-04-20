@@ -195,7 +195,7 @@ Return ONLY a JSON object with this structure:
 }
 
 /**
- * Suggest optimal Pollfish targeting based on mission description
+ * Suggest optimal audience targeting based on mission description
  */
 async function suggestTargeting({ missionStatement, description, goal }) {
   const prompt = `You are a market research targeting specialist. Based on this research mission, suggest the optimal audience targeting.

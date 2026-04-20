@@ -4,6 +4,7 @@ const { constructWebhookEvent } = require('../services/stripe');
 const supabase = require('../db/supabase');
 const logger = require('../utils/logger');
 const { runMission } = require('../jobs/runMission');
+const emailService = require('../services/email');
 
 // Stripe webhooks need the raw body — this route is mounted BEFORE the JSON parser in app.js.
 router.post('/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
@@ -22,6 +23,34 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
   switch (event.type) {
     case 'payment_intent.succeeded': {
       const pi = event.data.object;
+
+      // ─ Chat overage purchase ─────────────────────────────
+      if (pi.metadata?.purpose === 'chat_overage') {
+        const sessionId = pi.metadata.sessionId;
+        if (sessionId) {
+          try {
+            // Idempotent: track which PaymentIntents have been applied
+            const { data: existing } = await supabase
+              .from('chat_sessions').select('metadata, quota_overage_purchased')
+              .eq('id', sessionId).maybeSingle();
+            const granted = existing?.metadata?.granted_payment_intents || [];
+            if (!granted.includes(pi.id)) {
+              const bump = Number(pi.metadata.messagesGranted || 50);
+              await supabase.from('chat_sessions').update({
+                quota_overage_purchased: (existing?.quota_overage_purchased || 0) + bump,
+                metadata: { granted_payment_intents: [...granted, pi.id] },
+                updated_at: new Date().toISOString(),
+              }).eq('id', sessionId);
+              logger.info('Chat overage credited via webhook', { sessionId, bump });
+            }
+          } catch (e) {
+            logger.error('Chat overage webhook credit failed', { sessionId, err: e.message });
+          }
+        }
+        break;
+      }
+
+      // ─ Mission payment ───────────────────────────────────
       const missionId = pi.metadata?.missionId;
       if (missionId) {
         await supabase
@@ -55,9 +84,9 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
           .update({ payment_status: 'failed', status: 'failed', updated_at: new Date().toISOString() })
           .eq('id', missionId);
 
-        // User-facing notification
+        // User-facing notification + email
         const { data: mission } = await supabase
-          .from('missions').select('user_id, title').eq('id', missionId).single();
+          .from('missions').select('user_id, title, brief, mission_statement').eq('id', missionId).single();
         if (mission?.user_id) {
           await supabase.from('notifications').insert({
             user_id: mission.user_id,
@@ -66,6 +95,22 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
             body:    'We could not process the payment for your mission. Please try again.',
             link:    `/missions/${missionId}`,
           }).then(()=>{}).catch(()=>{});
+
+          try {
+            const { data: { user } } = await supabase.auth.admin.getUserById(mission.user_id);
+            const { data: profile } = await supabase
+              .from('profiles').select('first_name, last_name, full_name').eq('id', mission.user_id).maybeSingle();
+            const name = profile?.full_name || [profile?.first_name, profile?.last_name].filter(Boolean).join(' ');
+            if (user?.email) {
+              await emailService.sendPaymentFailedEmail({
+                to: user.email,
+                name,
+                missionStatement: mission.brief || mission.mission_statement || mission.title || '',
+                missionId,
+                reason: pi.last_payment_error?.message || '',
+              });
+            }
+          } catch (e) { logger.warn('payment_failed email skipped', { err: e.message }); }
         }
         logger.warn('Payment failed via webhook', { missionId });
       }

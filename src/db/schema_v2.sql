@@ -97,9 +97,13 @@ CREATE TABLE IF NOT EXISTS public.chat_sessions (
   quota_limit INT NOT NULL DEFAULT 30,
   quota_overage_purchased INT DEFAULT 0,
   total_cost_usd NUMERIC(10,4) DEFAULT 0,
+  metadata JSONB DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
+
+-- Add column defensively if table was already created in an earlier run
+ALTER TABLE public.chat_sessions ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
 
 CREATE TABLE IF NOT EXISTS public.chat_messages (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

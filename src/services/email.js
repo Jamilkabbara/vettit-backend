@@ -1,121 +1,225 @@
+/**
+ * VETT — Transactional email templates via Resend.
+ * All templates share the dark-theme layout: bg #0B0C15, lime #BEF264.
+ *
+ * Sender: FROM_NAME <FROM_EMAIL>  (e.g. "VETT <hello@vettit.ai>")
+ * Domain must be verified in Resend before these will deliver.
+ */
+
 const { Resend } = require('resend');
 const logger = require('../utils/logger');
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-const FROM = `${process.env.FROM_NAME || 'Vettit'} <${process.env.FROM_EMAIL || 'hello@vettit.ai'}>`;
+const FROM = `${process.env.FROM_NAME || 'VETT'} <${process.env.FROM_EMAIL || 'hello@vettit.ai'}>`;
+const APP_URL = process.env.FRONTEND_URL || 'https://www.vettit.ai';
 
+// ─── Shared layout ────────────────────────────────────────
+function shell({ preheader = '', body }) {
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VETT</title></head>
+<body style="margin:0;padding:0;background:#05060b;font-family:Inter,Manrope,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+<span style="display:none;opacity:0;visibility:hidden;height:0;max-height:0;overflow:hidden;">${preheader}</span>
+<div style="max-width:600px;margin:0 auto;background:#0B0C15;border-radius:16px;overflow:hidden;border:1px solid #1f2937;">
+  <div style="background:linear-gradient(90deg,#BEF264 0%,#84cc16 100%);height:6px;"></div>
+  <div style="padding:40px;color:#e5e7eb;">
+    <div style="font-size:28px;font-weight:800;color:#BEF264;letter-spacing:.08em;">VETT</div>
+    <div style="font-size:11px;color:#9ca3af;letter-spacing:.12em;margin-top:2px;">AI-POWERED MARKET RESEARCH</div>
+    <div style="height:28px;"></div>
+    ${body}
+    <div style="height:40px;"></div>
+    <div style="border-top:1px solid #1f2937;padding-top:20px;font-size:11px;color:#6b7280;line-height:1.7;">
+      VETT · vettit.ai · Dubai, UAE<br>
+      You're receiving this because you have an account on VETT.
+    </div>
+  </div>
+</div>
+</body></html>`;
+}
+
+const btn = (label, href, color = '#BEF264') =>
+  `<a href="${href}" style="display:inline-block;background:${color};color:#0B0C15;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:700;">${label}</a>`;
+
+const card = (inner) =>
+  `<div style="background:#111827;border:1px solid #1f2937;border-radius:12px;padding:22px;margin:16px 0;">${inner}</div>`;
+
+// ─── Welcome ──────────────────────────────────────────────
 async function sendWelcomeEmail({ to, name }) {
-  return resend.emails.send({
-    from: FROM,
-    to,
-    subject: 'Welcome to Vettit — Your AI Research Team',
-    html: `
-      <div style="font-family: Inter, sans-serif; max-width: 600px; margin: 0 auto; background: #0B0C15; color: #fff; padding: 40px; border-radius: 12px;">
-        <div style="margin-bottom: 32px;">
-          <h1 style="color: #BEF264; font-size: 28px; margin: 0;">VETTIT</h1>
-        </div>
-        <h2 style="color: #fff; font-size: 22px;">Welcome, ${name || 'Researcher'}! 👋</h2>
-        <p style="color: #aaa; line-height: 1.6;">Your AI research team is ready. Describe what you want to know — we'll handle the rest.</p>
-        <div style="background: #1a1b2e; border-radius: 8px; padding: 24px; margin: 24px 0;">
-          <p style="color: #BEF264; font-weight: 600; margin: 0 0 8px;">What you can do with Vettit:</p>
-          <ul style="color: #aaa; line-height: 2; padding-left: 20px; margin: 0;">
-            <li>Describe your research in one sentence</li>
-            <li>AI builds a researcher-quality survey</li>
-            <li>Real people answer — targeted to your exact audience</li>
-            <li>Get AI insights, charts, and a full report</li>
+  try {
+    return await resend.emails.send({
+      from: FROM,
+      to,
+      subject: 'Welcome to VETT — your AI research team is ready',
+      html: shell({
+        preheader: 'Describe your research in one sentence and get real insights back.',
+        body: `
+          <h1 style="color:#fff;font-size:24px;margin:0 0 12px;">Welcome${name ? ', ' + name : ''}.</h1>
+          <p style="color:#9ca3af;line-height:1.7;">Your AI research team is assembled. Describe what you want to know — we'll design the survey, simulate the audience, and deliver an executive-ready report.</p>
+          ${card(`
+            <div style="color:#BEF264;font-weight:700;margin-bottom:8px;">What you can do</div>
+            <ul style="color:#9ca3af;line-height:1.9;padding-left:18px;margin:0;">
+              <li>Describe your research in one sentence</li>
+              <li>AI builds a researcher-quality survey</li>
+              <li>Targeted synthetic respondents answer in minutes</li>
+              <li>Get charts, insights, and a downloadable report</li>
+            </ul>
+          `)}
+          <div style="margin-top:24px;">${btn('Launch your first mission →', APP_URL + '/setup')}</div>
+        `,
+      }),
+    });
+  } catch (err) { logger.warn('sendWelcomeEmail failed', { err: err.message }); }
+}
+
+// ─── Mission launched ─────────────────────────────────────
+async function sendMissionLaunchedEmail({ to, name, missionStatement, respondentCount, estimatedTime = '15 minutes', missionId }) {
+  try {
+    return await resend.emails.send({
+      from: FROM,
+      to,
+      subject: `Your mission is live — results in ~${estimatedTime}`,
+      html: shell({
+        preheader: `${respondentCount} respondents are being simulated now.`,
+        body: `
+          <h1 style="color:#fff;font-size:22px;margin:0 0 12px;">Mission launched ⚡</h1>
+          <p style="color:#9ca3af;">Hi ${name || 'there'},</p>
+          <p style="color:#9ca3af;line-height:1.7;">Your research is running right now.</p>
+          ${card(`
+            <div style="color:#6b7280;font-size:11px;letter-spacing:.1em;">MISSION</div>
+            <div style="color:#fff;font-size:15px;margin:6px 0 16px;">${missionStatement || ''}</div>
+            <div style="display:flex;gap:24px;">
+              <div><div style="color:#6b7280;font-size:10px;">RESPONDENTS</div><div style="color:#fff;font-size:20px;font-weight:700;">${respondentCount}</div></div>
+              <div><div style="color:#6b7280;font-size:10px;">ETA</div><div style="color:#BEF264;font-size:20px;font-weight:700;">${estimatedTime}</div></div>
+            </div>
+          `)}
+          <p style="color:#9ca3af;">We'll email you the moment your results are ready.</p>
+          <div style="margin-top:8px;">${btn('Track progress →', `${APP_URL}/mission/${missionId}`)}</div>
+        `,
+      }),
+    });
+  } catch (err) { logger.warn('sendMissionLaunchedEmail failed', { err: err.message }); }
+}
+
+// ─── Mission completed ────────────────────────────────────
+async function sendMissionCompletedEmail({ to, name, missionStatement, totalResponses, missionId, headline = '' }) {
+  try {
+    return await resend.emails.send({
+      from: FROM,
+      to,
+      subject: `Your results are ready`,
+      html: shell({
+        preheader: headline || `${totalResponses} responses — AI report inside.`,
+        body: `
+          <h1 style="color:#fff;font-size:22px;margin:0 0 12px;">Your results are ready 🎯</h1>
+          <p style="color:#9ca3af;">Hi ${name || 'there'},</p>
+          <p style="color:#9ca3af;line-height:1.7;">Your mission is complete. <strong style="color:#fff;">${totalResponses} respondents</strong> have shared their view.</p>
+          ${card(`
+            <div style="color:#6b7280;font-size:11px;letter-spacing:.1em;">MISSION</div>
+            <div style="color:#fff;font-size:15px;margin:4px 0 0;">${missionStatement || ''}</div>
+            ${headline ? `<div style="color:#BEF264;font-size:13px;margin-top:14px;line-height:1.6;">${headline}</div>` : ''}
+          `)}
+          <p style="color:#9ca3af;">Your report includes:</p>
+          <ul style="color:#9ca3af;line-height:1.9;padding-left:18px;margin:8px 0 0;">
+            <li>Executive summary & headline KPIs</li>
+            <li>AI insight for every question</li>
+            <li>Concrete recommendations</li>
+            <li>PDF, PowerPoint, and Excel downloads</li>
+            <li>Chat with your results (30 messages free)</li>
           </ul>
-        </div>
-        <a href="${process.env.FRONTEND_URL}/setup" style="display: inline-block; background: #BEF264; color: #0B0C15; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: 700; margin-top: 8px;">Launch Your First Mission →</a>
-        <p style="color: #555; font-size: 12px; margin-top: 40px;">Vettit · Dubai, UAE · hello@vettit.ai</p>
-      </div>
-    `,
-  });
+          <div style="margin-top:24px;">${btn('View my results →', `${APP_URL}/results?missionId=${missionId}`)}</div>
+        `,
+      }),
+    });
+  } catch (err) { logger.warn('sendMissionCompletedEmail failed', { err: err.message }); }
 }
 
-async function sendMissionLaunchedEmail({ to, name, missionStatement, respondentCount, estimatedTime, missionId }) {
-  return resend.emails.send({
-    from: FROM,
-    to,
-    subject: `Your mission is live — results coming in ${estimatedTime}`,
-    html: `
-      <div style="font-family: Inter, sans-serif; max-width: 600px; margin: 0 auto; background: #0B0C15; color: #fff; padding: 40px; border-radius: 12px;">
-        <h1 style="color: #BEF264; font-size: 24px; margin: 0 0 24px;">Mission Launched ⚡</h1>
-        <p style="color: #aaa;">Hi ${name || 'there'},</p>
-        <p style="color: #aaa; line-height: 1.6;">Your research is now live and collecting responses from real people.</p>
-        <div style="background: #1a1b2e; border-radius: 8px; padding: 24px; margin: 24px 0;">
-          <p style="color: #BEF264; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin: 0 0 8px;">Mission</p>
-          <p style="color: #fff; font-size: 16px; margin: 0 0 16px;">${missionStatement}</p>
-          <div style="display: flex; gap: 24px;">
-            <div>
-              <p style="color: #555; font-size: 12px; margin: 0;">RESPONDENTS</p>
-              <p style="color: #fff; font-size: 20px; font-weight: 700; margin: 0;">${respondentCount}</p>
-            </div>
-            <div>
-              <p style="color: #555; font-size: 12px; margin: 0;">ESTIMATED TIME</p>
-              <p style="color: #BEF264; font-size: 20px; font-weight: 700; margin: 0;">${estimatedTime}</p>
-            </div>
-          </div>
-        </div>
-        <p style="color: #aaa;">We'll notify you the moment your results are ready.</p>
-        <a href="${process.env.FRONTEND_URL}/mission/${missionId}" style="display: inline-block; background: #BEF264; color: #0B0C15; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: 700; margin-top: 8px;">Track Your Mission →</a>
-        <p style="color: #555; font-size: 12px; margin-top: 40px;">Vettit · Dubai, UAE · hello@vettit.ai</p>
-      </div>
-    `,
-  });
-}
-
-async function sendMissionCompletedEmail({ to, name, missionStatement, totalResponses, missionId }) {
-  return resend.emails.send({
-    from: FROM,
-    to,
-    subject: `Results are in — your research is complete`,
-    html: `
-      <div style="font-family: Inter, sans-serif; max-width: 600px; margin: 0 auto; background: #0B0C15; color: #fff; padding: 40px; border-radius: 12px;">
-        <h1 style="color: #BEF264; font-size: 24px; margin: 0 0 24px;">Your Results Are Ready 🎯</h1>
-        <p style="color: #aaa;">Hi ${name || 'there'},</p>
-        <p style="color: #aaa; line-height: 1.6;">Your research mission is complete. <strong style="color: #fff;">${totalResponses} real people</strong> have shared their insights.</p>
-        <div style="background: #1a1b2e; border-radius: 8px; padding: 24px; margin: 24px 0;">
-          <p style="color: #555; font-size: 12px; margin: 0;">MISSION</p>
-          <p style="color: #fff; margin: 4px 0 0;">${missionStatement}</p>
-        </div>
-        <p style="color: #aaa;">Your AI report includes:<br>
-        ✦ Charts and data visualizations<br>
-        ✦ AI-generated insights for every question<br>
-        ✦ Executive summary<br>
-        ✦ 2 recommended follow-up surveys<br>
-        ✦ Downloadable PDF and PowerPoint</p>
-        <a href="${process.env.FRONTEND_URL}/results?missionId=${missionId}" style="display: inline-block; background: #BEF264; color: #0B0C15; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: 700; margin-top: 8px;">View My Results →</a>
-        <p style="color: #555; font-size: 12px; margin-top: 40px;">Vettit · Dubai, UAE · hello@vettit.ai</p>
-      </div>
-    `,
-  });
-}
-
+// ─── Invoice ──────────────────────────────────────────────
 async function sendInvoiceEmail({ to, name, invoiceData }) {
-  return resend.emails.send({
-    from: FROM,
-    to,
-    subject: `Invoice from Vettit — Mission #${invoiceData.missionId}`,
-    html: `
-      <div style="font-family: Inter, sans-serif; max-width: 600px; margin: 0 auto; background: #0B0C15; color: #fff; padding: 40px; border-radius: 12px;">
-        <h1 style="color: #BEF264; font-size: 24px; margin: 0 0 24px;">Invoice</h1>
-        <p style="color: #aaa;">Hi ${name || 'there'}, here is your invoice for the following mission.</p>
-        <div style="background: #1a1b2e; border-radius: 8px; padding: 24px; margin: 24px 0;">
-          <p style="color: #555; font-size: 12px; margin: 0;">MISSION</p>
-          <p style="color: #fff; margin: 4px 0 16px;">${invoiceData.missionStatement}</p>
-          <table style="width: 100%; color: #aaa; font-size: 14px;">
-            <tr><td>Base cost (${invoiceData.respondentCount} respondents)</td><td style="text-align:right;">$${invoiceData.baseCost}</td></tr>
-            ${invoiceData.questionSurcharge > 0 ? `<tr><td>Question surcharge</td><td style="text-align:right;">$${invoiceData.questionSurcharge}</td></tr>` : ''}
-            ${invoiceData.targetingSurcharge > 0 ? `<tr><td>Targeting</td><td style="text-align:right;">$${invoiceData.targetingSurcharge}</td></tr>` : ''}
-            ${invoiceData.screeningSurcharge > 0 ? `<tr><td>Screening</td><td style="text-align:right;">$${invoiceData.screeningSurcharge}</td></tr>` : ''}
-            <tr style="border-top: 1px solid #333;"><td style="color:#fff; font-weight:700; padding-top:12px;">Total</td><td style="text-align:right; color:#BEF264; font-weight:700; padding-top:12px;">$${invoiceData.total} USD</td></tr>
-          </table>
-        </div>
-        <p style="color: #555; font-size: 12px; margin-top: 40px;">Vettit FZ-LLC · Dubai, UAE · hello@vettit.ai<br>Trade License: ${invoiceData.tradeLicense || 'Available on request'}</p>
-      </div>
-    `,
-  });
+  const d = invoiceData || {};
+  const row = (label, value) =>
+    `<tr><td style="padding:8px 0;color:#9ca3af;">${label}</td><td style="padding:8px 0;text-align:right;color:#e5e7eb;">${value}</td></tr>`;
+  try {
+    return await resend.emails.send({
+      from: FROM,
+      to,
+      subject: `VETT invoice — mission ${String(d.missionId || '').slice(0, 8)}`,
+      html: shell({
+        preheader: `Invoice for $${d.total || 0} USD.`,
+        body: `
+          <h1 style="color:#fff;font-size:22px;margin:0 0 12px;">Invoice</h1>
+          <p style="color:#9ca3af;">Hi ${name || 'there'}, thank you for your purchase.</p>
+          ${card(`
+            <div style="color:#6b7280;font-size:11px;letter-spacing:.1em;">MISSION</div>
+            <div style="color:#fff;margin:4px 0 16px;">${d.missionStatement || ''}</div>
+            <table style="width:100%;font-size:13px;border-collapse:collapse;">
+              ${row(`Base cost (${d.respondentCount || '—'} respondents)`, `$${(d.baseCost ?? 0).toFixed ? d.baseCost.toFixed(2) : d.baseCost}`)}
+              ${d.targetingSurcharge > 0 ? row('Targeting', `$${d.targetingSurcharge}`) : ''}
+              ${d.extraQuestionsCost > 0 ? row('Extra questions', `$${d.extraQuestionsCost}`) : ''}
+              ${d.discount > 0 ? row(`Promo (${d.promoCode || 'applied'})`, `-$${d.discount}`) : ''}
+              <tr><td style="padding:14px 0 0;color:#fff;font-weight:700;border-top:1px solid #1f2937;">Total</td>
+                  <td style="padding:14px 0 0;text-align:right;color:#BEF264;font-weight:700;border-top:1px solid #1f2937;">$${d.total || 0} USD</td></tr>
+            </table>
+          `)}
+          <p style="color:#6b7280;font-size:12px;">Paid via Stripe · ${new Date().toLocaleDateString()}</p>
+        `,
+      }),
+    });
+  } catch (err) { logger.warn('sendInvoiceEmail failed', { err: err.message }); }
 }
 
-module.exports = { sendWelcomeEmail, sendMissionLaunchedEmail, sendMissionCompletedEmail, sendInvoiceEmail };
+// ─── Payment failed ───────────────────────────────────────
+async function sendPaymentFailedEmail({ to, name, missionStatement, missionId, reason = '' }) {
+  try {
+    return await resend.emails.send({
+      from: FROM,
+      to,
+      subject: 'Payment failed — your mission is on hold',
+      html: shell({
+        preheader: 'Your mission did not launch because the payment could not be processed.',
+        body: `
+          <h1 style="color:#fff;font-size:22px;margin:0 0 12px;">Payment didn't go through</h1>
+          <p style="color:#9ca3af;">Hi ${name || 'there'},</p>
+          <p style="color:#9ca3af;line-height:1.7;">We were unable to process the payment for your mission. No charge has been made.</p>
+          ${card(`
+            <div style="color:#6b7280;font-size:11px;letter-spacing:.1em;">MISSION</div>
+            <div style="color:#fff;font-size:14px;margin:4px 0 0;">${missionStatement || ''}</div>
+            ${reason ? `<div style="color:#f87171;font-size:12px;margin-top:10px;">Reason: ${reason}</div>` : ''}
+          `)}
+          <p style="color:#9ca3af;">Common reasons: insufficient funds, 3-D Secure challenge timed out, bank declined an international transaction.</p>
+          <div style="margin-top:20px;">${btn('Retry payment →', `${APP_URL}/mission/${missionId}/checkout`)}</div>
+          <p style="color:#6b7280;font-size:12px;margin-top:18px;">Still stuck? Reply to this email and we'll help.</p>
+        `,
+      }),
+    });
+  } catch (err) { logger.warn('sendPaymentFailedEmail failed', { err: err.message }); }
+}
+
+// ─── Chat overage receipt ─────────────────────────────────
+async function sendChatOverageEmail({ to, name, messagesGranted = 50, priceUsd = 5 }) {
+  try {
+    return await resend.emails.send({
+      from: FROM,
+      to,
+      subject: `+${messagesGranted} VETT chat messages added`,
+      html: shell({
+        preheader: `Your chat quota has been topped up.`,
+        body: `
+          <h1 style="color:#fff;font-size:22px;margin:0 0 12px;">You're all topped up</h1>
+          <p style="color:#9ca3af;">Hi ${name || 'there'},</p>
+          <p style="color:#9ca3af;line-height:1.7;">We've added <strong style="color:#BEF264;">${messagesGranted} more messages</strong> to your VETT chat ($${priceUsd}). Keep interrogating your research.</p>
+          <div style="margin-top:20px;">${btn('Back to VETT →', APP_URL)}</div>
+        `,
+      }),
+    });
+  } catch (err) { logger.warn('sendChatOverageEmail failed', { err: err.message }); }
+}
+
+module.exports = {
+  sendWelcomeEmail,
+  sendMissionLaunchedEmail,
+  sendMissionCompletedEmail,
+  sendInvoiceEmail,
+  sendPaymentFailedEmail,
+  sendChatOverageEmail,
+};
