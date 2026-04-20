@@ -1,11 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate } = require('../middleware/auth');
+const { authenticate, optionalAuthenticate } = require('../middleware/auth');
 const supabase = require('../db/supabase');
-const { calculatePricing } = require('../utils/pricingEngine');
+const { calculateMissionPrice, deriveFilters } = require('../utils/pricingEngine');
 const logger = require('../utils/logger');
 
-// GET /api/missions — list all missions for user
+/**
+ * GET /api/missions — list user's missions (ordered most-recent first).
+ */
 router.get('/', authenticate, async (req, res, next) => {
   try {
     const { data, error } = await supabase
@@ -13,7 +15,6 @@ router.get('/', authenticate, async (req, res, next) => {
       .select('*')
       .eq('user_id', req.user.id)
       .order('created_at', { ascending: false });
-
     if (error) throw error;
     res.json(data);
   } catch (err) {
@@ -21,7 +22,9 @@ router.get('/', authenticate, async (req, res, next) => {
   }
 });
 
-// GET /api/missions/:id — get single mission
+/**
+ * GET /api/missions/:id — single mission, user-scoped.
+ */
 router.get('/:id', authenticate, async (req, res, next) => {
   try {
     const { data, error } = await supabase
@@ -30,7 +33,6 @@ router.get('/:id', authenticate, async (req, res, next) => {
       .eq('id', req.params.id)
       .eq('user_id', req.user.id)
       .single();
-
     if (error || !data) return res.status(404).json({ error: 'Mission not found' });
     res.json(data);
   } catch (err) {
@@ -38,39 +40,46 @@ router.get('/:id', authenticate, async (req, res, next) => {
   }
 });
 
-// POST /api/missions — create a new mission (draft)
+/**
+ * POST /api/missions — create a new mission draft.
+ * Accepts the full mission config; computes price server-side; stores snapshot.
+ */
 router.post('/', authenticate, async (req, res, next) => {
   try {
     const {
-      goal, subject, objective, missionStatement,
-      questions, targetingConfig, respondentCount,
-      missionType = 'validate',
+      goalType, goal, title, brief, missionStatement,
+      questions, targeting, targetingConfig, respondentCount,
     } = req.body;
 
-    // Server-side pricing calculation — source of truth
-    const pricing = calculatePricing({
-      respondentCount: respondentCount || 100,
-      questions: questions || [],
-      targeting: targetingConfig || {},
-      isScreeningActive: (questions || []).some(q => q.isScreening),
-    });
+    const respCount   = respondentCount || 100;
+    const finalTarget = targeting || targetingConfig || {};
+    const finalQs     = questions || [];
+
+    const filters = deriveFilters(finalTarget);
+    const pricing = calculateMissionPrice(respCount, filters, finalQs.length);
+
+    const insertRow = {
+      user_id:                 req.user.id,
+      title:                   title || brief?.slice(0, 60) || missionStatement?.slice(0, 60) || 'Untitled mission',
+      goal_type:               goalType || goal || 'general_research',
+      brief:                   brief || missionStatement || '',
+      mission_statement:       missionStatement || brief || '',
+      questions:               finalQs,
+      targeting:               finalTarget,
+      targeting_config:        finalTarget,
+      respondent_count:        respCount,
+      base_cost_usd:           pricing.baseCost,
+      targeting_surcharge_usd: pricing.targetingSurcharge,
+      extra_questions_cost_usd: pricing.extraQuestionsCost,
+      total_price_usd:         pricing.total,
+      price:                   pricing.total,
+      pricing_breakdown:       pricing,
+      status:                  'draft',
+    };
 
     const { data, error } = await supabase
       .from('missions')
-      .insert({
-        user_id: req.user.id,
-        mission_type: missionType,
-        goal,
-        subject,
-        objective,
-        mission_statement: missionStatement,
-        questions: questions || [],
-        targeting_config: targetingConfig || {},
-        respondent_count: respondentCount || 100,
-        price: pricing.total,
-        pricing_breakdown: pricing,
-        status: 'draft',
-      })
+      .insert(insertRow)
       .select()
       .single();
 
@@ -82,39 +91,215 @@ router.post('/', authenticate, async (req, res, next) => {
   }
 });
 
-// PATCH /api/missions/:id — update mission (auto-save)
+/**
+ * POST /api/missions/draft — idempotent autosave endpoint for the Setup page.
+ * Creates or updates a draft keyed by optional clientDraftId.
+ */
+router.post('/draft', authenticate, async (req, res, next) => {
+  try {
+    const {
+      missionId, goalType, title, brief, missionStatement,
+      questions, targeting, respondentCount,
+    } = req.body;
+
+    const respCount   = respondentCount || 100;
+    const finalTarget = targeting || {};
+    const finalQs     = questions || [];
+    const filters     = deriveFilters(finalTarget);
+    const pricing     = calculateMissionPrice(respCount, filters, finalQs.length);
+
+    const row = {
+      title:             title || 'Untitled draft',
+      goal_type:         goalType || 'general_research',
+      brief:             brief || '',
+      mission_statement: missionStatement || brief || '',
+      questions:         finalQs,
+      targeting:         finalTarget,
+      targeting_config:  finalTarget,
+      respondent_count:  respCount,
+      base_cost_usd:     pricing.baseCost,
+      targeting_surcharge_usd: pricing.targetingSurcharge,
+      extra_questions_cost_usd: pricing.extraQuestionsCost,
+      total_price_usd:   pricing.total,
+      price:             pricing.total,
+      pricing_breakdown: pricing,
+      status:            'draft',
+      updated_at:        new Date().toISOString(),
+    };
+
+    let result;
+    if (missionId) {
+      const { data, error } = await supabase
+        .from('missions')
+        .update(row)
+        .eq('id', missionId)
+        .eq('user_id', req.user.id)
+        .select()
+        .single();
+      if (error) throw error;
+      result = data;
+    } else {
+      const { data, error } = await supabase
+        .from('missions')
+        .insert({ ...row, user_id: req.user.id })
+        .select()
+        .single();
+      if (error) throw error;
+      result = data;
+    }
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/missions/calculate-price — public (optional auth).
+ * Used by the Setup page for live pricing display as the user toggles targeting.
+ * NEVER treat this as authoritative — the final charge is computed inside /payments/create-intent.
+ */
+router.post('/calculate-price', optionalAuthenticate, async (req, res, next) => {
+  try {
+    const { respondentCount, activeFilters, filters, targeting, questions, promoCode } = req.body;
+
+    const respCount = respondentCount || 100;
+    const resolvedFilters = Array.isArray(activeFilters)
+      ? activeFilters
+      : Array.isArray(filters)
+        ? filters
+        : deriveFilters(targeting || {});
+    const qCount = Array.isArray(questions) ? questions.length : (req.body.questionCount || 5);
+
+    let promo = null;
+    if (promoCode) {
+      const { data } = await supabase
+        .from('promo_codes').select('*').eq('code', promoCode).eq('active', true).single();
+      if (data) {
+        const expired = data.expires_at && new Date(data.expires_at) < new Date();
+        const exhausted = data.max_uses && data.uses_count >= data.max_uses;
+        if (!expired && !exhausted) promo = data;
+      }
+    }
+
+    const pricing = calculateMissionPrice(respCount, resolvedFilters, qCount, promo);
+    res.json(pricing);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/missions/launch — validate price & create PaymentIntent in one call (convenience).
+ */
+router.post('/launch', authenticate, async (req, res, next) => {
+  try {
+    const { missionId, promoCode } = req.body;
+    if (!missionId) return res.status(400).json({ error: 'missionId is required' });
+
+    // Forward to the payments route logic by calling the Stripe helper directly.
+    // We do this inline to keep the request shape identical to /payments/create-intent.
+    const stripeService = require('../services/stripe');
+
+    const { data: mission } = await supabase
+      .from('missions')
+      .select('*')
+      .eq('id', missionId)
+      .eq('user_id', req.user.id)
+      .single();
+    if (!mission) return res.status(404).json({ error: 'Mission not found' });
+
+    let promo = null;
+    if (promoCode) {
+      const { data } = await supabase
+        .from('promo_codes').select('*').eq('code', promoCode).eq('active', true).single();
+      if (data) promo = data;
+    }
+
+    const filters = deriveFilters(mission.targeting || mission.targeting_config || {});
+    const pricing = calculateMissionPrice(
+      mission.respondent_count,
+      filters,
+      (mission.questions || []).length,
+      promo
+    );
+
+    if (pricing.totalCents < 50) {
+      return res.status(400).json({ error: 'Minimum payment is $0.50' });
+    }
+
+    const { data: { user } } = await supabase.auth.admin.getUserById(req.user.id);
+    const { clientSecret, paymentIntentId } = await stripeService.createPaymentIntent({
+      amountCents: pricing.totalCents,
+      missionId,
+      userId: req.user.id,
+      userEmail: user?.email,
+      pricingBreakdown: pricing,
+    });
+
+    await supabase
+      .from('missions')
+      .update({
+        stripe_payment_intent_id: paymentIntentId,
+        total_price_usd: pricing.total,
+        price: pricing.total,
+        pricing_breakdown: pricing,
+        promo_code: promo?.code || null,
+        discount_usd: pricing.discount,
+        status: 'pending_payment',
+      })
+      .eq('id', missionId);
+
+    res.json({ clientSecret, paymentIntentId, pricing });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * PATCH /api/missions/:id — partial update (autosave).
+ */
 router.patch('/:id', authenticate, async (req, res, next) => {
   try {
     const updates = req.body;
 
-    // Recalculate pricing if relevant fields changed
-    if (updates.respondentCount || updates.questions || updates.targetingConfig) {
+    if (updates.respondentCount || updates.questions || updates.targeting || updates.targetingConfig) {
       const { data: existing } = await supabase
         .from('missions')
-        .select('questions, targeting_config, respondent_count')
+        .select('questions, targeting, targeting_config, respondent_count')
         .eq('id', req.params.id)
         .eq('user_id', req.user.id)
         .single();
 
-      const pricing = calculatePricing({
-        respondentCount: updates.respondentCount || existing?.respondent_count || 100,
-        questions: updates.questions || existing?.questions || [],
-        targeting: updates.targetingConfig || existing?.targeting_config || {},
-        isScreeningActive: (updates.questions || existing?.questions || []).some(q => q.isScreening),
-      });
+      const respCount = updates.respondentCount || existing?.respondent_count || 100;
+      const finalTarget = updates.targeting || updates.targetingConfig || existing?.targeting || existing?.targeting_config || {};
+      const finalQs = updates.questions || existing?.questions || [];
+      const pricing = calculateMissionPrice(respCount, deriveFilters(finalTarget), finalQs.length);
 
       updates.price = pricing.total;
       updates.pricing_breakdown = pricing;
+      updates.total_price_usd = pricing.total;
+      updates.base_cost_usd = pricing.baseCost;
+      updates.targeting_surcharge_usd = pricing.targetingSurcharge;
+      updates.extra_questions_cost_usd = pricing.extraQuestionsCost;
     }
 
-    // Map camelCase to snake_case for DB
     const dbUpdates = {};
+    if (updates.title) dbUpdates.title = updates.title;
+    if (updates.brief) dbUpdates.brief = updates.brief;
+    if (updates.goalType) dbUpdates.goal_type = updates.goalType;
     if (updates.missionStatement) dbUpdates.mission_statement = updates.missionStatement;
     if (updates.questions) dbUpdates.questions = updates.questions;
-    if (updates.targetingConfig) dbUpdates.targeting_config = updates.targetingConfig;
+    if (updates.targeting || updates.targetingConfig) {
+      dbUpdates.targeting = updates.targeting || updates.targetingConfig;
+      dbUpdates.targeting_config = updates.targeting || updates.targetingConfig;
+    }
     if (updates.respondentCount) dbUpdates.respondent_count = updates.respondentCount;
-    if (updates.price) dbUpdates.price = updates.price;
+    if (updates.price != null) dbUpdates.price = updates.price;
     if (updates.pricing_breakdown) dbUpdates.pricing_breakdown = updates.pricing_breakdown;
+    if (updates.total_price_usd != null) dbUpdates.total_price_usd = updates.total_price_usd;
+    if (updates.base_cost_usd != null) dbUpdates.base_cost_usd = updates.base_cost_usd;
+    if (updates.targeting_surcharge_usd != null) dbUpdates.targeting_surcharge_usd = updates.targeting_surcharge_usd;
+    if (updates.extra_questions_cost_usd != null) dbUpdates.extra_questions_cost_usd = updates.extra_questions_cost_usd;
     if (updates.status) dbUpdates.status = updates.status;
     dbUpdates.updated_at = new Date().toISOString();
 
@@ -133,7 +318,9 @@ router.patch('/:id', authenticate, async (req, res, next) => {
   }
 });
 
-// DELETE /api/missions/:id — archive a mission
+/**
+ * DELETE /api/missions/:id — archive.
+ */
 router.delete('/:id', authenticate, async (req, res, next) => {
   try {
     const { error } = await supabase
@@ -141,7 +328,6 @@ router.delete('/:id', authenticate, async (req, res, next) => {
       .update({ status: 'archived', updated_at: new Date().toISOString() })
       .eq('id', req.params.id)
       .eq('user_id', req.user.id);
-
     if (error) throw error;
     res.json({ success: true });
   } catch (err) {
@@ -149,11 +335,24 @@ router.delete('/:id', authenticate, async (req, res, next) => {
   }
 });
 
-// GET /api/missions/:id/pricing — get real-time pricing for a mission config
-router.post('/pricing/calculate', authenticate, async (req, res, next) => {
+// Back-compat alias used by the current frontend client
+router.post('/pricing/calculate', optionalAuthenticate, async (req, res, next) => {
   try {
-    const { respondentCount, questions, targetingConfig, isScreeningActive } = req.body;
-    const pricing = calculatePricing({ respondentCount, questions, targeting: targetingConfig, isScreeningActive });
+    const { respondentCount, questions, targetingConfig, targeting, activeFilters, promoCode } = req.body;
+    const respCount = respondentCount || 100;
+    const resolvedFilters = Array.isArray(activeFilters)
+      ? activeFilters
+      : deriveFilters(targetingConfig || targeting || {});
+    const qCount = Array.isArray(questions) ? questions.length : 5;
+
+    let promo = null;
+    if (promoCode) {
+      const { data } = await supabase
+        .from('promo_codes').select('*').eq('code', promoCode).eq('active', true).single();
+      if (data) promo = data;
+    }
+
+    const pricing = calculateMissionPrice(respCount, resolvedFilters, qCount, promo);
     res.json(pricing);
   } catch (err) {
     next(err);

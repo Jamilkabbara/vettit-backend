@@ -3,8 +3,9 @@ const router = express.Router();
 const { constructWebhookEvent } = require('../services/stripe');
 const supabase = require('../db/supabase');
 const logger = require('../utils/logger');
+const { runMission } = require('../jobs/runMission');
 
-// Stripe webhooks need raw body — this route is mounted BEFORE json parser in app.js
+// Stripe webhooks need the raw body — this route is mounted BEFORE the JSON parser in app.js.
 router.post('/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
 
@@ -25,9 +26,22 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
       if (missionId) {
         await supabase
           .from('missions')
-          .update({ payment_status: 'paid', updated_at: new Date().toISOString() })
+          .update({
+            payment_status: 'paid',
+            status: 'paid',
+            paid_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
           .eq('id', missionId);
-        logger.info('Payment confirmed via webhook', { missionId, amount: pi.amount });
+        logger.info('Payment confirmed via webhook → triggering mission run', { missionId, amount: pi.amount });
+
+        // Trigger the synthetic-audience pipeline as a fire-and-forget background job.
+        // Stripe wants the webhook ack in <15s, so we don't await completion.
+        setImmediate(() => {
+          runMission(missionId).catch(err => {
+            logger.error('runMission failed from webhook', { missionId, err: err.message });
+          });
+        });
       }
       break;
     }
@@ -38,8 +52,21 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
       if (missionId) {
         await supabase
           .from('missions')
-          .update({ payment_status: 'failed', updated_at: new Date().toISOString() })
+          .update({ payment_status: 'failed', status: 'failed', updated_at: new Date().toISOString() })
           .eq('id', missionId);
+
+        // User-facing notification
+        const { data: mission } = await supabase
+          .from('missions').select('user_id, title').eq('id', missionId).single();
+        if (mission?.user_id) {
+          await supabase.from('notifications').insert({
+            user_id: mission.user_id,
+            type:    'payment_failed',
+            title:   'Payment failed',
+            body:    'We could not process the payment for your mission. Please try again.',
+            link:    `/missions/${missionId}`,
+          }).then(()=>{}).catch(()=>{});
+        }
         logger.warn('Payment failed via webhook', { missionId });
       }
       break;
@@ -56,35 +83,6 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
   }
 
   res.json({ received: true });
-});
-
-// Pollfish webhook — called when a survey completes
-router.post('/pollfish', express.json(), async (req, res) => {
-  try {
-    const { survey_id, status, completed_responses } = req.body;
-    logger.info('Pollfish webhook received', { survey_id, status });
-
-    if (status === 'completed' && survey_id) {
-      const { data: mission } = await supabase
-        .from('missions')
-        .select('id')
-        .eq('pollfish_survey_id', survey_id)
-        .single();
-
-      if (mission) {
-        await supabase
-          .from('missions')
-          .update({ status: 'completed', updated_at: new Date().toISOString() })
-          .eq('id', mission.id);
-        logger.info('Mission completed via Pollfish webhook', { missionId: mission.id });
-      }
-    }
-
-    res.json({ received: true });
-  } catch (err) {
-    logger.error('Pollfish webhook error', err);
-    res.status(500).json({ error: 'Webhook processing failed' });
-  }
 });
 
 module.exports = router;

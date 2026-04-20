@@ -18,6 +18,9 @@ const resultsRoutes = require('./routes/results');
 const uploadsRoutes = require('./routes/uploads');
 const profileRoutes = require('./routes/profile');
 const webhookRoutes = require('./routes/webhooks');
+const notificationRoutes = require('./routes/notifications');
+const adminRoutes = require('./routes/admin');
+const blogRoutes = require('./routes/blog');
 
 const app = express();
 
@@ -69,6 +72,9 @@ app.use('/api/pollfish', pollfishRoutes);
 app.use('/api/results', resultsRoutes);
 app.use('/api/uploads', uploadsRoutes);
 app.use('/api/profile', profileRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/blog', blogRoutes);
 
 // ─── Health Check ────────────────────────────────────────────
 app.get('/health', (req, res) => {
