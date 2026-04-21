@@ -14,6 +14,7 @@ const logger = require('../utils/logger');
 const { generatePersonas } = require('../services/ai/personas');
 const { simulateAllResponses } = require('../services/ai/simulate');
 const { synthesizeInsights } = require('../services/ai/insights');
+const { updateMission } = require('../db/missionSchema');
 const emailService = require('../services/email');
 
 async function runMission(missionId) {
@@ -32,9 +33,10 @@ async function runMission(missionId) {
   }
 
   try {
-    await supabase.from('missions')
-      .update({ status: 'processing', started_at: new Date().toISOString() })
-      .eq('id', missionId);
+    await updateMission(supabase, missionId, {
+      status: 'processing',
+      started_at: new Date().toISOString(),
+    }, { caller: 'runMission: start' });
 
     // 2. Generate personas
     const targetCount = mission.respondent_count || 100;
@@ -74,14 +76,12 @@ async function runMission(missionId) {
     const insights = await synthesizeInsights(mission, responses);
 
     // 6. Mark complete
-    await supabase.from('missions')
-      .update({
-        status: 'completed',
-        completed_at: new Date().toISOString(),
-        executive_summary: insights.executive_summary || null,
-        insights: insights || null,
-      })
-      .eq('id', missionId);
+    await updateMission(supabase, missionId, {
+      status: 'completed',
+      completed_at: new Date().toISOString(),
+      executive_summary: insights.executive_summary || null,
+      insights: insights || null,
+    }, { caller: 'runMission: complete' });
 
     logger.info('Mission run: complete', { missionId });
 
@@ -110,9 +110,10 @@ async function runMission(missionId) {
     }
   } catch (err) {
     logger.error('Mission run: fatal', { missionId, err: err.message, stack: err.stack });
-    await supabase.from('missions')
-      .update({ status: 'failed', completed_at: new Date().toISOString() })
-      .eq('id', missionId);
+    await updateMission(supabase, missionId, {
+      status: 'failed',
+      completed_at: new Date().toISOString(),
+    }, { caller: 'runMission: fatal' });
 
     await supabase.from('notifications').insert({
       user_id: mission.user_id,

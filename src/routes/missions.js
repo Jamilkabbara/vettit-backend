@@ -5,6 +5,7 @@ const { authenticate, optionalAuthenticate } = require('../middleware/auth');
 const supabase = require('../db/supabase');
 const { calculateMissionPrice, deriveFilters } = require('../utils/pricingEngine');
 const { runMission } = require('../jobs/runMission');
+const { sanitizeMissionPatch, updateMission } = require('../db/missionSchema');
 const logger = require('../utils/logger');
 
 // ── Generate-responses idempotency guard ──────────────────────────────
@@ -75,24 +76,24 @@ router.post('/', authenticate, async (req, res, next) => {
     const filters = deriveFilters(finalTarget);
     const pricing = calculateMissionPrice(respCount, filters, finalQs.length);
 
-    const insertRow = {
+    // Only include columns that exist in public.missions. `mission_statement`,
+    // `targeting_config`, `price`, `pricing_breakdown` are all drift and
+    // cause PostgREST to 400 the whole insert.
+    const { patch: insertRow, rejected } = sanitizeMissionPatch({
       user_id:                 req.user.id,
       title:                   title || brief?.slice(0, 60) || missionStatement?.slice(0, 60) || 'Untitled mission',
       goal_type:               goalType || goal || 'general_research',
       brief:                   brief || missionStatement || '',
-      mission_statement:       missionStatement || brief || '',
       questions:               finalQs,
       targeting:               finalTarget,
-      targeting_config:        finalTarget,
       respondent_count:        respCount,
       base_cost_usd:           pricing.baseCost,
       targeting_surcharge_usd: pricing.targetingSurcharge,
       extra_questions_cost_usd: pricing.extraQuestionsCost,
       total_price_usd:         pricing.total,
-      price:                   pricing.total,
-      pricing_breakdown:       pricing,
       status:                  'draft',
-    };
+    });
+    if (rejected.length) logger.warn('POST /missions: dropped cols', { rejected });
 
     const { data, error } = await supabase
       .from('missions')
@@ -100,7 +101,10 @@ router.post('/', authenticate, async (req, res, next) => {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      logger.error('POST /missions insert failed', { error: error.message, details: error.details });
+      throw error;
+    }
     logger.info('Mission created', { userId: req.user.id, missionId: data.id });
     res.status(201).json(data);
   } catch (err) {
@@ -125,24 +129,21 @@ router.post('/draft', authenticate, async (req, res, next) => {
     const filters     = deriveFilters(finalTarget);
     const pricing     = calculateMissionPrice(respCount, filters, finalQs.length);
 
-    const row = {
+    // Filter phantom columns before hitting the DB (see missionSchema.js).
+    const { patch: row, rejected } = sanitizeMissionPatch({
       title:             title || 'Untitled draft',
       goal_type:         goalType || 'general_research',
-      brief:             brief || '',
-      mission_statement: missionStatement || brief || '',
+      brief:             brief || missionStatement || '',
       questions:         finalQs,
       targeting:         finalTarget,
-      targeting_config:  finalTarget,
       respondent_count:  respCount,
       base_cost_usd:     pricing.baseCost,
       targeting_surcharge_usd: pricing.targetingSurcharge,
       extra_questions_cost_usd: pricing.extraQuestionsCost,
       total_price_usd:   pricing.total,
-      price:             pricing.total,
-      pricing_breakdown: pricing,
       status:            'draft',
-      updated_at:        new Date().toISOString(),
-    };
+    });
+    if (rejected.length) logger.warn('POST /missions/draft: dropped cols', { rejected });
 
     let result;
     if (missionId) {
@@ -153,7 +154,10 @@ router.post('/draft', authenticate, async (req, res, next) => {
         .eq('user_id', req.user.id)
         .select()
         .single();
-      if (error) throw error;
+      if (error) {
+        logger.error('POST /missions/draft update failed', { missionId, error: error.message, details: error.details });
+        throw error;
+      }
       result = data;
     } else {
       const { data, error } = await supabase
@@ -161,7 +165,10 @@ router.post('/draft', authenticate, async (req, res, next) => {
         .insert({ ...row, user_id: req.user.id })
         .select()
         .single();
-      if (error) throw error;
+      if (error) {
+        logger.error('POST /missions/draft insert failed', { error: error.message, details: error.details });
+        throw error;
+      }
       result = data;
     }
     res.json(result);
@@ -253,18 +260,15 @@ router.post('/launch', authenticate, async (req, res, next) => {
       pricingBreakdown: pricing,
     });
 
-    await supabase
-      .from('missions')
-      .update({
-        stripe_payment_intent_id: paymentIntentId,
-        total_price_usd: pricing.total,
-        price: pricing.total,
-        pricing_breakdown: pricing,
-        promo_code: promo?.code || null,
-        discount_usd: pricing.discount,
-        status: 'pending_payment',
-      })
-      .eq('id', missionId);
+    await updateMission(supabase, missionId, {
+      total_price_usd: pricing.total,
+      base_cost_usd:   pricing.baseCost,
+      targeting_surcharge_usd: pricing.targetingSurcharge,
+      extra_questions_cost_usd: pricing.extraQuestionsCost,
+      promo_code: promo?.code || null,
+      discount_usd: pricing.discount,
+      status: 'pending_payment',
+    }, { caller: 'POST /missions/launch' });
 
     res.json({ clientSecret, paymentIntentId, pricing });
   } catch (err) {
@@ -279,46 +283,48 @@ router.patch('/:id', authenticate, async (req, res, next) => {
   try {
     const updates = req.body;
 
+    // If pricing-impacting fields change, recompute cost columns server-side.
     if (updates.respondentCount || updates.questions || updates.targeting || updates.targetingConfig) {
       const { data: existing } = await supabase
         .from('missions')
-        .select('questions, targeting, targeting_config, respondent_count')
+        .select('questions, targeting, respondent_count')
         .eq('id', req.params.id)
         .eq('user_id', req.user.id)
         .single();
 
       const respCount = updates.respondentCount || existing?.respondent_count || 100;
-      const finalTarget = updates.targeting || updates.targetingConfig || existing?.targeting || existing?.targeting_config || {};
+      const finalTarget = updates.targeting || updates.targetingConfig || existing?.targeting || {};
       const finalQs = updates.questions || existing?.questions || [];
       const pricing = calculateMissionPrice(respCount, deriveFilters(finalTarget), finalQs.length);
 
-      updates.price = pricing.total;
-      updates.pricing_breakdown = pricing;
       updates.total_price_usd = pricing.total;
       updates.base_cost_usd = pricing.baseCost;
       updates.targeting_surcharge_usd = pricing.targetingSurcharge;
       updates.extra_questions_cost_usd = pricing.extraQuestionsCost;
     }
 
-    const dbUpdates = {};
-    if (updates.title) dbUpdates.title = updates.title;
-    if (updates.brief) dbUpdates.brief = updates.brief;
-    if (updates.goalType) dbUpdates.goal_type = updates.goalType;
-    if (updates.missionStatement) dbUpdates.mission_statement = updates.missionStatement;
-    if (updates.questions) dbUpdates.questions = updates.questions;
-    if (updates.targeting || updates.targetingConfig) {
-      dbUpdates.targeting = updates.targeting || updates.targetingConfig;
-      dbUpdates.targeting_config = updates.targeting || updates.targetingConfig;
+    // Map client field names → column names; phantom columns are dropped by
+    // sanitizeMissionPatch (mission_statement, targeting_config, price,
+    // pricing_breakdown, updated_at — none of which exist in the schema).
+    const mapped = {};
+    if (updates.title) mapped.title = updates.title;
+    if (updates.brief || updates.missionStatement) {
+      mapped.brief = updates.brief || updates.missionStatement;
     }
-    if (updates.respondentCount) dbUpdates.respondent_count = updates.respondentCount;
-    if (updates.price != null) dbUpdates.price = updates.price;
-    if (updates.pricing_breakdown) dbUpdates.pricing_breakdown = updates.pricing_breakdown;
-    if (updates.total_price_usd != null) dbUpdates.total_price_usd = updates.total_price_usd;
-    if (updates.base_cost_usd != null) dbUpdates.base_cost_usd = updates.base_cost_usd;
-    if (updates.targeting_surcharge_usd != null) dbUpdates.targeting_surcharge_usd = updates.targeting_surcharge_usd;
-    if (updates.extra_questions_cost_usd != null) dbUpdates.extra_questions_cost_usd = updates.extra_questions_cost_usd;
-    if (updates.status) dbUpdates.status = updates.status;
-    dbUpdates.updated_at = new Date().toISOString();
+    if (updates.goalType) mapped.goal_type = updates.goalType;
+    if (updates.questions) mapped.questions = updates.questions;
+    if (updates.targeting || updates.targetingConfig) {
+      mapped.targeting = updates.targeting || updates.targetingConfig;
+    }
+    if (updates.respondentCount) mapped.respondent_count = updates.respondentCount;
+    if (updates.total_price_usd != null) mapped.total_price_usd = updates.total_price_usd;
+    if (updates.base_cost_usd != null) mapped.base_cost_usd = updates.base_cost_usd;
+    if (updates.targeting_surcharge_usd != null) mapped.targeting_surcharge_usd = updates.targeting_surcharge_usd;
+    if (updates.extra_questions_cost_usd != null) mapped.extra_questions_cost_usd = updates.extra_questions_cost_usd;
+    if (updates.status) mapped.status = updates.status;
+
+    const { patch: dbUpdates, rejected } = sanitizeMissionPatch(mapped);
+    if (rejected.length) logger.warn('PATCH /missions: dropped cols', { rejected });
 
     const { data, error } = await supabase
       .from('missions')
@@ -328,7 +334,15 @@ router.patch('/:id', authenticate, async (req, res, next) => {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      logger.error('PATCH /missions/:id failed', {
+        missionId: req.params.id,
+        error: error.message,
+        details: error.details,
+        patchKeys: Object.keys(dbUpdates),
+      });
+      throw error;
+    }
     res.json(data);
   } catch (err) {
     next(err);
@@ -422,11 +436,12 @@ router.post('/:id/generate-responses', authenticate, async (req, res, next) => {
  */
 router.delete('/:id', authenticate, async (req, res, next) => {
   try {
-    const { error } = await supabase
-      .from('missions')
-      .update({ status: 'archived', updated_at: new Date().toISOString() })
-      .eq('id', req.params.id)
-      .eq('user_id', req.user.id);
+    const { error } = await updateMission(
+      supabase,
+      req.params.id,
+      { status: 'archived' },
+      { caller: 'DELETE /missions/:id', scope: { user_id: req.user.id } },
+    );
     if (error) throw error;
     res.json({ success: true });
   } catch (err) {

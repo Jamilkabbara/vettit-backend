@@ -6,6 +6,7 @@ const emailService = require('../services/email');
 const supabase = require('../db/supabase');
 const { calculateMissionPrice, deriveFilters } = require('../utils/pricingEngine');
 const { runMission } = require('../jobs/runMission');
+const { updateMission } = require('../db/missionSchema');
 const logger = require('../utils/logger');
 
 /**
@@ -68,21 +69,19 @@ router.post('/create-intent', authenticate, async (req, res, next) => {
       pricingBreakdown: pricing,
     });
 
-    // Snapshot pricing onto the mission for audit
-    await supabase
-      .from('missions')
-      .update({
-        stripe_payment_intent_id: paymentIntentId,
-        base_cost_usd:            pricing.baseCost,
-        targeting_surcharge_usd:  pricing.targetingSurcharge,
-        extra_questions_cost_usd: pricing.extraQuestionsCost,
-        total_price_usd:          pricing.total,
-        promo_code:               promo?.code || null,
-        discount_usd:             pricing.discount,
-        pricing_breakdown:        pricing,
-        status:                   'pending_payment',
-      })
-      .eq('id', missionId);
+    // Snapshot pricing onto the mission for audit. Phantom columns
+    // (stripe_payment_intent_id, pricing_breakdown) are stripped by
+    // sanitizeMissionPatch — Stripe stores the PI id, and breakdown
+    // is reconstructable from the individual cost columns.
+    await updateMission(supabase, missionId, {
+      base_cost_usd:            pricing.baseCost,
+      targeting_surcharge_usd:  pricing.targetingSurcharge,
+      extra_questions_cost_usd: pricing.extraQuestionsCost,
+      total_price_usd:          pricing.total,
+      promo_code:               promo?.code || null,
+      discount_usd:             pricing.discount,
+      status:                   'pending_payment',
+    }, { caller: 'POST /payments/create-intent' });
 
     logger.info('Payment intent created', { missionId, amount: pricing.total });
 
@@ -123,15 +122,11 @@ router.post('/confirm', authenticate, async (req, res, next) => {
     const alreadyRunning = ['processing', 'completed', 'paid'].includes((mission.status || '').toLowerCase());
 
     if (!alreadyRunning) {
-      await supabase
-        .from('missions')
-        .update({
-          status: 'paid',
-          payment_status: 'paid',
-          paid_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', missionId);
+      // payment_status + updated_at columns don't exist — sanitizer strips.
+      await updateMission(supabase, missionId, {
+        status: 'paid',
+        paid_at: new Date().toISOString(),
+      }, { caller: 'POST /payments/confirm' });
 
       // Fire-and-forget: the synthetic audience pipeline
       setImmediate(() => {
@@ -152,9 +147,17 @@ router.post('/confirm', authenticate, async (req, res, next) => {
         name,
         invoiceData: {
           missionId,
-          missionStatement: mission.brief || mission.mission_statement || '',
-          respondentCount: mission.respondent_count,
-          ...(mission.pricing_breakdown || {}),
+          // `mission.mission_statement` used to exist; the column was
+          // dropped, so we read from `brief` only. Same for
+          // `pricing_breakdown` — reconstruct from cost columns.
+          missionStatement: mission.brief || mission.title || '',
+          respondentCount:  mission.respondent_count,
+          total:            Number(mission.total_price_usd) || 0,
+          baseCost:         Number(mission.base_cost_usd)   || 0,
+          targetingSurcharge: Number(mission.targeting_surcharge_usd) || 0,
+          extraQuestionsCost: Number(mission.extra_questions_cost_usd) || 0,
+          discount:           Number(mission.discount_usd) || 0,
+          promoCode:          mission.promo_code || null,
         },
       }).catch(e => logger.warn('Failed to send invoice email', e));
     } catch (_) {}

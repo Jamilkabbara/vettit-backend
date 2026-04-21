@@ -4,6 +4,7 @@ const { constructWebhookEvent } = require('../services/stripe');
 const supabase = require('../db/supabase');
 const logger = require('../utils/logger');
 const { runMission } = require('../jobs/runMission');
+const { updateMission } = require('../db/missionSchema');
 const emailService = require('../services/email');
 
 // Stripe webhooks need the raw body — this route is mounted BEFORE the JSON parser in app.js.
@@ -53,19 +54,19 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
       // ─ Mission payment ───────────────────────────────────
       const missionId = pi.metadata?.missionId;
       if (missionId) {
-        await supabase
-          .from('missions')
-          .update({
-            payment_status: 'paid',
-            status: 'paid',
-            paid_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', missionId);
+        // payment_status + updated_at columns don't exist in public.missions
+        // — sanitizer strips them. `status: 'paid'` is the canonical signal.
+        await updateMission(supabase, missionId, {
+          status: 'paid',
+          paid_at: new Date().toISOString(),
+        }, { caller: 'webhook:payment_intent.succeeded' });
         logger.info('Payment confirmed via webhook → triggering mission run', { missionId, amount: pi.amount });
 
         // Trigger the synthetic-audience pipeline as a fire-and-forget background job.
         // Stripe wants the webhook ack in <15s, so we don't await completion.
+        // This is the AUTHORITATIVE trigger — the frontend also pings
+        // /api/missions/:id/generate-responses as a belt-and-suspenders
+        // measure, and that endpoint is idempotent so a double-fire is safe.
         setImmediate(() => {
           runMission(missionId).catch(err => {
             logger.error('runMission failed from webhook', { missionId, err: err.message });
@@ -79,14 +80,14 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
       const pi = event.data.object;
       const missionId = pi.metadata?.missionId;
       if (missionId) {
-        await supabase
-          .from('missions')
-          .update({ payment_status: 'failed', status: 'failed', updated_at: new Date().toISOString() })
-          .eq('id', missionId);
+        await updateMission(supabase, missionId, {
+          status: 'failed',
+        }, { caller: 'webhook:payment_intent.payment_failed' });
 
-        // User-facing notification + email
+        // User-facing notification + email. `mission_statement` was dropped
+        // from schema; use `brief` or `title` for the email copy.
         const { data: mission } = await supabase
-          .from('missions').select('user_id, title, brief, mission_statement').eq('id', missionId).single();
+          .from('missions').select('user_id, title, brief').eq('id', missionId).single();
         if (mission?.user_id) {
           await supabase.from('notifications').insert({
             user_id: mission.user_id,
@@ -105,7 +106,7 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
               await emailService.sendPaymentFailedEmail({
                 to: user.email,
                 name,
-                missionStatement: mission.brief || mission.mission_statement || mission.title || '',
+                missionStatement: mission.brief || mission.title || '',
                 missionId,
                 reason: pi.last_payment_error?.message || '',
               });
