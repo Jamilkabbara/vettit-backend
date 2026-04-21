@@ -1,9 +1,26 @@
 const express = require('express');
+const { randomUUID } = require('crypto');
 const router = express.Router();
 const { authenticate, optionalAuthenticate } = require('../middleware/auth');
 const supabase = require('../db/supabase');
 const { calculateMissionPrice, deriveFilters } = require('../utils/pricingEngine');
+const { runMission } = require('../jobs/runMission');
 const logger = require('../utils/logger');
+
+// ── Generate-responses idempotency guard ──────────────────────────────
+// runMission is already triggered from /api/payments/confirm on successful
+// Stripe confirmation. The frontend's ActiveMissionPage *also* pings the
+// generate-responses endpoint on mount as a belt-and-suspenders measure
+// (webhooks can lag, the /confirm call can race with the nav, etc.).
+// We guard against double-fires so the mission doesn't get two parallel
+// persona-generation runs racing to insert into mission_responses.
+//
+// In-memory is sufficient: runMission itself flips missions.status → 'processing'
+// within a few ms of starting, so the DB becomes the persistent guard
+// after the first call. This Set only prevents sub-second re-triggers
+// from the same container.
+const activeRuns = new Set();
+const TERMINAL_OR_RUNNING = new Set(['processing', 'completed', 'paid', 'failed']);
 
 /**
  * GET /api/missions — list user's missions (ordered most-recent first).
@@ -313,6 +330,88 @@ router.patch('/:id', authenticate, async (req, res, next) => {
 
     if (error) throw error;
     res.json(data);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/missions/:id/generate-responses
+ *
+ * Fire-and-forget trigger for the synthetic-audience pipeline. Called
+ * by the ActiveMissionPage on mount so the generator runs even if the
+ * Stripe webhook is delayed or /api/payments/confirm hasn't reached us
+ * yet. Returns 202 immediately; all long work happens in the background.
+ *
+ * Idempotency: if the mission is already processing/completed/paid we
+ * return 202 with `status: 'already_running'` and DO NOT re-trigger.
+ * The in-memory activeRuns Set covers the sub-second window before
+ * runMission flips the DB status.
+ */
+router.post('/:id/generate-responses', authenticate, async (req, res, next) => {
+  try {
+    const missionId = req.params.id;
+
+    const { data: mission, error } = await supabase
+      .from('missions')
+      .select('id, user_id, status, respondent_count')
+      .eq('id', missionId)
+      .eq('user_id', req.user.id)
+      .single();
+
+    if (error || !mission) {
+      return res.status(404).json({ error: 'Mission not found' });
+    }
+
+    const currentStatus = (mission.status || 'draft').toLowerCase();
+
+    // Already in-flight or done — never re-trigger.
+    if (activeRuns.has(missionId) || TERMINAL_OR_RUNNING.has(currentStatus)) {
+      logger.info('generate-responses: idempotent skip', { missionId, currentStatus });
+      return res.status(202).json({
+        jobId: `mission-${missionId}`,
+        status: 'already_running',
+        missionStatus: currentStatus,
+      });
+    }
+
+    // Only allow kicking off runs from a paid state. We accept 'paid' above
+    // and also 'pending_payment' here so that if Stripe's webhook is late
+    // but the client already saw the confirmation, we still proceed — the
+    // frontend only calls this from ActiveMissionPage which is post-payment.
+    // Block 'draft' outright so nothing runs before payment.
+    if (currentStatus === 'draft') {
+      return res.status(400).json({
+        error: 'Mission has not been paid for yet',
+        missionStatus: currentStatus,
+      });
+    }
+
+    const jobId = randomUUID();
+    activeRuns.add(missionId);
+
+    setImmediate(() => {
+      runMission(missionId)
+        .catch((err) => {
+          logger.error('generate-responses: runMission failed', {
+            missionId,
+            jobId,
+            err: err.message,
+            stack: err.stack,
+          });
+        })
+        .finally(() => {
+          activeRuns.delete(missionId);
+        });
+    });
+
+    logger.info('generate-responses: queued', {
+      missionId,
+      jobId,
+      respondentCount: mission.respondent_count,
+    });
+
+    return res.status(202).json({ jobId, status: 'queued' });
   } catch (err) {
     next(err);
   }
