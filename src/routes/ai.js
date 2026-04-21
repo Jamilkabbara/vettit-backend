@@ -140,15 +140,82 @@ router.post('/refine-question', optionalAuthenticate, async (req, res, next) => 
 });
 
 // POST /api/ai/refine-description
+//
+// Refines a single survey question. The endpoint is named
+// "refine-description" for historical reasons — the frontend's
+// aiService.refineQuestion() has always POSTed here with the shape:
+//   { text, type, options, goal, context }
+// and expects back:
+//   { text, type?, options? }
+//
+// We also accept the spec'd shape from PROMPT_3 (question/goal_type)
+// and the legacy shape (rawDescription/goal) so older clients keep
+// working while new ones migrate.
+//
+// Cheap heuristic first: if the text already ends with a refinement
+// marker we added in the frontend's local fallback ("— and why?",
+// "— elaborate"), return it as-is with { noChangeNeeded: true }. This
+// avoids spending tokens re-refining an already-refined question.
+const REFINE_MARKERS = [' — and why', ' — elaborate', '— and why', '— elaborate'];
+
 router.post('/refine-description', optionalAuthenticate, async (req, res, next) => {
   try {
-    const { rawDescription, goal } = req.body;
-    if (!rawDescription) return res.status(400).json({ error: 'rawDescription is required' });
+    const body = req.body || {};
 
-    const result = await ai.refineMissionDescription({ rawDescription, goal });
-    res.json(result);
+    // Normalise across the three accepted shapes.
+    const questionText =
+      (typeof body.text === 'string' && body.text) ||
+      (typeof body.question === 'string' && body.question) ||
+      (typeof body.rawDescription === 'string' && body.rawDescription) ||
+      '';
+    const questionType = typeof body.type === 'string' ? body.type : undefined;
+    const questionOptions = Array.isArray(body.options) ? body.options : undefined;
+    const goal = body.goal || body.goal_type || null;
+    const context = typeof body.context === 'string' ? body.context : undefined;
+
+    if (!questionText || questionText.trim().length < 3) {
+      return res.status(400).json({ error: 'question text is required' });
+    }
+
+    // Heuristic: already-refined text (ends with our fallback markers)
+    // short-circuits with noChangeNeeded so the caller surfaces a
+    // "nothing to improve" toast instead of paying for another call.
+    const trimmed = questionText.trim();
+    if (REFINE_MARKERS.some((m) => trimmed.includes(m))) {
+      return res.json({
+        text: trimmed,
+        refined: trimmed,
+        type: questionType,
+        options: questionOptions,
+        noChangeNeeded: true,
+      });
+    }
+
+    // Delegate to the existing claudeAI.refineQuestion helper (Sonnet).
+    // It returns { refinedText, explanation } — map to the frontend shape.
+    const result = await ai.refineQuestion({
+      questionText: trimmed,
+      questionType: questionType || 'single',
+      missionContext: context || (goal ? `Goal: ${goal}` : ''),
+    });
+
+    const refinedText =
+      typeof result?.refinedText === 'string' && result.refinedText.trim().length > 0
+        ? result.refinedText.trim()
+        : trimmed;
+
+    res.json({
+      text: refinedText,
+      refined: refinedText,
+      type: questionType,
+      options: questionOptions,
+      explanation: result?.explanation,
+    });
   } catch (err) {
-    next(err);
+    logger.warn('refine-description failed', { err: err.message });
+    // Non-fatal: frontend has a local fallback, but surface the error
+    // so it can log the upstream failure and route to the fallback.
+    res.status(500).json({ error: 'Refinement unavailable' });
   }
 });
 
