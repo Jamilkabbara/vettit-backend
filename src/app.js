@@ -28,12 +28,28 @@ const app = express();
 app.use(helmet());
 
 // ─── CORS ────────────────────────────────────────────────────
+// Accepts:
+//  - Production: https://vettit.ai, https://www.vettit.ai
+//  - Local dev: http://localhost:{5173,3000}
+//  - Vercel previews: https://vett-platform-*-jamil-kabbaras-projects.vercel.app
+//  - FRONTEND_URL env override (optional escape hatch)
+const VERCEL_PREVIEW_RE = /^https:\/\/vett-platform-.*-jamil-kabbaras-projects\.vercel\.app$/;
+const STATIC_ORIGINS = [
+  'https://vettit.ai',
+  'https://www.vettit.ai',
+  'http://localhost:5173',
+  'http://localhost:3000',
+];
+if (process.env.FRONTEND_URL) STATIC_ORIGINS.push(process.env.FRONTEND_URL);
+
 app.use(cors({
-  origin: [
-    process.env.FRONTEND_URL,
-    'http://localhost:5173',
-    'http://localhost:3000',
-  ],
+  origin: (origin, cb) => {
+    // Non-browser or same-origin requests have no Origin header — always allow.
+    if (!origin) return cb(null, true);
+    if (STATIC_ORIGINS.includes(origin)) return cb(null, true);
+    if (VERCEL_PREVIEW_RE.test(origin)) return cb(null, true);
+    return cb(new Error(`CORS blocked: ${origin}`));
+  },
   credentials: true,
 }));
 
