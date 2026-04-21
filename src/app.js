@@ -21,6 +21,7 @@ const notificationRoutes = require('./routes/notifications');
 const adminRoutes = require('./routes/admin');
 const blogRoutes = require('./routes/blog');
 const chatRoutes = require('./routes/chat');
+const pricingRoutes = require('./routes/pricing');
 
 const app = express();
 
@@ -98,6 +99,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/blog', blogRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/pricing', pricingRoutes);
 
 // ─── Health Check ────────────────────────────────────────────
 app.get('/health', (req, res) => {
