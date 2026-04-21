@@ -30,6 +30,7 @@ const MODEL_ROUTING = {
   chat_admin_crm: 'claude-haiku-4-5',
   targeting_suggest: 'claude-sonnet-4-6',
   question_refine:   'claude-haiku-4-5',
+  adaptive_clarify:  'claude-haiku-4-5',
 };
 
 /**
