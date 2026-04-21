@@ -270,4 +270,150 @@ Return ONLY this JSON:
   } catch (err) { next(err); }
 });
 
+// -------------------------------------------------------------------------
+// Mission management actions (P2)
+// -------------------------------------------------------------------------
+
+/**
+ * DELETE /api/admin/missions/:id
+ * Hard-delete a mission + its responses/chat/notifications (cascades via FK).
+ */
+router.delete('/missions/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    // Delete child rows first (FK constraints)
+    await supabase.from('mission_responses').delete().eq('mission_id', id);
+    await supabase.from('chat_sessions').delete().eq('mission_id', id);
+    await supabase.from('notifications').delete().eq('mission_id', id);
+    const { error } = await supabase.from('missions').delete().eq('id', id);
+    if (error) throw error;
+    logger.info('Admin deleted mission', { missionId: id, adminEmail: req.user.email });
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+/**
+ * PATCH /api/admin/missions/:id/force-complete
+ * Set mission status = completed + stamp completed_at (for stuck missions).
+ */
+router.patch('/missions/:id/force-complete', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { error } = await supabase
+      .from('missions')
+      .update({ status: 'completed', completed_at: new Date().toISOString() })
+      .eq('id', id);
+    if (error) throw error;
+    logger.info('Admin force-completed mission', { missionId: id, adminEmail: req.user.email });
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// -------------------------------------------------------------------------
+// CRM lead management (P2 + P3)
+// -------------------------------------------------------------------------
+
+/**
+ * POST /api/admin/crm — create a lead from the admin panel.
+ */
+router.post('/crm', async (req, res, next) => {
+  try {
+    const { name, email, company, stage = 'new_lead', notes } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    const { data, error } = await supabase
+      .from('crm_leads')
+      .insert({ name, email, company, stage, notes, source: { channel: 'admin_panel' } })
+      .select().single();
+    if (error) throw error;
+    res.status(201).json(data);
+  } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/admin/crm/export — CSV export of all leads.
+ */
+router.get('/crm/export', async (req, res, next) => {
+  try {
+    const { data, error } = await supabase
+      .from('crm_leads')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    const cols = ['id','name','email','company','stage','ltv_usd','health','notes','created_at','last_activity_at'];
+    const header = cols.join(',');
+    const rows = (data || []).map(r =>
+      cols.map(c => JSON.stringify(r[c] ?? '')).join(',')
+    );
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="crm_leads.csv"');
+    res.send([header, ...rows].join('\n'));
+  } catch (err) { next(err); }
+});
+
+// -------------------------------------------------------------------------
+// Blog management (P4)
+// -------------------------------------------------------------------------
+
+/** GET /api/admin/blog — all posts (published + drafts) */
+router.get('/blog', async (req, res, next) => {
+  try {
+    const { data, error } = await supabase
+      .from('blog_posts')
+      .select('id,slug,title,excerpt,tag,emoji,published,published_at,created_at,views_count')
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) { next(err); }
+});
+
+/** POST /api/admin/blog — create a new post */
+router.post('/blog', async (req, res, next) => {
+  try {
+    const { title, slug, excerpt, body_markdown, tag, emoji, cover_image_url, published } = req.body;
+    if (!title || !slug) return res.status(400).json({ error: 'title and slug are required' });
+    const now = new Date().toISOString();
+    const { data, error } = await supabase
+      .from('blog_posts')
+      .insert({
+        title, slug, excerpt, body_markdown, tag, emoji, cover_image_url,
+        published: published ?? false,
+        published_at: published ? now : null,
+        author_id: req.user.id,
+        auto_generated: false,
+      })
+      .select().single();
+    if (error) throw error;
+    res.status(201).json(data);
+  } catch (err) { next(err); }
+});
+
+/** PATCH /api/admin/blog/:id — update post fields */
+router.patch('/blog/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { title, slug, excerpt, body_markdown, tag, emoji, cover_image_url, published } = req.body;
+    const updates = { title, slug, excerpt, body_markdown, tag, emoji, cover_image_url, updated_at: new Date().toISOString() };
+    if (published !== undefined) {
+      updates.published = published;
+      updates.published_at = published ? new Date().toISOString() : null;
+    }
+    // Strip undefined
+    Object.keys(updates).forEach(k => updates[k] === undefined && delete updates[k]);
+    const { data, error } = await supabase
+      .from('blog_posts').update(updates).eq('id', id).select().single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
+/** DELETE /api/admin/blog/:id */
+router.delete('/blog/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { error } = await supabase.from('blog_posts').delete().eq('id', id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
 module.exports = router;
