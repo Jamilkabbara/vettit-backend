@@ -1,8 +1,25 @@
-const Anthropic = require('@anthropic-ai/sdk');
+const { callClaude, extractJSON } = require('./ai/anthropic');
 const logger = require('../utils/logger');
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const MODEL = 'claude-sonnet-4-5';
+/**
+ * claudeAI.js — Pass 5C upgrade.
+ *
+ * All functions now route through callClaude() from ./ai/anthropic instead
+ * of creating a direct Anthropic client. Benefits:
+ *   - Model routing via MODEL_ROUTING table (no more hardcoded 'claude-sonnet-4-5')
+ *   - Per-call cost tracking logged to the ai_calls Supabase table
+ *   - Consistent extractJSON() parsing (no more inline /\{[\s\S]*\}/ regexes)
+ *   - Latency and token usage automatically captured
+ *
+ * MODEL_ROUTING assignments:
+ *   survey_gen       → claude-sonnet-4-6  (complex multi-field JSON generation)
+ *   question_refine  → claude-haiku-4-5   (short, fast, single-question rewrites)
+ *   targeting_suggest → claude-sonnet-4-6 (multi-dimension targeting JSON)
+ *   results_analysis → claude-sonnet-4-6  (long analytical report generation)
+ *
+ * generateSurvey and analyseResults use inline prompts — model is
+ * 'survey_gen' and 'results_analysis' respectively.
+ */
 
 /**
  * Generate a complete survey from a user's mission description
@@ -59,17 +76,13 @@ Rules:
   If description mentions Dubai/UAE → use "AE". London/UK → "GB". USA/New York → "US"
 - suggestedRespondentCount: recommend 100-500 based on specificity of targeting`;
 
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 2000,
+  const response = await callClaude({
+    callType: 'survey_gen',
     messages: [{ role: 'user', content: prompt }],
+    maxTokens: 2000,
   });
 
-  const text = response.content[0].text.trim();
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('Claude returned invalid JSON for survey generation');
-
-  return JSON.parse(jsonMatch[0]);
+  return extractJSON(response.text);
 }
 
 /**
@@ -88,17 +101,13 @@ Return ONLY a JSON object:
   "explanation": "One sentence explaining what you improved and why"
 }`;
 
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 500,
+  const response = await callClaude({
+    callType: 'question_refine',
     messages: [{ role: 'user', content: prompt }],
+    maxTokens: 500,
   });
 
-  const text = response.content[0].text.trim();
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('Claude returned invalid JSON for question refinement');
-
-  return JSON.parse(jsonMatch[0]);
+  return extractJSON(response.text);
 }
 
 /**
@@ -110,24 +119,20 @@ async function refineMissionDescription({ rawDescription, goal }) {
 Goal type: ${goal}
 Their description: "${rawDescription}"
 
-Rewrite it as a clear, specific research brief in 2-3 sentences. Make it professional but accessible. 
+Rewrite it as a clear, specific research brief in 2-3 sentences. Make it professional but accessible.
 Return ONLY a JSON object:
 {
   "refined": "The improved description",
   "keyInsights": ["Key thing they want to learn 1", "Key thing they want to learn 2"]
 }`;
 
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 500,
+  const response = await callClaude({
+    callType: 'question_refine',
     messages: [{ role: 'user', content: prompt }],
+    maxTokens: 500,
   });
 
-  const text = response.content[0].text.trim();
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('Claude returned invalid JSON for description refinement');
-
-  return JSON.parse(jsonMatch[0]);
+  return extractJSON(response.text);
 }
 
 /**
@@ -181,17 +186,13 @@ Return ONLY a JSON object with this structure:
   ]
 }`;
 
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 3000,
+  const response = await callClaude({
+    callType: 'results_analysis',
     messages: [{ role: 'user', content: prompt }],
+    maxTokens: 3000,
   });
 
-  const text = response.content[0].text.trim();
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('Claude returned invalid JSON for results analysis');
-
-  return JSON.parse(jsonMatch[0]);
+  return extractJSON(response.text);
 }
 
 /**
@@ -227,17 +228,13 @@ Return ONLY a JSON object. Use proper ISO 2-letter country codes (AE=UAE/Dubai, 
   "respondentCountReasoning": "Why this sample size is statistically appropriate"
 }`;
 
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 1000,
+  const response = await callClaude({
+    callType: 'targeting_suggest',
     messages: [{ role: 'user', content: prompt }],
+    maxTokens: 1000,
   });
 
-  const text = response.content[0].text.trim();
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('Claude returned invalid JSON for targeting suggestions');
-
-  return JSON.parse(jsonMatch[0]);
+  return extractJSON(response.text);
 }
 
 module.exports = {

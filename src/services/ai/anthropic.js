@@ -31,6 +31,7 @@ const MODEL_ROUTING = {
   targeting_suggest: 'claude-sonnet-4-6',
   question_refine:   'claude-haiku-4-5',
   adaptive_clarify:  'claude-haiku-4-5',
+  results_analysis:  'claude-sonnet-4-6',
 };
 
 /**
