@@ -168,4 +168,70 @@ router.post('/confirm', authenticate, async (req, res, next) => {
   }
 });
 
+/**
+ * POST /api/payments/free-launch
+ * Used by the VETT100 promo path (and future free-tier grants) to launch a
+ * mission without going through Stripe. Validates server-side that the promo
+ * code is the internal launch code, then sets status='paid' and fires
+ * runMission() — exactly the same way /confirm does.
+ *
+ * Previously the frontend VETT100 path only called activateMission() (a bare
+ * DB write) without hitting the backend, so runMission() never fired and
+ * free-launch missions never generated AI results.
+ */
+const FREE_LAUNCH_CODE = process.env.FREE_LAUNCH_CODE || 'VETT100';
+
+router.post('/free-launch', authenticate, async (req, res, next) => {
+  try {
+    const { missionId, promoCode } = req.body;
+    if (!missionId || !promoCode) {
+      return res.status(400).json({ error: 'missionId and promoCode are required' });
+    }
+    if (!missionId) return res.status(400).json({ error: 'missionId is required' });
+
+    if (promoCode.toUpperCase() !== FREE_LAUNCH_CODE.toUpperCase()) {
+      return res.status(403).json({ error: 'Invalid promo code' });
+    }
+
+    const { data: mission } = await supabase
+      .from('missions')
+      .select('id, status, user_id')
+      .eq('id', missionId)
+      .eq('user_id', req.user.id)
+      .single();
+
+    if (!mission) return res.status(404).json({ error: 'Mission not found' });
+
+    const status = (mission.status || '').toLowerCase();
+
+    // Idempotency: already running or done — return success without re-triggering
+    if (['processing', 'completed', 'paid'].includes(status)) {
+      return res.json({ success: true, missionId, status: 'already_running' });
+    }
+
+    // Accept draft, pending_payment, or active (frontend may have pre-flipped it)
+    const launchable = ['draft', 'pending_payment', 'active'].includes(status);
+    if (!launchable) {
+      return res.status(400).json({ error: `Mission cannot be free-launched from status: ${status}` });
+    }
+
+    await updateMission(supabase, missionId, {
+      status:    'paid',
+      paid_at:   new Date().toISOString(),
+      promo_code: promoCode.toUpperCase(),
+    }, { caller: 'POST /payments/free-launch' });
+
+    setImmediate(() => {
+      runMission(missionId).catch(err => {
+        logger.error('runMission failed from /free-launch', { missionId, err: err.message });
+      });
+    });
+
+    logger.info('Free launch triggered', { missionId, promoCode: promoCode.toUpperCase() });
+    res.json({ success: true, missionId, status: 'processing' });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

@@ -32,11 +32,35 @@ async function runMission(missionId) {
     return;
   }
 
+  // ─── Idempotency guard ────────────────────────────────────────────────────
+  // Both /api/payments/confirm and the payment_intent.succeeded webhook set
+  // status='paid' before calling runMission(). Without this guard, a race
+  // between the two paths (or two rapid webhook deliveries) would trigger
+  // duplicate AI synthesis jobs, doubling cost for the same mission.
+  //
+  // Strategy: atomic conditional UPDATE — only succeeds if the row is still
+  // in 'paid' state. Supabase/PostgREST returns the affected rows; if the
+  // slice is empty, another worker claimed the mission first.
+  const SKIP_STATUSES = ['processing', 'completed', 'failed'];
+  if (SKIP_STATUSES.includes(mission.status)) {
+    logger.info('Mission run: idempotency skip', { missionId, status: mission.status });
+    return { skipped: true, reason: `already ${mission.status}` };
+  }
+
+  const { data: claimed, error: claimError } = await supabase
+    .from('missions')
+    .update({ status: 'processing', started_at: new Date().toISOString() })
+    .eq('id', missionId)
+    .eq('status', 'paid')   // only claim if another worker hasn't already
+    .select('id');
+
+  if (claimError || !claimed || claimed.length === 0) {
+    logger.info('Mission run: idempotency claim lost', { missionId, claimError });
+    return { skipped: true, reason: 'claim failed — another worker got it' };
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   try {
-    await updateMission(supabase, missionId, {
-      status: 'processing',
-      started_at: new Date().toISOString(),
-    }, { caller: 'runMission: start' });
 
     // 2. Generate personas
     const targetCount = mission.respondent_count || 100;
