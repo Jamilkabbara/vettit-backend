@@ -416,4 +416,77 @@ router.delete('/blog/:id', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ── Promo Codes ──────────────────────────────────────────────────────────────
+
+/** GET /api/admin/promos — list all promo codes */
+router.get('/promos', async (req, res, next) => {
+  try {
+    const { data, error } = await supabase
+      .from('promo_codes')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) { next(err); }
+});
+
+/** POST /api/admin/promos — create a promo code */
+router.post('/promos', async (req, res, next) => {
+  try {
+    const { code, type, value, description, active, max_uses, expires_at } = req.body;
+    if (!code || !type) return res.status(400).json({ error: 'code and type are required' });
+    const validTypes = ['percentage', 'flat', 'free'];
+    if (!validTypes.includes(type)) return res.status(400).json({ error: `type must be one of: ${validTypes.join(', ')}` });
+
+    const { data, error } = await supabase
+      .from('promo_codes')
+      .insert({
+        code: code.toUpperCase().trim(),
+        type,
+        value: Number(value || 0),
+        description: description || null,
+        active: active !== false,
+        max_uses: max_uses || null,
+        expires_at: expires_at || null,
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    res.status(201).json(data);
+  } catch (err) { next(err); }
+});
+
+/** PATCH /api/admin/promos/:code — update a promo code */
+router.patch('/promos/:code', async (req, res, next) => {
+  try {
+    const { code } = req.params;
+    const updates = {};
+    if (req.body.description !== undefined) updates.description = req.body.description;
+    if (req.body.active      !== undefined) updates.active      = req.body.active;
+    if (req.body.max_uses    !== undefined) updates.max_uses    = req.body.max_uses;
+    if (req.body.expires_at  !== undefined) updates.expires_at  = req.body.expires_at;
+    if (req.body.value       !== undefined) updates.value       = Number(req.body.value);
+    if (req.body.type        !== undefined) updates.type        = req.body.type;
+
+    const { data, error } = await supabase
+      .from('promo_codes')
+      .update(updates)
+      .eq('code', code.toUpperCase())
+      .select()
+      .single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
+/** DELETE /api/admin/promos/:code — delete a promo code */
+router.delete('/promos/:code', async (req, res, next) => {
+  try {
+    const { code } = req.params;
+    const { error } = await supabase.from('promo_codes').delete().eq('code', code.toUpperCase());
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
 module.exports = router;

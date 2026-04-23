@@ -175,26 +175,39 @@ router.post('/confirm', authenticate, async (req, res, next) => {
 /**
  * POST /api/payments/free-launch
  * Used by the VETT100 promo path (and future free-tier grants) to launch a
- * mission without going through Stripe. Validates server-side that the promo
- * code is the internal launch code, then sets status='paid' and fires
+ * mission without going through Stripe. Validates server-side via DB that the
+ * promo code has type='free' and is active, then sets status='paid' and fires
  * runMission() — exactly the same way /confirm does.
  *
  * Previously the frontend VETT100 path only called activateMission() (a bare
  * DB write) without hitting the backend, so runMission() never fired and
  * free-launch missions never generated AI results.
  */
-const FREE_LAUNCH_CODE = process.env.FREE_LAUNCH_CODE || 'VETT100';
-
 router.post('/free-launch', authenticate, async (req, res, next) => {
   try {
     const { missionId, promoCode } = req.body;
     if (!missionId || !promoCode) {
       return res.status(400).json({ error: 'missionId and promoCode are required' });
     }
-    if (!missionId) return res.status(400).json({ error: 'missionId is required' });
 
-    if (promoCode.toUpperCase() !== FREE_LAUNCH_CODE.toUpperCase()) {
-      return res.status(403).json({ error: 'Invalid promo code' });
+    // DB-backed validation: look up the code and confirm it's a free-type code
+    const { data: promo } = await supabase
+      .from('promo_codes')
+      .select('*')
+      .eq('code', promoCode.toUpperCase().trim())
+      .eq('active', true)
+      .single();
+
+    if (!promo) {
+      return res.status(403).json({ error: 'Invalid or inactive promo code' });
+    }
+    if (promo.type !== 'free') {
+      return res.status(403).json({ error: 'This promo code cannot be used for free launch' });
+    }
+    const expired   = promo.expires_at && new Date(promo.expires_at) < new Date();
+    const exhausted = promo.max_uses && promo.uses_count >= promo.max_uses;
+    if (expired || exhausted) {
+      return res.status(403).json({ error: 'Promo code is no longer valid' });
     }
 
     const { data: mission } = await supabase
@@ -224,6 +237,12 @@ router.post('/free-launch', authenticate, async (req, res, next) => {
       paid_at:   new Date().toISOString(),
       promo_code: promoCode.toUpperCase(),
     }, { caller: 'POST /payments/free-launch' });
+
+    // Increment uses_count on the promo row (best-effort)
+    supabase.from('promo_codes')
+      .update({ uses_count: (promo.uses_count || 0) + 1 })
+      .eq('code', promo.code)
+      .then(() => {}).catch(() => {});
 
     setImmediate(() => {
       runMission(missionId).catch(err => {
