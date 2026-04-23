@@ -96,14 +96,41 @@ async function runMission(missionId) {
       if (insErr) logger.warn('Mission run: responses insert chunk failed', { missionId, err: insErr });
     }
 
-    // 5. Synthesize insights
-    const insights = await synthesizeInsights(mission, responses);
+    // 5. Synthesize insights (wrapped so a summary failure never blocks completion)
+    // Persona responses are expensive and cannot be cheaply regenerated.
+    // Summary CAN be regenerated later from stored responses, so we always
+    // mark the mission completed regardless of whether analysis succeeds.
+    let insights = null;
+    try {
+      insights = await synthesizeInsights(mission, responses);
+    } catch (analysisErr) {
+      logger.error('Mission run: synthesizeInsights failed (non-fatal)', {
+        missionId,
+        err: analysisErr.message,
+        stack: analysisErr.stack,
+      });
+      // Store the error in mission_assets.analysis_error for later inspection/retry.
+      const { data: existing } = await supabase
+        .from('missions')
+        .select('mission_assets')
+        .eq('id', missionId)
+        .single();
+      await supabase.from('missions').update({
+        mission_assets: {
+          ...(existing?.mission_assets || {}),
+          analysis_error: {
+            message: analysisErr.message,
+            ts: new Date().toISOString(),
+          },
+        },
+      }).eq('id', missionId);
+    }
 
-    // 6. Mark complete
+    // 6. Mark complete — always, regardless of summary outcome
     await updateMission(supabase, missionId, {
       status: 'completed',
       completed_at: new Date().toISOString(),
-      executive_summary: insights.executive_summary || null,
+      executive_summary: insights?.executive_summary || null,
       insights: insights || null,
     }, { caller: 'runMission: complete' });
 
