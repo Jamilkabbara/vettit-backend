@@ -61,26 +61,36 @@ router.patch('/', authenticate, async (req, res, next) => {
 // GET /api/profile/invoices — get all paid missions as invoices
 router.get('/invoices', authenticate, async (req, res, next) => {
   try {
+    // Canonical column names as of 2026-04-23 schema audit.
+    // Removed: mission_statement (→ brief/title), price (→ total_price_usd),
+    //          pricing_breakdown (→ individual cost columns), launched_at (→ paid_at),
+    //          stripe_payment_intent_id (not stored on missions; Stripe is source of truth).
     const { data, error } = await supabase
       .from('missions')
-      .select('id, mission_statement, price, pricing_breakdown, respondent_count, launched_at, status, stripe_payment_intent_id')
+      .select('id, title, brief, total_price_usd, base_cost_usd, targeting_surcharge_usd, extra_questions_cost_usd, discount_usd, promo_code, respondent_count, paid_at, status')
       .eq('user_id', req.user.id)
-      .in('status', ['active', 'completed'])
-      .not('launched_at', 'is', null)
-      .order('launched_at', { ascending: false });
+      .in('status', ['paid', 'completed'])
+      .not('paid_at', 'is', null)
+      .order('paid_at', { ascending: false });
 
     if (error) throw error;
 
-    const invoices = data.map(m => ({
-      invoiceId: `VTT-${m.id.substring(0, 8).toUpperCase()}`,
-      missionId: m.id,
-      missionStatement: m.mission_statement,
-      amount: m.price,
-      breakdown: m.pricing_breakdown,
+    const invoices = (data || []).map(m => ({
+      invoiceId:        `VTT-${m.id.substring(0, 8).toUpperCase()}`,
+      missionId:        m.id,
+      missionStatement: m.brief || m.title || '',
+      amount:           Number(m.total_price_usd) || 0,
+      breakdown: {
+        base:               Number(m.base_cost_usd)              || 0,
+        targetingSurcharge: Number(m.targeting_surcharge_usd)    || 0,
+        extraQuestionsCost: Number(m.extra_questions_cost_usd)   || 0,
+        discount:           Number(m.discount_usd)               || 0,
+        promoCode:          m.promo_code                         || null,
+      },
       respondentCount: m.respondent_count,
-      date: m.launched_at,
-      status: 'paid',
-      paymentIntentId: m.stripe_payment_intent_id,
+      date:            m.paid_at,
+      status:          'paid',
+      paymentIntentId: null, // not stored on missions; Stripe is the record of truth
     }));
 
     res.json(invoices);

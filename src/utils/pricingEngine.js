@@ -169,7 +169,9 @@ function calculateMissionPrice({
   // 6. Promo discount
   let discount = 0;
   if (promoCode && promoCode.active) {
-    if (promoCode.type === 'percentage') {
+    if (promoCode.type === 'free') {
+      discount = subtotal;                                           // 100% off
+    } else if (promoCode.type === 'percentage') {
       discount = round2(subtotal * (promoCode.value / 100));
     } else if (promoCode.type === 'flat' || promoCode.type === 'fixed') {
       discount = round2(Math.min(promoCode.value, subtotal));

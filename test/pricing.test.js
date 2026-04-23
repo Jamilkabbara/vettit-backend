@@ -193,6 +193,66 @@ describe('targeting surcharges', () => {
   });
 });
 
+// ── Promo code discounts ──────────────────────────────────────────────────────
+
+describe('promo code discounts', () => {
+  const base = { respondentCount: 10, questionCount: 5, countries: ['AE'] }; // $35 base
+
+  it('type=free → total is $0, discount equals full subtotal', () => {
+    const { total, discount } = calculateMissionPrice({
+      ...base,
+      promoCode: { code: 'VETT100', type: 'free', value: 100, active: true },
+    });
+    expect(total).toBe(0);
+    expect(discount).toBe(35.00);
+  });
+
+  it('type=percentage 20% → total is $28, discount is $7', () => {
+    const { total, discount } = calculateMissionPrice({
+      ...base,
+      promoCode: { code: 'VETT20', type: 'percentage', value: 20, active: true },
+    });
+    expect(total).toBe(28.00);
+    expect(discount).toBe(7.00);
+  });
+
+  it('type=flat $10 → total is $25, discount is $10', () => {
+    const { total, discount } = calculateMissionPrice({
+      ...base,
+      promoCode: { code: 'FRIEND10', type: 'flat', value: 10, active: true },
+    });
+    expect(total).toBe(25.00);
+    expect(discount).toBe(10.00);
+  });
+
+  it('inactive promo → no discount applied', () => {
+    const { total, discount } = calculateMissionPrice({
+      ...base,
+      promoCode: { code: 'DEAD', type: 'percentage', value: 50, active: false },
+    });
+    expect(total).toBe(35.00);
+    expect(discount).toBe(0);
+  });
+
+  it('flat discount larger than total → total is $0, discount capped at subtotal', () => {
+    const { total, discount } = calculateMissionPrice({
+      ...base,
+      promoCode: { code: 'BIG', type: 'flat', value: 500, active: true },
+    });
+    expect(total).toBe(0);
+    expect(discount).toBe(35.00);
+  });
+
+  it('totalCents is 0 for free promo (integer)', () => {
+    const { totalCents } = calculateMissionPrice({
+      ...base,
+      promoCode: { code: 'VETT100', type: 'free', value: 100, active: true },
+    });
+    expect(totalCents).toBe(0);
+    expect(Number.isInteger(totalCents)).toBe(true);
+  });
+});
+
 // ── totalCents is always integer ──────────────────────────────────────────────
 
 describe('totalCents is always an integer', () => {
