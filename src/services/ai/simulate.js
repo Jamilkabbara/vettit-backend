@@ -67,7 +67,36 @@ Return ONLY this JSON:
 }
 
 /**
+ * Check whether a persona's answer to a screening question passes the gate.
+ *
+ * @param {object} question  — the question object (may have screening_continue_on)
+ * @param {*}      answer    — the simulated answer
+ * @returns {boolean}  true = passes (continue), false = screened out
+ */
+function passesScreening(question, answer) {
+  if (!question.isScreening) return true; // non-screening questions always pass
+
+  const continueOn = Array.isArray(question.screening_continue_on)
+    ? question.screening_continue_on
+    : question.qualifyingAnswer
+      ? [question.qualifyingAnswer]
+      : null;
+
+  if (!continueOn || continueOn.length === 0) return true; // no gate defined → pass
+
+  const norm = (v) => String(v ?? '').trim().toLowerCase();
+  const answerNorm = norm(answer);
+  return continueOn.some(c => norm(c) === answerNorm);
+}
+
+/**
  * Simulate responses for all personas with capped concurrency.
+ *
+ * Screening gate (Part D.2): after simulation, personas that fail a
+ * screening question have their non-screening responses discarded and
+ * are flagged with `screened_out: true` in their persona_profile so
+ * the results page can build a funnel card.
+ *
  * @param {Array}  personas
  * @param {Array}  questions
  * @param {object} mission
@@ -79,17 +108,45 @@ async function simulateAllResponses(personas, questions, mission, onProgress) {
   const out = [];
   let completed = 0;
 
+  // Pre-index questions by id for O(1) screening lookups.
+  const questionById = Object.fromEntries((questions || []).map(q => [q.id, q]));
+
   for (let i = 0; i < personas.length; i += CONCURRENCY) {
     const wave = personas.slice(i, i + CONCURRENCY).map(async (persona) => {
       const responses = await simulateResponses(persona, questions, mission);
+
+      // ── Screening gate ──────────────────────────────────────────────────
+      // Walk through responses in order. Once a screening question is
+      // answered with a non-qualifying response, mark the persona as
+      // screened out and discard all subsequent answers.
+      let screenedOut = false;
+      const keptResponses = [];
+
       for (const r of responses) {
+        const q = questionById[r.question_id];
+        if (!screenedOut) {
+          keptResponses.push(r);
+          if (q && q.isScreening && !passesScreening(q, r.answer)) {
+            screenedOut = true; // stop keeping further responses
+          }
+        }
+        // Screened-out responses after the gate are intentionally dropped.
+      }
+      // ───────────────────────────────────────────────────────────────────
+
+      const personaProfile = screenedOut
+        ? { ...persona, screened_out: true }
+        : persona;
+
+      for (const r of keptResponses) {
         out.push({
           persona_id:      persona.id,
-          persona_profile: persona,
+          persona_profile: personaProfile,
           question_id:     r.question_id,
           answer:          r.answer,
         });
       }
+
       completed += 1;
       if (onProgress) onProgress(completed, personas.length);
     });

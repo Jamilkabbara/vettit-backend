@@ -142,7 +142,7 @@ async function runMission(missionId) {
       type:    'mission_complete',
       title:   `${mission.title || 'Your mission'} results are ready`,
       body:    insights.executive_summary?.slice(0, 140) || 'Your synthetic audience report is ready to review.',
-      link:    `/results?missionId=${missionId}`,
+      link:    `/results/${missionId}`,
     });
 
     // 8. Email (best-effort)
@@ -171,7 +171,7 @@ async function runMission(missionId) {
       type:    'mission_failed',
       title:   'Mission could not complete',
       body:    'We hit an error processing your mission. Our team has been notified.',
-      link:    `/results?missionId=${missionId}`,
+      link:    `/results/${missionId}`,
     }).then(() => {}).catch(() => {});
   }
 }

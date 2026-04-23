@@ -28,11 +28,41 @@ async function loadMissionForExport(missionId, userId) {
     .select('persona_id, persona_profile, question_id, answer')
     .eq('mission_id', missionId);
 
+  const allResponses = responses || [];
+
+  // ── Screening funnel ───────────────────────────────────────────────────────
+  // Compute from persona_profile.screened_out flag set by simulate.js (D.2).
+  const seenPersonas = new Map();  // persona_id → screened_out bool
+  for (const r of allResponses) {
+    if (!seenPersonas.has(r.persona_id)) {
+      const profile = r.persona_profile || {};
+      seenPersonas.set(r.persona_id, Boolean(profile.screened_out));
+    }
+  }
+  const totalPersonas   = seenPersonas.size;
+  const screenedOutCount = [...seenPersonas.values()].filter(Boolean).length;
+  const passedCount     = totalPersonas - screenedOutCount;
+
+  // Only expose funnel data if at least one question has isScreening=true
+  const hasScreeningQ = (mission.questions || []).some(q => q.isScreening);
+  const screeningFunnel = hasScreeningQ
+    ? { total: totalPersonas, passed: passedCount, screenedOut: screenedOutCount }
+    : null;
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // For aggregation, exclude screened-out personas (they only answered the
+  // screening question; including their partial responses would skew counts).
+  const qualifiedResponses = allResponses.filter(r => {
+    const profile = r.persona_profile || {};
+    return !profile.screened_out;
+  });
+
   return {
     mission,
-    responses: responses || [],
+    responses: allResponses,
     insights: mission.insights || {},
-    aggregatedByQuestion: aggregate(responses || [], mission.questions || []),
+    aggregatedByQuestion: aggregate(qualifiedResponses, mission.questions || []),
+    screeningFunnel,
   };
 }
 

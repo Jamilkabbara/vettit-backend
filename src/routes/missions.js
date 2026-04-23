@@ -30,11 +30,16 @@ router.get('/', authenticate, async (req, res, next) => {
   try {
     const { data, error } = await supabase
       .from('missions')
-      .select('*')
+      .select('*, mission_responses(count)')
       .eq('user_id', req.user.id)
       .order('created_at', { ascending: false });
     if (error) throw error;
-    res.json(data);
+    // Flatten the join: mission_responses is [{count:N}], expose as responses_collected.
+    const rows = (data || []).map(m => ({
+      ...m,
+      responses_collected: m.mission_responses?.[0]?.count ?? 0,
+    }));
+    res.json(rows);
   } catch (err) {
     next(err);
   }

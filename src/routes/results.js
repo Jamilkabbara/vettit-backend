@@ -25,12 +25,13 @@ router.get('/:missionId', authenticate, async (req, res, next) => {
     if (!pack) return res.status(404).json({ error: 'Mission not found' });
     if (pack.error) return res.status(400).json({ error: pack.error });
 
-    const { mission, responses, insights, aggregatedByQuestion } = pack;
+    const { mission, responses, insights, aggregatedByQuestion, screeningFunnel } = pack;
 
     res.json({
       mission,
       insights,
       aggregatedByQuestion,
+      screeningFunnel: screeningFunnel || null,
       // Cap to 500 rows in the REST payload; the full set is always reachable via /export/xlsx
       responses: (responses || []).slice(0, 500),
       responseCount: (responses || []).length,

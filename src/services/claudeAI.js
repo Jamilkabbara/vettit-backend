@@ -48,6 +48,17 @@ Your job is to design a professional survey. Return ONLY a valid JSON object wit
       "options": ["Option A", "Option B", "Option C"],
       "isScreening": true,
       "qualifyingAnswer": "Option A",
+      "screening_continue_on": ["Option A", "Option B"],
+      "aiRefined": true
+    },
+    {
+      "id": "q2",
+      "text": "Non-screening question text",
+      "type": "rating",
+      "options": [],
+      "isScreening": false,
+      "qualifyingAnswer": null,
+      "screening_continue_on": null,
       "aiRefined": true
     }
   ],
@@ -69,7 +80,14 @@ Rules:
 - For "rating" type: options array can be empty
 - For "text" type: options array can be empty
 - Questions must be specific, unbiased, and professionally worded
-- The screening question should filter for the most relevant respondents
+- SCREENING QUESTION RULES (question 1 only):
+  • isScreening: true
+  • qualifyingAnswer: the single "best" qualifying answer (string)
+  • screening_continue_on: array of ALL answer options that qualify a respondent to continue
+    (typically 1-3 options; anyone whose answer is NOT in this array is screened out)
+  • Example: "Do you own a smartphone?" → options: ["Yes", "No"], screening_continue_on: ["Yes"]
+  • Example: "How often do you shop online?" → screening_continue_on: ["Daily", "Weekly", "Monthly"]
+- NON-SCREENING QUESTIONS: set isScreening: false, qualifyingAnswer: null, screening_continue_on: null
 - Make questions flow logically: screening → awareness → perception → intent → open feedback
 - CRITICAL for targetingSuggestions.recommendedCountries: use proper ISO 2-letter codes ONLY
   Examples: "AE" (UAE/Dubai), "US" (USA), "GB" (UK), "SA" (Saudi Arabia), "IN" (India), "AU" (Australia)
@@ -196,42 +214,73 @@ Return ONLY a JSON object with this structure:
 }
 
 /**
- * Suggest optimal audience targeting based on mission description
+ * Suggest optimal audience targeting based on mission description.
+ *
+ * Part E — Pass 12: improved prompt with city extraction rules,
+ * tighter age banding, cultural sensitivity flags.
  */
 async function suggestTargeting({ missionStatement, description, goal }) {
-  const prompt = `You are a market research targeting specialist. Based on this research mission, suggest the optimal audience targeting.
+  const prompt = `You are a senior market research targeting specialist. Based on this research mission, suggest the optimal audience targeting configuration.
 
 Mission: "${missionStatement}"
 Description: "${description}"
 Goal: ${goal}
 
-Return ONLY a JSON object. Use proper ISO 2-letter country codes (AE=UAE/Dubai, GB=UK, US=USA, SA=Saudi Arabia, FR=France, DE=Germany, IN=India, AU=Australia, CA=Canada, SG=Singapore):
+Return ONLY a JSON object using these exact rules:
+
+━━ GEOGRAPHY RULES ━━
+• Countries: ISO 2-letter codes ONLY. City-to-country mapping:
+  Dubai/Abu Dhabi/UAE → "AE"  |  Riyadh/Jeddah/Saudi → "SA"  |  London/UK → "GB"
+  New York/LA/USA → "US"  |  Cairo/Egypt → "EG"  |  Mumbai/Delhi/India → "IN"
+  Singapore → "SG"  |  Sydney/Melbourne/Australia → "AU"  |  Paris/France → "FR"
+  Berlin/Germany → "DE"  |  Toronto/Canada → "CA"  |  Doha/Qatar → "QA"
+  Kuwait City → "KW"  |  Bahrain → "BH"  |  Muscat/Oman → "OM"  |  Beirut/Lebanon → "LB"
+• Cities: ONLY suggest cities if the brief explicitly names a specific city or
+  neighbourhood (e.g. "Dubai restaurant", "East London consumers", "Downtown Riyadh").
+  If the brief only mentions a country or region (e.g. "UAE", "Saudi Arabia", "MENA"),
+  leave cities empty []. Do not invent cities.
+
+━━ DEMOGRAPHICS RULES ━━
+• Age ranges: use NARROW bands (10-year max). Prefer specific ranges over broad ones.
+  Good: ["25-34", "35-44"]  |  Bad: ["18-65"], ["18-54"] (too broad, not actionable)
+  Only include ranges where the product/service is realistically relevant.
+• Genders: leave [] unless the brief specifically targets one gender (e.g. "women's
+  skincare", "men's grooming"). Do NOT restrict gender for general consumer research.
+• Cultural note: for Gulf markets (AE, SA, KW, QA, BH, OM), professional surveys
+  about workplace topics often skew male due to workforce composition — acknowledge
+  this in reasoning but do NOT restrict gender unless the brief requires it.
+
+━━ PROFESSIONAL RULES ━━
+• Only populate industries/roles/companySizes for B2B or professional-focused missions.
+• For B2C consumer research, leave all professional arrays empty [].
+
 {
   "geography": {
     "recommendedCountries": ["AE", "US"],
-    "reasoning": "Why these markets"
+    "cities": [],
+    "reasoning": "Why these markets and why cities are or aren't suggested"
   },
   "demographics": {
     "ageRanges": ["25-34", "35-44"],
     "genders": [],
     "education": [],
     "employment": ["Employed Full-time"],
-    "reasoning": "Why these demographics"
+    "reasoning": "Why these specific demographics"
   },
   "professional": {
     "industries": [],
     "roles": [],
     "companySizes": [],
-    "reasoning": "Why these professional filters (or why none needed)"
+    "reasoning": "Why these professional filters (or why none needed for B2C)"
   },
   "suggestedRespondentCount": 200,
-  "respondentCountReasoning": "Why this sample size is statistically appropriate"
+  "respondentCountReasoning": "Why this sample size is statistically appropriate for the targeting specificity"
 }`;
 
   const response = await callClaude({
     callType: 'targeting_suggest',
     messages: [{ role: 'user', content: prompt }],
-    maxTokens: 1000,
+    maxTokens: 1200,
   });
 
   return extractJSON(response.text);
