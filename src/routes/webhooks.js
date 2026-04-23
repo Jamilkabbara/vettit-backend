@@ -62,6 +62,17 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
         }, { caller: 'webhook:payment_intent.succeeded' });
         logger.info('Payment confirmed via webhook → triggering mission run', { missionId, amount: pi.amount });
 
+        // Funnel event: mission_paid (server-side, authoritative)
+        const { data: paidMission } = await supabase
+          .from('missions').select('user_id').eq('id', missionId).maybeSingle();
+        if (paidMission?.user_id) {
+          supabase.from('funnel_events').insert({
+            user_id:    paidMission.user_id,
+            event_name: 'mission_paid',
+            properties: { mission_id: missionId, amount_cents: pi.amount, source: 'stripe_webhook' },
+          }).then(() => {}).catch(() => {});
+        }
+
         // Trigger the synthetic-audience pipeline as a fire-and-forget background job.
         // Stripe wants the webhook ack in <15s, so we don't await completion.
         // This is the AUTHORITATIVE trigger — the frontend also pings

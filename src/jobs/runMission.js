@@ -136,6 +136,13 @@ async function runMission(missionId) {
 
     logger.info('Mission run: complete', { missionId });
 
+    // Funnel event: mission_completed
+    supabase.from('funnel_events').insert({
+      user_id:    mission.user_id,
+      event_name: 'mission_completed',
+      properties: { mission_id: missionId, goal_type: mission.goal_type },
+    }).then(() => {}).catch(() => {});
+
     // 7. Notification (real-time via Supabase realtime)
     await supabase.from('notifications').insert({
       user_id: mission.user_id,
