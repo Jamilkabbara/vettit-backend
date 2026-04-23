@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { optionalAuthenticate } = require('../middleware/auth');
 const supabase = require('../db/supabase');
-const { calculateMissionPrice, deriveFilters } = require('../utils/pricingEngine');
+const { calculateMissionPrice, extractCountriesFromMission } = require('../utils/pricingEngine');
 const logger = require('../utils/logger');
 
 /**
@@ -42,14 +42,14 @@ router.post('/quote', optionalAuthenticate, async (req, res, next) => {
     } = req.body || {};
 
     let respCount;
-    let filters;
+    let missionRow;
     let qCount;
 
     if (missionId) {
       // DB-backed quote — recompute from the authoritative row
       const query = supabase
         .from('missions')
-        .select('respondent_count, targeting, targeting_config, questions, user_id')
+        .select('respondent_count, targeting, target_audience, questions, user_id')
         .eq('id', missionId);
 
       // If the caller is authenticated, scope to their row (prevents
@@ -64,14 +64,12 @@ router.post('/quote', optionalAuthenticate, async (req, res, next) => {
         return res.status(404).json({ error: 'Mission not found' });
       }
 
-      respCount = mission.respondent_count || 100;
-      filters = deriveFilters(mission.targeting || mission.targeting_config || {});
-      qCount = Array.isArray(mission.questions) ? mission.questions.length : 0;
+      respCount       = mission.respondent_count || 100;
+      missionRow      = mission;
+      qCount          = Array.isArray(mission.questions) ? mission.questions.length : 0;
     } else {
       respCount = bodyRespCount || 100;
-      filters = Array.isArray(activeFilters)
-        ? activeFilters
-        : deriveFilters(targetingConfig || targeting || {});
+      missionRow = { targeting: targetingConfig || targeting || {} };
       qCount = Array.isArray(questions)
         ? questions.length
         : (typeof questionCount === 'number' ? questionCount : 5);
@@ -93,20 +91,25 @@ router.post('/quote', optionalAuthenticate, async (req, res, next) => {
       }
     }
 
-    const details = calculateMissionPrice(respCount, filters, qCount, promo);
+    const countries = extractCountriesFromMission(missionRow);
+    const details = calculateMissionPrice({
+      respondentCount: respCount,
+      targeting:       missionRow.targeting || {},
+      questionCount:   qCount,
+      countries,
+      promoCode:       promo,
+    });
 
     // Build the human-readable breakdown the UI renders line-by-line.
     const breakdown = [
       {
         label: `${respCount} respondents × $${details.ratePerResp.toFixed(2)}`,
-        amount: details.baseCost,
+        amount: details.base,
       },
     ];
     if (details.targetingSurcharge > 0) {
       breakdown.push({
-        label: details.smartCapApplied
-          ? 'Targeting surcharge (smart cap applied)'
-          : 'Targeting surcharge',
+        label: 'Targeting surcharge',
         amount: details.targetingSurcharge,
       });
     }

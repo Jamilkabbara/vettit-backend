@@ -4,7 +4,7 @@ const { authenticate } = require('../middleware/auth');
 const stripeService = require('../services/stripe');
 const emailService = require('../services/email');
 const supabase = require('../db/supabase');
-const { calculateMissionPrice, deriveFilters } = require('../utils/pricingEngine');
+const { calculateMissionPrice, extractCountriesFromMission } = require('../utils/pricingEngine');
 const { runMission } = require('../jobs/runMission');
 const { updateMission } = require('../db/missionSchema');
 const logger = require('../utils/logger');
@@ -46,13 +46,17 @@ router.post('/create-intent', authenticate, async (req, res, next) => {
     }
 
     // Recalculate server-side — SINGLE SOURCE OF TRUTH
-    const filters = deriveFilters(mission.targeting || mission.targeting_config || {});
-    const pricing = calculateMissionPrice(
-      mission.respondent_count,
-      filters,
-      (mission.questions || []).length,
-      promo
-    );
+    // extractCountriesFromMission checks targeting.geography.countries first,
+    // then falls back to target_audience.aiTargeting.countries so that missions
+    // whose targeting column is null (but aiTargeting has countries) price correctly.
+    const countries = extractCountriesFromMission(mission);
+    const pricing = calculateMissionPrice({
+      respondentCount: mission.respondent_count,
+      targeting:       mission.targeting || {},
+      questionCount:   (mission.questions || []).length,
+      countries,
+      promoCode:       promo,
+    });
 
     if (pricing.totalCents < 50) {
       return res.status(400).json({ error: 'Minimum payment is $0.50' });

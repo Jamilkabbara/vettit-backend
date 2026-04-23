@@ -3,7 +3,7 @@ const { randomUUID } = require('crypto');
 const router = express.Router();
 const { authenticate, optionalAuthenticate } = require('../middleware/auth');
 const supabase = require('../db/supabase');
-const { calculateMissionPrice, deriveFilters } = require('../utils/pricingEngine');
+const { calculateMissionPrice, extractCountriesFromMission } = require('../utils/pricingEngine');
 const { runMission } = require('../jobs/runMission');
 const { sanitizeMissionPatch, updateMission } = require('../db/missionSchema');
 const logger = require('../utils/logger');
@@ -239,13 +239,14 @@ router.post('/launch', authenticate, async (req, res, next) => {
       if (data) promo = data;
     }
 
-    const filters = deriveFilters(mission.targeting || mission.targeting_config || {});
-    const pricing = calculateMissionPrice(
-      mission.respondent_count,
-      filters,
-      (mission.questions || []).length,
-      promo
-    );
+    const countries = extractCountriesFromMission(mission);
+    const pricing = calculateMissionPrice({
+      respondentCount: mission.respondent_count,
+      targeting:       mission.targeting || {},
+      questionCount:   (mission.questions || []).length,
+      countries,
+      promoCode:       promo,
+    });
 
     if (pricing.totalCents < 50) {
       return res.status(400).json({ error: 'Minimum payment is $0.50' });
