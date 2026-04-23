@@ -8,107 +8,212 @@ const logger = require('../utils/logger');
 // All routes are gated: authenticate → adminOnly
 router.use(authenticate, adminOnly);
 
+// ── Range helper ─────────────────────────────────────────────────────────────
+function resolveRange(range) {
+  const end = new Date();
+  let start;
+  switch (range) {
+    case 'month':   start = new Date(end.getFullYear(), end.getMonth(), 1); break;
+    case 'quarter': start = new Date(end.getFullYear(), Math.floor(end.getMonth() / 3) * 3, 1); break;
+    case 'all':     start = new Date('2024-01-01'); break;
+    default:        start = new Date(end.getTime() - 30 * 24 * 3600 * 1000); // 30d
+  }
+  const days = Math.round((end - start) / 86400000);
+  return { start, end, days };
+}
+function calcDelta(curr, prev) { return prev > 0 ? Math.round(100 * (curr - prev) / prev) : 0; }
+
 /**
- * GET /api/admin/overview
- * Top-line KPIs + AI cost totals + funnel snapshot.
+ * GET /api/admin/overview?range=30d|month|quarter|all
  */
 router.get('/overview', async (req, res, next) => {
   try {
-    // Totals
-    const [{ count: userCount }, { count: missionCount }, { data: revenue }] = await Promise.all([
-      supabase.from('profiles').select('*', { count: 'exact', head: true }),
-      supabase.from('missions').select('*', { count: 'exact', head: true }),
-      supabase.from('missions').select('total_price_usd, ai_cost_usd').eq('status', 'completed'),
+    const { start, end } = resolveRange(req.query.range || '30d');
+    const priorStart = new Date(start.getTime() - (end.getTime() - start.getTime()));
+
+    const [summary, priorSummary, funnel, segments, activity] = await Promise.all([
+      supabase.rpc('admin_ai_cost_summary', { range_start: start, range_end: end }),
+      supabase.rpc('admin_ai_cost_summary', { range_start: priorStart, range_end: start }),
+      supabase.rpc('admin_funnel', { range_start: start, range_end: end }),
+      supabase.rpc('admin_user_segments'),
+      supabase.rpc('admin_activity_feed', { row_limit: 20 }),
     ]);
 
-    const totalRevenue = (revenue || []).reduce((s, m) => s + Number(m.total_price_usd || 0), 0);
-    const totalAiCost  = (revenue || []).reduce((s, m) => s + Number(m.ai_cost_usd || 0),    0);
-    const grossMargin  = totalRevenue > 0 ? (totalRevenue - totalAiCost) / totalRevenue : 0;
+    // Mission type mix
+    const { data: typeMix } = await supabase
+      .from('missions')
+      .select('goal_type')
+      .in('status', ['paid', 'completed'])
+      .gte('paid_at', start.toISOString())
+      .lt('paid_at', end.toISOString());
 
-    // Funnel
-    const funnel = {};
-    const statuses = ['draft', 'pending_payment', 'paid', 'processing', 'completed', 'failed'];
-    for (const s of statuses) {
-      const { count } = await supabase
-        .from('missions').select('*', { count: 'exact', head: true }).eq('status', s);
-      funnel[s] = count || 0;
-    }
+    const mixCounts = {};
+    (typeMix || []).forEach(m => { mixCounts[m.goal_type] = (mixCounts[m.goal_type] || 0) + 1; });
+    const mixTotal = Object.values(mixCounts).reduce((a, b) => a + b, 0);
+    const missionTypeMix = Object.entries(mixCounts)
+      .map(([type, n]) => ({ type, count: n, pct: mixTotal > 0 ? Math.round(100 * n / mixTotal) : 0 }))
+      .sort((a, b) => b.count - a.count);
+
+    // Active users in range
+    const { count: activeUsers } = await supabase
+      .from('missions')
+      .select('user_id', { count: 'exact', head: true })
+      .gte('created_at', start.toISOString())
+      .lt('created_at', end.toISOString());
+
+    const s  = summary.data      || {};
+    const ps = priorSummary.data || {};
+    const missionsPaid = (funnel.data || {}).paid || 0;
+    const priorPaid    = ps.total_calls || 0;
 
     res.json({
-      userCount:    userCount || 0,
-      missionCount: missionCount || 0,
-      totalRevenue,
-      totalAiCost,
-      grossMargin,
-      funnel,
+      kpis: {
+        total_missions: { value: missionsPaid, delta_pct: calcDelta(missionsPaid, priorPaid) },
+        total_revenue:  { value: s.total_revenue_usd, delta_pct: calcDelta(s.total_revenue_usd, ps.total_revenue_usd) },
+        active_users:   { value: activeUsers || 0, delta_pct: 0 },
+        avg_mission_value: {
+          value: missionsPaid > 0 ? s.total_revenue_usd / missionsPaid : 0,
+          delta_pct: 0,
+        },
+      },
+      funnel:           funnel.data,
+      segments:         segments.data,
+      activity:         activity.data,
+      missionTypeMix,
+      gross_margin_pct: s.gross_margin_pct || 0,
+      last_updated:     new Date().toISOString(),
     });
   } catch (err) { next(err); }
 });
 
 /**
- * GET /api/admin/missions — all missions (paginated).
+ * GET /api/admin/missions — paginated, searchable, filterable.
+ * ?limit&offset&status&goal_type&search
  */
 router.get('/missions', async (req, res, next) => {
   try {
-    const limit  = Math.min(parseInt(req.query.limit) || 50, 200);
-    const offset = parseInt(req.query.offset) || 0;
+    const limit     = Math.min(parseInt(req.query.limit)  || 50, 200);
+    const offset    = parseInt(req.query.offset) || 0;
+    const { search, status, goal_type } = req.query;
 
-    const { data, error } = await supabase
+    let q = supabase
       .from('missions')
-      .select('*')
+      .select(
+        `id, user_id, status, goal_type, brief, total_price_usd, ai_cost_usd,
+         respondent_count, target_countries, promo_code, promo_discount_usd,
+         created_at, paid_at, completed_at, executive_summary`,
+        { count: 'exact' }
+      )
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
+
+    if (status)    q = q.eq('status', status);
+    if (goal_type) q = q.eq('goal_type', goal_type);
+    if (search)    q = q.ilike('brief', `%${search}%`);
+
+    const { data, error, count } = await q;
     if (error) throw error;
-    res.json(data);
+
+    // Enrich with user profile
+    const userIds = [...new Set((data || []).map(m => m.user_id).filter(Boolean))];
+    const { data: profiles } = userIds.length
+      ? await supabase.from('profiles').select('id, first_name, last_name, company_name').in('id', userIds)
+      : { data: [] };
+    const profileMap = {};
+    for (const p of profiles || []) profileMap[p.id] = p;
+
+    const enriched = (data || []).map(m => ({
+      ...m,
+      user:       profileMap[m.user_id] || null,
+      margin_usd: Number(m.total_price_usd || 0) - Number(m.ai_cost_usd || 0),
+    }));
+
+    res.json({ data: enriched, total: count, limit, offset });
   } catch (err) { next(err); }
 });
 
 /**
- * GET /api/admin/users — all user profiles.
+ * GET /api/admin/users — paginated user list with mission stats.
+ * ?limit&offset&search&segment
  */
 router.get('/users', async (req, res, next) => {
   try {
-    const { data, error } = await supabase
+    const limit  = Math.min(parseInt(req.query.limit)  || 50, 200);
+    const offset = parseInt(req.query.offset) || 0;
+    const { search } = req.query;
+
+    let q = supabase
       .from('profiles')
-      .select('*')
-      .order('created_at', { ascending: false });
+      .select('id, first_name, last_name, full_name, company_name, role, project_stage, is_admin, created_at', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (search) q = q.or(`full_name.ilike.%${search}%,company_name.ilike.%${search}%`);
+
+    const { data: profiles, error, count } = await q;
     if (error) throw error;
-    res.json(data);
+
+    // Aggregate mission stats per user
+    const ids = (profiles || []).map(p => p.id);
+    const { data: missionStats } = ids.length
+      ? await supabase.from('missions').select('user_id, status, total_price_usd').in('user_id', ids)
+      : { data: [] };
+
+    const statsMap = {};
+    for (const m of missionStats || []) {
+      if (!statsMap[m.user_id]) statsMap[m.user_id] = { mission_count: 0, ltv_usd: 0, paid_count: 0 };
+      statsMap[m.user_id].mission_count++;
+      if (['paid', 'completed'].includes(m.status)) {
+        statsMap[m.user_id].ltv_usd    += Number(m.total_price_usd || 0);
+        statsMap[m.user_id].paid_count++;
+      }
+    }
+
+    const enriched = (profiles || []).map(p => ({
+      ...p,
+      ...(statsMap[p.id] || { mission_count: 0, ltv_usd: 0, paid_count: 0 }),
+    }));
+
+    res.json({ data: enriched, total: count, limit, offset });
   } catch (err) { next(err); }
 });
 
 /**
- * GET /api/admin/ai-costs — per-operation + per-model breakdown.
- * ?missionId=<uuid> to scope to a single mission.
+ * GET /api/admin/ai-costs — full RPC-based cost breakdown with deltas.
+ * ?range=30d|month|quarter|all
  */
 router.get('/ai-costs', async (req, res, next) => {
   try {
-    const { missionId, since } = req.query;
-    let q = supabase.from('ai_calls').select('call_type, model, cost_usd, input_tokens, output_tokens, cached_tokens, success, created_at');
-    if (missionId) q = q.eq('mission_id', missionId);
-    if (since)     q = q.gte('created_at', since);
-    const { data, error } = await q.limit(10000);
-    if (error) throw error;
+    const { start, end } = resolveRange(req.query.range || '30d');
+    const priorStart = new Date(start.getTime() - (end.getTime() - start.getTime()));
 
-    const byType = {}, byModel = {};
-    let totalCost = 0, totalCalls = 0, totalFailed = 0;
-    for (const row of data || []) {
-      totalCost += Number(row.cost_usd || 0);
-      totalCalls++;
-      if (!row.success) totalFailed++;
+    const [summary, priorSummary, byOperation, modelMix, margins, buckets] = await Promise.all([
+      supabase.rpc('admin_ai_cost_summary',      { range_start: start,      range_end: end }),
+      supabase.rpc('admin_ai_cost_summary',      { range_start: priorStart, range_end: start }),
+      supabase.rpc('admin_ai_cost_by_operation', { range_start: start,      range_end: end }),
+      supabase.rpc('admin_ai_model_mix',         { range_start: start,      range_end: end }),
+      supabase.rpc('admin_mission_margins',      { range_start: start,      range_end: end }),
+      supabase.rpc('daily_revenue_buckets',      { range_start: start,      range_end: end }),
+    ]);
 
-      byType[row.call_type] = byType[row.call_type] || { calls: 0, cost: 0, tokensIn: 0, tokensOut: 0 };
-      byType[row.call_type].calls++;
-      byType[row.call_type].cost += Number(row.cost_usd || 0);
-      byType[row.call_type].tokensIn  += row.input_tokens || 0;
-      byType[row.call_type].tokensOut += row.output_tokens || 0;
+    const s  = summary.data      || {};
+    const ps = priorSummary.data || {};
 
-      byModel[row.model] = byModel[row.model] || { calls: 0, cost: 0 };
-      byModel[row.model].calls++;
-      byModel[row.model].cost += Number(row.cost_usd || 0);
-    }
-
-    res.json({ totalCost, totalCalls, totalFailed, byType, byModel });
+    res.json({
+      summary: {
+        total_cost_usd:       { value: s.total_cost_usd,       delta_pct: calcDelta(s.total_cost_usd,       ps.total_cost_usd)       },
+        total_revenue_usd:    { value: s.total_revenue_usd,    delta_pct: calcDelta(s.total_revenue_usd,    ps.total_revenue_usd)    },
+        gross_margin_pct:     { value: s.gross_margin_pct,     delta_pct: calcDelta(s.gross_margin_pct,     ps.gross_margin_pct)     },
+        total_calls:          { value: s.total_calls,          delta_pct: calcDelta(s.total_calls,          ps.total_calls)          },
+        avg_cost_per_mission: { value: s.avg_cost_per_mission, delta_pct: 0 },
+        tiering_savings_usd:  s.tiering_savings_usd || 0,
+      },
+      by_operation:    byOperation.data || [],
+      model_mix:       modelMix.data    || [],
+      mission_margins: margins.data     || [],
+      daily_buckets:   buckets.data     || [],
+      last_updated:    new Date().toISOString(),
+    });
   } catch (err) { next(err); }
 });
 
@@ -486,6 +591,204 @@ router.delete('/promos/:code', async (req, res, next) => {
     const { error } = await supabase.from('promo_codes').delete().eq('code', code.toUpperCase());
     if (error) throw error;
     res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/admin/revenue — revenue summary + daily buckets.
+ * ?range=30d|month|quarter|all
+ */
+router.get('/revenue', async (req, res, next) => {
+  try {
+    const { start, end, days } = resolveRange(req.query.range || '30d');
+    const priorStart = new Date(start.getTime() - (end.getTime() - start.getTime()));
+
+    const [missionsRes, priorMissionsRes, bucketsRes] = await Promise.all([
+      supabase.from('missions')
+        .select('total_price_usd, ai_cost_usd, status, goal_type, user_id')
+        .in('status', ['paid', 'completed'])
+        .gte('paid_at', start.toISOString())
+        .lt('paid_at', end.toISOString()),
+      supabase.from('missions')
+        .select('total_price_usd')
+        .in('status', ['paid', 'completed'])
+        .gte('paid_at', priorStart.toISOString())
+        .lt('paid_at', start.toISOString()),
+      supabase.rpc('daily_revenue_buckets', { range_start: start, range_end: end }),
+    ]);
+
+    const curr = missionsRes.data      || [];
+    const prev = priorMissionsRes.data || [];
+
+    const currRevenue = curr.reduce((s, m) => s + Number(m.total_price_usd || 0), 0);
+    const prevRevenue = prev.reduce((s, m) => s + Number(m.total_price_usd || 0), 0);
+    const currCost    = curr.reduce((s, m) => s + Number(m.ai_cost_usd    || 0), 0);
+    const currGross   = currRevenue - currCost;
+    const avgOrder    = curr.length > 0 ? currRevenue / curr.length : 0;
+
+    // Goal-type breakdown
+    const goalBreakdown = {};
+    for (const m of curr) {
+      goalBreakdown[m.goal_type] = (goalBreakdown[m.goal_type] || 0) + Number(m.total_price_usd || 0);
+    }
+
+    res.json({
+      period_days:    days,
+      revenue:        { value: currRevenue, delta_pct: calcDelta(currRevenue, prevRevenue) },
+      gross_profit:   { value: currGross,   delta_pct: 0 },
+      avg_order:      { value: avgOrder,    delta_pct: 0 },
+      mission_count:  curr.length,
+      goal_breakdown: goalBreakdown,
+      daily_buckets:  bucketsRes.data || [],
+      last_updated:   new Date().toISOString(),
+    });
+  } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/admin/users/:id — full user profile + missions + notes + totals.
+ */
+router.get('/users/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const [profileRes, missionsRes, notesRes] = await Promise.all([
+      supabase.from('profiles').select('*').eq('id', id).single(),
+      supabase.from('missions')
+        .select('id, status, goal_type, brief, total_price_usd, ai_cost_usd, respondent_count, created_at, paid_at, completed_at')
+        .eq('user_id', id)
+        .order('created_at', { ascending: false }),
+      supabase.from('admin_user_notes')
+        .select('*')
+        .eq('user_id', id)
+        .order('created_at', { ascending: false }),
+    ]);
+
+    if (profileRes.error) return res.status(404).json({ error: 'User not found' });
+
+    const missions = missionsRes.data || [];
+    const paidMissions = missions.filter(m => ['paid', 'completed'].includes(m.status));
+    const ltv = paidMissions.reduce((s, m) => s + Number(m.total_price_usd || 0), 0);
+
+    res.json({
+      profile:  profileRes.data,
+      missions,
+      notes:    notesRes.data || [],
+      totals: {
+        mission_count: missions.length,
+        paid_count:    paidMissions.length,
+        ltv_usd:       ltv,
+        avg_order:     paidMissions.length > 0 ? ltv / paidMissions.length : 0,
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+/**
+ * POST /api/admin/users/:id/notes — add a CRM note to a user.
+ * Body: { content: string }
+ */
+router.post('/users/:id/notes', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { content } = req.body;
+    if (!content?.trim()) return res.status(400).json({ error: 'content required' });
+
+    const { data, error } = await supabase
+      .from('admin_user_notes')
+      .insert({ user_id: id, admin_id: req.user.id, content: content.trim() })
+      .select()
+      .single();
+    if (error) throw error;
+    res.status(201).json(data);
+  } catch (err) { next(err); }
+});
+
+// ── AI Insights (in-process cache, 6-hour TTL) ────────────────────────────────
+
+const _insightsCache = { data: null, generatedAt: null };
+const INSIGHTS_TTL_MS = 6 * 60 * 60 * 1000; // 6 h
+
+async function _generateInsights(adminUserId) {
+  const { callClaude, extractJSON } = require('../services/ai/anthropic');
+  const now   = new Date();
+  const since = new Date(now.getTime() - 30 * 24 * 3600 * 1000);
+
+  const [summaryRes, funnelRes, segmentsRes] = await Promise.all([
+    supabase.rpc('admin_ai_cost_summary', { range_start: since, range_end: now }),
+    supabase.rpc('admin_funnel',          { range_start: since, range_end: now }),
+    supabase.rpc('admin_user_segments'),
+  ]);
+
+  const contextData = {
+    ai_costs: summaryRes.data,
+    funnel:   funnelRes.data,
+    segments: segmentsRes.data,
+  };
+
+  const response = await callClaude({
+    callType:     'admin_insights',
+    userId:       adminUserId,
+    systemPrompt: `You are an expert product analytics advisor for VETT, an AI-powered consumer research platform. Analyze platform data and provide concise, actionable business insights.`,
+    messages: [{
+      role: 'user',
+      content: `Analyze this 30-day platform snapshot and return ONLY valid JSON (no prose, no markdown):
+{
+  "headline": "One sentence — the single most important thing happening on the platform right now",
+  "insights": [
+    { "type": "positive|negative|neutral|warning", "title": "Short title ≤8 words", "body": "2-3 sentences with specific numbers from the data.", "action": "Recommended next action, or null" }
+  ],
+  "opportunities": ["Short opportunity string with numbers where relevant"],
+  "risks": ["Short risk string with numbers where relevant"]
+}
+
+Rules: max 5 insights, max 3 opportunities, max 3 risks. Be specific.
+
+Data:
+${JSON.stringify(contextData, null, 2)}`
+    }],
+    maxTokens: 1500,
+  });
+
+  return extractJSON(response.text);
+}
+
+/**
+ * GET /api/admin/insights — cached Claude-generated platform insights (6h TTL).
+ */
+router.get('/insights', async (req, res, next) => {
+  try {
+    const now   = Date.now();
+    const stale = !_insightsCache.data
+      || !_insightsCache.generatedAt
+      || (now - _insightsCache.generatedAt) > INSIGHTS_TTL_MS;
+
+    if (stale) {
+      _insightsCache.data        = await _generateInsights(req.user.id);
+      _insightsCache.generatedAt = now;
+    }
+
+    res.json({
+      ..._insightsCache.data,
+      generated_at: new Date(_insightsCache.generatedAt).toISOString(),
+      is_fresh:     !stale,
+    });
+  } catch (err) { next(err); }
+});
+
+/**
+ * POST /api/admin/insights/refresh — force regenerate insights now.
+ */
+router.post('/insights/refresh', async (req, res, next) => {
+  try {
+    _insightsCache.data        = await _generateInsights(req.user.id);
+    _insightsCache.generatedAt = Date.now();
+
+    res.json({
+      ..._insightsCache.data,
+      generated_at: new Date(_insightsCache.generatedAt).toISOString(),
+      is_fresh:     true,
+    });
   } catch (err) { next(err); }
 });
 
