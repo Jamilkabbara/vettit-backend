@@ -178,8 +178,23 @@ function buildXLSX(pack, res) {
       }
     } else if (q.type === 'text') {
       summary.addRow({ question: q.text, type: q.type, n: a.n || 0, metric: 'Verbatims (sample)', value: '', share: '' });
+      // Bug 7: no String.slice — full verbatim text in XLSX
       (a.verbatims || []).slice(0, 10).forEach((v) => {
-        summary.addRow({ question: '', type: '', n: '', metric: String(v).slice(0, 250), value: '', share: '' });
+        summary.addRow({ question: '', type: '', n: '', metric: String(v), value: '', share: '' });
+      });
+    } else if (q.type === 'multi') {
+      // Bug 3: percentage = selections / n_respondents (not / total_clicks)
+      const dist = a.distribution || {};
+      const nRespondents = a.n_respondents || a.n || 1;
+      const entries = Object.entries(dist).sort((x, y) => y[1] - x[1]);
+      summary.addRow({ question: q.text, type: q.type, n: nRespondents, metric: 'Distribution (multi-select)', value: '', share: '' });
+      entries.forEach(([opt, count]) => {
+        summary.addRow({
+          question: '', type: '', n: '',
+          metric: String(opt),  // Bug 7: no slice
+          value: count,
+          share: `${Math.round((count / nRespondents) * 100)}%`,
+        });
       });
     } else {
       const dist = a.distribution || {};
@@ -189,7 +204,7 @@ function buildXLSX(pack, res) {
       entries.forEach(([opt, count]) => {
         summary.addRow({
           question: '', type: '', n: '',
-          metric: String(opt).slice(0, 80),
+          metric: String(opt),  // Bug 7: no slice
           value: count,
           share: `${Math.round((count/total)*100)}%`,
         });

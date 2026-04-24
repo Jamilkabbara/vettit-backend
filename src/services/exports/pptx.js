@@ -7,11 +7,17 @@
  *
  * Slide outline:
  *   1. Cover              (VETT wordmark + title + meta)
- *   2. Executive summary  (big paragraph)
- *   3. KPI snapshot       (up to 3 stat cards)
+ *   2. Executive summary  (big paragraph — autoFit)
+ *   3. KPI snapshot       (exactly 3 stat cards)
  *   4..N. One slide per question (chart + insight pullquote)
  *   N+1. Recommendations
  *   N+2. Follow-ups
+ *
+ * Bug 3 fix:  multi-select % uses n_respondents denominator, not total clicks.
+ * Bug 6 fix:  recommendations/follow-ups use breakLine for real paragraph breaks.
+ * Bug 7 fix:  chart labels and verbatims no longer truncated at 28/220 chars.
+ * Bug 8 fix:  exactly 3 KPIs (prompt already capped; layout positions 3 evenly).
+ * Bug 11 fix: exec summary text box has autoFit: true.
  */
 
 const PptxGenJS = require('pptxgenjs');
@@ -116,13 +122,16 @@ function buildPPTX(pack, res) {
   const summary = pptx.addSlide();
   addDarkBackground(summary);
   addSectionHeader(summary, '01 · EXECUTIVE SUMMARY', 'What the research says');
+  // Bug 11 fix: autoFit so long summaries never clip at the frame edge
   summary.addText(insights.executive_summary || 'Executive summary unavailable.', {
     x: 0.5, y: 1.6, w: 12.3, h: 4.5,
     fontSize: 16, color: hex(BRAND.text1), fontFace: 'Calibri',
     paraSpaceAfter: 8, valign: 'top',
+    autoFit: true,
   });
 
   // ── KPI SNAPSHOT ──────────────────────────────────────────
+  // Bug 8 fix: layout assumes exactly 3 KPIs (prompt instructs Claude to return 3).
   if (Array.isArray(insights.kpis) && insights.kpis.length > 0) {
     const kpiSlide = pptx.addSlide();
     addDarkBackground(kpiSlide);
@@ -170,23 +179,57 @@ function buildPPTX(pack, res) {
         showLegend: false,
       });
     } else if (q.type === 'text') {
-      // Verbatims pullquote list
+      // Bug 7: no .slice(0, 220) — render full verbatims
       const items = (qAgg.verbatims || []).slice(0, 5).map(v => ({
-        text: `"${String(v).slice(0, 220)}"`,
-        options: { bullet: { code: '25CF' }, color: hex(BRAND.text2), italic: true, fontSize: 13, paraSpaceAfter: 8 },
+        text: `"${String(v)}"`,
+        options: {
+          bullet: { code: '25CF' }, color: hex(BRAND.text2),
+          italic: true, fontSize: 13, paraSpaceAfter: 8,
+          breakLine: false,
+        },
       }));
-      if (items.length === 0) {
-        items.push({ text: 'No text responses yet.', options: { color: hex(BRAND.text3), fontSize: 13 } });
+      // Add breakLine between verbatims for proper paragraph separation
+      const separated = [];
+      items.forEach((item, i) => {
+        separated.push(item);
+        if (i < items.length - 1) {
+          separated.push({ text: '', options: { breakLine: true } });
+        }
+      });
+      if (separated.length === 0) {
+        separated.push({ text: 'No text responses yet.', options: { color: hex(BRAND.text3), fontSize: 13 } });
       }
-      slide.addText(items, { x: 0.5, y: 1.6, w: 12.3, h: 4.4, fontFace: 'Calibri', valign: 'top' });
+      slide.addText(separated, { x: 0.5, y: 1.6, w: 12.3, h: 4.4, fontFace: 'Calibri', valign: 'top' });
+    } else if (q.type === 'multi') {
+      // Bug 3: use n_respondents denominator for multi-select percentages
+      const dist = qAgg.distribution || {};
+      const nRespondents = qAgg.n_respondents || qAgg.n || 1;
+      const entries = Object.entries(dist).sort((a, b) => b[1] - a[1]).slice(0, 8);
+      // Bug 7: no .slice(0, 28) on labels
+      const chartData = [{
+        name: 'Responses',
+        labels: entries.map(([k]) => String(k)),
+        values: entries.map(([, v]) => Math.round((v / nRespondents) * 100)),
+      }];
+      slide.addChart(pptx.ChartType.bar, chartData, {
+        x: 0.5, y: 1.5, w: 8, h: 4.5,
+        chartColors: [hex(BRAND.lime)],
+        barDir: 'bar',
+        showTitle: true,
+        title: `n=${nRespondents} respondents (multi-select, totals may exceed 100%)`,
+        titleColor: hex(BRAND.text2), titleFontSize: 10,
+        catAxisLabelColor: hex(BRAND.text2), valAxisLabelColor: hex(BRAND.text2),
+        plotArea: { fill: { color: hex(BRAND.bg) } },
+        showLegend: false,
+      });
     } else {
-      // single / multi / opinion
+      // single / opinion — Bug 7: no .slice(0, 28) on labels
       const dist = qAgg.distribution || {};
       const entries = Object.entries(dist).sort((a, b) => b[1] - a[1]).slice(0, 8);
       const total = entries.reduce((s, [, v]) => s + v, 0) || 1;
       const chartData = [{
         name: 'Responses',
-        labels: entries.map(([k]) => String(k).slice(0, 28)),
+        labels: entries.map(([k]) => String(k)),
         values: entries.map(([, v]) => Math.round((v / total) * 100)),
       }];
       slide.addChart(pptx.ChartType.bar, chartData, {
@@ -199,13 +242,20 @@ function buildPPTX(pack, res) {
       });
     }
 
+    // Screening context note on the slide
+    if (qAgg.is_screening && qAgg.n_total) {
+      slide.addText(`Screening question · all ${qAgg.n_total} respondents shown`, {
+        x: 0.5, y: 6.9, w: 8, h: 0.3,
+        fontSize: 9, color: hex(BRAND.text3), italic: true, fontFace: 'Calibri',
+      });
+    }
+
     // Insight pullquote on the right
     if (qInsight?.headline) {
       slide.addShape('roundRect', {
         x: 8.7, y: 1.5, w: 4.3, h: 4.5, rectRadius: 0.08,
         fill: { color: hex(BRAND.bg2) }, line: { color: hex(BRAND.border) },
       });
-      // Lime left stripe
       slide.addShape('rect', {
         x: 8.7, y: 1.5, w: 0.06, h: 4.5,
         fill: { color: hex(BRAND.lime) }, line: { color: hex(BRAND.lime) },
@@ -226,26 +276,45 @@ function buildPPTX(pack, res) {
   });
 
   // ── RECOMMENDATIONS ──────────────────────────────────────
+  // Bug 6 fix: use breakLine: true between items so paragraphs render separately.
+  // Each recommendation: bold number prefix (lime 12pt) + body text (14pt).
   if (Array.isArray(insights.recommendations) && insights.recommendations.length) {
     const slide = pptx.addSlide();
     addDarkBackground(slide);
     addSectionHeader(slide, '· RECOMMENDATIONS', 'What to do next');
-    const items = insights.recommendations.map((r, i) => ({
-      text: `${String(i + 1).padStart(2, '0')}.  ${r}`,
-      options: { fontSize: 14, color: hex(BRAND.text1), paraSpaceAfter: 12 },
-    }));
+    const items = [];
+    insights.recommendations.forEach((r, i) => {
+      if (i > 0) items.push({ text: '', options: { breakLine: true } });
+      items.push({
+        text: `${String(i + 1).padStart(2, '0')}.`,
+        options: { bold: true, fontSize: 12, color: hex(BRAND.lime) },
+      });
+      items.push({
+        text: `  ${r}`,
+        options: { fontSize: 14, color: hex(BRAND.text1), paraSpaceAfter: 12 },
+      });
+    });
     slide.addText(items, { x: 0.5, y: 1.6, w: 12.3, h: 4.5, fontFace: 'Calibri', valign: 'top' });
   }
 
   // ── FOLLOW-UPS ────────────────────────────────────────────
+  // Bug 6 fix: each follow-up title + rationale in its own paragraph block.
   if (Array.isArray(insights.follow_ups) && insights.follow_ups.length) {
     const slide = pptx.addSlide();
     addDarkBackground(slide);
     addSectionHeader(slide, '· RECOMMENDED FOLLOW-UPS', 'The logical next research');
     const items = [];
-    insights.follow_ups.forEach((fu) => {
-      items.push({ text: fu.title || '', options: { fontSize: 16, bold: true, color: 'FFFFFF', paraSpaceBefore: 4 } });
-      items.push({ text: fu.rationale || '', options: { fontSize: 12, color: hex(BRAND.text2), paraSpaceAfter: 14 } });
+    insights.follow_ups.forEach((fu, i) => {
+      if (i > 0) items.push({ text: '', options: { breakLine: true } });
+      items.push({
+        text: fu.title || '',
+        options: { fontSize: 16, bold: true, color: 'FFFFFF', paraSpaceBefore: 4 },
+      });
+      items.push({ text: '', options: { breakLine: true } });
+      items.push({
+        text: fu.rationale || '',
+        options: { fontSize: 12, color: hex(BRAND.text2), paraSpaceAfter: 14 },
+      });
     });
     slide.addText(items, { x: 0.5, y: 1.6, w: 12.3, h: 4.5, fontFace: 'Calibri', valign: 'top' });
   }

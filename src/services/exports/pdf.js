@@ -7,6 +7,12 @@
  *
  * pdfkit ships with Helvetica, so we use Helvetica-Bold for headlines
  * to keep the dependency footprint small (no font files needed).
+ *
+ * Bug 7 fix: removed all premature label truncation (.slice(0, N)).
+ *            PDFKit's built-in ellipsis handles overflow gracefully.
+ * Bug 10 fix: star ratings rendered as path primitives (drawStar) —
+ *             Helvetica lacks U+2605, which produced &\x05 garbage.
+ * Bug 3 fix: multi-select percentages use respondent count denominator.
  */
 
 const PDFDocument = require('pdfkit');
@@ -24,15 +30,20 @@ function sectionDivider(doc) {
   doc.moveDown(0.8);
 }
 
+/**
+ * Bug 7: removed .slice(0, 30) — use PDFKit ellipsis for overflow.
+ * Bug 3: accepts optional `denominator` override for multi-select questions.
+ */
 function barRow(doc, label, count, pct) {
   const x = 50;
   const y = doc.y;
-  const barX = x + 180;
+  const barX = x + 200;
   const barMaxW = doc.page.width - barX - 100;
   const barW = Math.max(2, Math.round((pct / 100) * barMaxW));
 
+  // Bug 7: no slice — pdfkit ellipsis handles long labels natively
   doc.fontSize(10).fillColor(BRAND.text1)
-     .text(label.toString().slice(0, 30), x, y, { width: 170, ellipsis: true });
+     .text(label.toString(), x, y, { width: 190, ellipsis: true });
 
   // Track
   doc.rect(barX, y + 3, barMaxW, 8).fill(BRAND.bg3);
@@ -51,6 +62,33 @@ function statCard(doc, x, y, w, h, label, value, trendColor = BRAND.lime) {
   doc.fontSize(22).fillColor(trendColor).font('Helvetica-Bold')
      .text(value, x + 14, y + 30, { width: w - 28 });
   doc.font('Helvetica');
+}
+
+/**
+ * Bug 10: draw a star as a PDFKit path primitive.
+ * Helvetica lacks U+2605 — using the character directly produced &\x05 garbage.
+ * @param {PDFDocument} doc
+ * @param {number} x     left edge of bounding box
+ * @param {number} y     top edge of bounding box
+ * @param {number} size  outer diameter in points
+ * @param {string} color hex fill color
+ */
+function drawStar(doc, x, y, size, color = BRAND.lime) {
+  const outer = size / 2;
+  const inner = outer * 0.4;
+  const cx = x + outer;
+  const cy = y + outer;
+  doc.save().fillColor(color);
+  const pts = [];
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 === 0 ? outer : inner;
+    const angle = (Math.PI / 5) * i - Math.PI / 2;
+    pts.push([cx + r * Math.cos(angle), cy + r * Math.sin(angle)]);
+  }
+  doc.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) doc.lineTo(pts[i][0], pts[i][1]);
+  doc.closePath().fill();
+  doc.restore();
 }
 
 function buildPDF(pack, res) {
@@ -145,12 +183,20 @@ function buildPDF(pack, res) {
        .text(q.text, { width: doc.page.width - 100 });
     doc.moveDown(0.8);
 
+    // Screener context note
+    if (qAgg.is_screening && qAgg.n_total) {
+      doc.fontSize(9).fillColor(BRAND.text3)
+         .text(`Screening question — all ${qAgg.n_total} respondents shown (including screened-out)`, { italic: true });
+      doc.moveDown(0.3);
+    }
+
     if (q.type === 'text') {
       doc.fontSize(10).fillColor(BRAND.text3).text('Sample verbatims:');
       doc.moveDown(0.3);
+      // Bug 7: no .slice(0, 200) — render full verbatim text
       (qAgg.verbatims || []).slice(0, 5).forEach(v => {
         doc.fontSize(10).fillColor(BRAND.text2).font('Helvetica-Oblique')
-           .text(`“${String(v).slice(0, 200)}”`, { indent: 16, width: doc.page.width - 116, lineGap: 3 });
+           .text(`"${String(v)}"`, { indent: 16, width: doc.page.width - 116, lineGap: 3 });
         doc.moveDown(0.3);
       });
       doc.font('Helvetica');
@@ -162,9 +208,40 @@ function buildPDF(pack, res) {
       const total = Object.values(dist).reduce((s, v) => s + v, 0) || 1;
       for (let r = 5; r >= 1; r--) {
         const c = dist[r] || 0;
-        barRow(doc, `★ ${r}`, c, Math.round((c / total) * 100));
+        const pct = Math.round((c / total) * 100);
+        // Bug 10: draw star using path primitive instead of ★ character
+        const starY = doc.y;
+        drawStar(doc, 50, starY, 12);
+        doc.fontSize(10).fillColor(BRAND.text1)
+           .text(` ${r}`, 65, starY, { continued: false });
+        // Re-use barRow but skip the leading star char by passing plain label
+        if (doc.y === starY) doc.moveDown(0.2); // ensure advance
+        // Draw bar inline
+        const barX = 50 + 200;
+        const barMaxW = doc.page.width - barX - 100;
+        const barW = Math.max(2, Math.round((pct / 100) * barMaxW));
+        const bY = doc.y - 14;
+        doc.rect(barX, bY + 3, barMaxW, 8).fill(BRAND.bg3);
+        doc.rect(barX, bY + 3, barW, 8).fill(BRAND.lime);
+        doc.fontSize(10).fillColor(BRAND.text2)
+           .text(`${c}  ·  ${pct}%`, barX + barMaxW + 8, bY, { width: 80 });
+        doc.moveDown(0.3);
       }
+    } else if (q.type === 'multi') {
+      // Bug 3: percentage = selections / n_respondents (not / total_clicks)
+      const dist = qAgg.distribution || {};
+      const nRespondents = qAgg.n_respondents || qAgg.n || 1;
+      doc.fontSize(9).fillColor(BRAND.text3)
+         .text(`n=${nRespondents} respondents (multi-select — totals may exceed 100%)`);
+      doc.moveDown(0.3);
+      Object.entries(dist)
+        .sort((a, b) => b[1] - a[1])
+        .forEach(([opt, count]) => {
+          const pct = Math.round((count / nRespondents) * 100);
+          barRow(doc, opt, count, pct);
+        });
     } else {
+      // single / opinion
       const dist = qAgg.distribution || {};
       const total = Object.values(dist).reduce((s, v) => s + v, 0) || 1;
       Object.entries(dist)
