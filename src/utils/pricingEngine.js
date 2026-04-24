@@ -17,7 +17,7 @@
  *   Financial         min(count × $0.50, $1.00) / respondent
  *   City targeting    $1.00 / respondent
  *   Screening         $0.50 / respondent
- *   Pixel retargeting $1.50 / respondent
+ *   Pixel retargeting (REMOVED 2026-04-24 — no longer charged)
  *
  * Demographics (age, gender, education, marital, parental, employment)
  *   are FREE — covered by the base rate.
@@ -159,12 +159,11 @@ function calculateMissionPrice({
   // 4. Screening surcharge ($0.50/resp)
   const screeningSurcharge = isScreeningActive ? round2(respondentCount * 0.50) : 0;
 
-  // 5. Pixel retargeting ($1.50/resp)
-  const pixelId = tgt.retargeting && tgt.retargeting.pixelId;
-  const hasPixel = typeof pixelId === 'string' && pixelId.trim().length > 0;
-  const retargetingSurcharge = hasPixel ? round2(respondentCount * 1.50) : 0;
+  // Pixel retargeting surcharge removed — feature discontinued 2026-04-24.
+  // Historical missions may still have targeting.retargeting data; we no
+  // longer add any surcharge for it.
 
-  const subtotal = round2(base + questionSurcharge + targetingSurcharge + screeningSurcharge + retargetingSurcharge);
+  const subtotal = round2(base + questionSurcharge + targetingSurcharge + screeningSurcharge);
 
   // 6. Promo discount
   let discount = 0;
@@ -186,7 +185,6 @@ function calculateMissionPrice({
     questionSurcharge:  round2(questionSurcharge),
     targetingSurcharge,
     screeningSurcharge,
-    retargetingSurcharge,
     subtotal,
     discount,
     total,

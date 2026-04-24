@@ -195,6 +195,50 @@ async function sendPaymentFailedEmail({ to, name, missionStatement, missionId, r
   } catch (err) { logger.warn('sendPaymentFailedEmail failed', { err: err.message }); }
 }
 
+// ─── Retargeting refund notification ─────────────────────
+async function sendRetargetingRefundEmail({ to, name, refundAmountUsd, missionCount = 1 }) {
+  try {
+    return await resend.emails.send({
+      from: FROM,
+      to,
+      subject: 'Partial refund issued — VETT retargeting feature',
+      html: shell({
+        preheader: `We've issued a $${refundAmountUsd.toFixed(2)} refund. Here's why.`,
+        body: `
+          <h1 style="color:#fff;font-size:22px;margin:0 0 12px;">We owe you a refund.</h1>
+          <p style="color:#9ca3af;line-height:1.7;">Hi ${name || 'there'},</p>
+          <p style="color:#9ca3af;line-height:1.7;">
+            We're writing to let you know we're issuing a partial refund of
+            <strong style="color:#BEF264;">$${refundAmountUsd.toFixed(2)}</strong>
+            on your recent VETT mission${missionCount > 1 ? 's' : ''}.
+          </p>
+          ${card(`
+            <div style="color:#BEF264;font-weight:700;margin-bottom:8px;">What happened</div>
+            <p style="color:#9ca3af;line-height:1.7;margin:0;">
+              During a product review we identified that the "Retargeting Pixel" feature you opted into
+              did not actually fire your pixel as described — this was a bug on our end, not yours.
+              AI personas don't have browsers or ad-platform cookies, so the feature could never have worked
+              as advertised. We should have caught this before charging for it.
+            </p>
+          `)}
+          ${card(`
+            <div style="color:#BEF264;font-weight:700;margin-bottom:8px;">What we've done</div>
+            <p style="color:#9ca3af;line-height:1.7;margin:0;">
+              We've removed the retargeting pixel feature from VETT entirely and refunded the surcharge
+              automatically. The <strong style="color:#fff;">$${refundAmountUsd.toFixed(2)} refund</strong>
+              will appear on your card in 5–10 business days.
+            </p>
+          `)}
+          <p style="color:#9ca3af;line-height:1.7;">
+            We're sorry for the mistake. Every dollar you spend on VETT should deliver what it promised.
+          </p>
+          <div style="margin-top:20px;">${btn('Back to VETT →', APP_URL)}</div>
+        `,
+      }),
+    });
+  } catch (err) { logger.warn('sendRetargetingRefundEmail failed', { err: err.message }); }
+}
+
 // ─── Chat overage receipt ─────────────────────────────────
 async function sendChatOverageEmail({ to, name, messagesGranted = 50, priceUsd = 5 }) {
   try {
@@ -222,4 +266,5 @@ module.exports = {
   sendInvoiceEmail,
   sendPaymentFailedEmail,
   sendChatOverageEmail,
+  sendRetargetingRefundEmail,
 };
