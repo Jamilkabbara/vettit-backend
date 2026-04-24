@@ -14,6 +14,7 @@ const logger = require('../utils/logger');
 const { generatePersonas } = require('../services/ai/personas');
 const { simulateAllResponses } = require('../services/ai/simulate');
 const { synthesizeInsights } = require('../services/ai/insights');
+const { generateTargetingBrief } = require('../services/ai/targetingBrief');
 const { updateMission } = require('../db/missionSchema');
 const emailService = require('../services/email');
 
@@ -124,6 +125,22 @@ async function runMission(missionId) {
           },
         },
       }).eq('id', missionId);
+    }
+
+    // 5b. Generate targeting brief (non-fatal — mission still completes without it)
+    try {
+      const brief = await generateTargetingBrief({
+        mission,
+        responses,
+        insights,
+      });
+      await supabase.from('missions').update({ targeting_brief: brief }).eq('id', missionId);
+      logger.info('Mission run: targeting brief generated', { missionId });
+    } catch (briefErr) {
+      logger.warn('Mission run: targeting brief failed (non-fatal)', {
+        missionId,
+        err: briefErr.message,
+      });
     }
 
     // 6. Mark complete — always, regardless of summary outcome
