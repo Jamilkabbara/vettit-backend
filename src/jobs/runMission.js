@@ -15,6 +15,7 @@ const { generatePersonas } = require('../services/ai/personas');
 const { simulateAllResponses } = require('../services/ai/simulate');
 const { synthesizeInsights } = require('../services/ai/insights');
 const { generateTargetingBrief } = require('../services/ai/targetingBrief');
+const { analyzeCreative }       = require('../services/ai/creativeAttention');
 const { updateMission } = require('../db/missionSchema');
 const emailService = require('../services/email');
 
@@ -63,7 +64,25 @@ async function runMission(missionId) {
 
   try {
 
-    // 2. Generate personas
+    // 2. Creative Attention missions bypass the persona simulation pipeline —
+    //    they analyze the uploaded creative with Claude vision directly.
+    if (mission.goal_type === 'creative_attention') {
+      await analyzeCreative({ mission });
+      logger.info('Mission run: creative analysis complete', { missionId });
+
+      // Notification
+      await supabase.from('notifications').insert({
+        user_id: mission.user_id,
+        type:    'mission_complete',
+        title:   `${mission.title || 'Creative analysis'} is ready`,
+        body:    'Your creative attention analysis is complete.',
+        link:    `/creative-results/${missionId}`,
+      }).catch(() => {});
+
+      return;
+    }
+
+    // Regular survey missions: Generate personas
     const targetCount = mission.respondent_count || 100;
     const personas = await generatePersonas(mission, targetCount);
     logger.info('Mission run: personas generated', { missionId, count: personas.length });

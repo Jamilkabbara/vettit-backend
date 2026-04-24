@@ -32,7 +32,9 @@ const MODEL_ROUTING = {
   question_refine:   'claude-haiku-4-5',
   adaptive_clarify:  'claude-haiku-4-5',
   results_analysis:  'claude-sonnet-4-6',
-  targeting_brief:   'claude-sonnet-4-6',
+  targeting_brief:              'claude-sonnet-4-6',
+  creative_attention_frame:    'claude-sonnet-4-6',  // vision: per-frame emotion analysis
+  creative_attention_synthesis: 'claude-sonnet-4-6', // text: aggregate + recommendations
 };
 
 /**
