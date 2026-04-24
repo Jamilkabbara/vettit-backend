@@ -108,6 +108,9 @@ async function runMission(missionId) {
       persona_profile: r.persona_profile,
       question_id:     r.question_id,
       answer:          r.answer,
+      // Bug 1/2 fix: persist screened_out as first-class column so
+      // aggregation can filter without parsing JSONB on every query.
+      screened_out:    Boolean((r.persona_profile || {}).screened_out),
     }));
     for (let i = 0; i < rows.length; i += CHUNK) {
       const { error: insErr } = await supabase

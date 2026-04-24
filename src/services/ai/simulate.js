@@ -69,18 +69,27 @@ Return ONLY this JSON:
 /**
  * Check whether a persona's answer to a screening question passes the gate.
  *
- * @param {object} question  — the question object (may have screening_continue_on)
+ * Bug 1/2 fix: question may carry EITHER the new `qualifying_answers` array
+ * (set by AI generator and frontend multi-toggle) OR the legacy
+ * `screening_continue_on` / `qualifyingAnswer` fields. Prefer in order:
+ *   qualifying_answers → screening_continue_on → qualifyingAnswer (single)
+ *
+ * @param {object} question  — the question object
  * @param {*}      answer    — the simulated answer
  * @returns {boolean}  true = passes (continue), false = screened out
  */
 function passesScreening(question, answer) {
   if (!question.isScreening) return true; // non-screening questions always pass
 
-  const continueOn = Array.isArray(question.screening_continue_on)
-    ? question.screening_continue_on
-    : question.qualifyingAnswer
-      ? [question.qualifyingAnswer]
-      : null;
+  // Build the allowed-answers list from whichever field is present
+  let continueOn = null;
+  if (Array.isArray(question.qualifying_answers) && question.qualifying_answers.length > 0) {
+    continueOn = question.qualifying_answers;
+  } else if (Array.isArray(question.screening_continue_on) && question.screening_continue_on.length > 0) {
+    continueOn = question.screening_continue_on;
+  } else if (question.qualifyingAnswer) {
+    continueOn = [question.qualifyingAnswer];
+  }
 
   if (!continueOn || continueOn.length === 0) return true; // no gate defined → pass
 

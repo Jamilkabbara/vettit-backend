@@ -42,6 +42,7 @@ JSON structure required:
       "options": ["Option A", "Option B", "Option C"],
       "isScreening": true,
       "qualifyingAnswer": "Option A",
+      "qualifying_answers": ["Option A", "Option B"],
       "screening_continue_on": ["Option A", "Option B"],
       "aiRefined": true
     }
@@ -61,7 +62,7 @@ Rules:
 - For "single" and "multi": always include "options" array (3-5 items)
 - For "opinion": options = ["Strongly Agree", "Agree", "Neutral", "Disagree", "Strongly Disagree"]
 - For "rating" and "text": options array can be empty
-- SCREENING QUESTION (q1 only): isScreening: true, qualifyingAnswer: single best answer, screening_continue_on: all passing answers
+- SCREENING QUESTION (q1 only): isScreening: true, qualifyingAnswer: the primary qualifying answer (string), qualifying_answers: ALL answers that qualify (array — include EVERY affirmative/target option, not just one), screening_continue_on: same array as qualifying_answers
 - NON-SCREENING: isScreening: false, qualifyingAnswer: null, screening_continue_on: null
 - Flow: screening → awareness → perception → intent → open feedback
 - Country codes: AE (UAE), US (USA), GB (UK), SA (Saudi Arabia), IN (India), AU (Australia)

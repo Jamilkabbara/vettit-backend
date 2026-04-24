@@ -9,6 +9,10 @@ const { aggregate } = require('../ai/insights');
 /**
  * Load everything needed to build an export for a mission, in one trip.
  * Returns null if the mission isn't the user's or isn't exportable yet.
+ *
+ * Bug 1/2 fix: screening question aggregation must include ALL respondents
+ * (both screened-in and screened-out) so the distribution is honest.
+ * Non-screening questions only count qualified respondents.
  */
 async function loadMissionForExport(missionId, userId) {
   const { data: mission } = await supabase
@@ -25,45 +29,84 @@ async function loadMissionForExport(missionId, userId) {
 
   const { data: responses } = await supabase
     .from('mission_responses')
-    .select('persona_id, persona_profile, question_id, answer')
+    .select('persona_id, persona_profile, question_id, answer, screened_out')
     .eq('mission_id', missionId);
 
   const allResponses = responses || [];
 
   // ── Screening funnel ───────────────────────────────────────────────────────
-  // Compute from persona_profile.screened_out flag set by simulate.js (D.2).
+  // Prefer the first-class screened_out column; fall back to persona_profile
+  // JSONB for rows inserted before the migration (backfill handles most cases).
   const seenPersonas = new Map();  // persona_id → screened_out bool
   for (const r of allResponses) {
     if (!seenPersonas.has(r.persona_id)) {
-      const profile = r.persona_profile || {};
-      seenPersonas.set(r.persona_id, Boolean(profile.screened_out));
+      const fromColumn  = r.screened_out === true;
+      const fromProfile = Boolean((r.persona_profile || {}).screened_out);
+      seenPersonas.set(r.persona_id, fromColumn || fromProfile);
     }
   }
-  const totalPersonas   = seenPersonas.size;
+  const totalPersonas    = seenPersonas.size;
   const screenedOutCount = [...seenPersonas.values()].filter(Boolean).length;
-  const passedCount     = totalPersonas - screenedOutCount;
+  const passedCount      = totalPersonas - screenedOutCount;
 
   // Only expose funnel data if at least one question has isScreening=true
-  const hasScreeningQ = (mission.questions || []).some(q => q.isScreening);
+  const questions    = mission.questions || [];
+  const hasScreeningQ = questions.some(q => q.isScreening);
   const screeningFunnel = hasScreeningQ
     ? { total: totalPersonas, passed: passedCount, screenedOut: screenedOutCount }
     : null;
   // ─────────────────────────────────────────────────────────────────────────
 
-  // For aggregation, exclude screened-out personas (they only answered the
-  // screening question; including their partial responses would skew counts).
+  // Qualified-only responses — used for non-screening question aggregation
   const qualifiedResponses = allResponses.filter(r => {
-    const profile = r.persona_profile || {};
-    return !profile.screened_out;
+    const fromColumn  = r.screened_out === true;
+    const fromProfile = Boolean((r.persona_profile || {}).screened_out);
+    return !(fromColumn || fromProfile);
   });
 
+  // Bug 1/2: pass both response sets so screening questions can use allResponses
   return {
     mission,
     responses: allResponses,
-    insights: mission.insights || {},
-    aggregatedByQuestion: aggregate(qualifiedResponses, mission.questions || []),
+    insights:  mission.insights || {},
+    aggregatedByQuestion: aggregateWithScreeningAware(
+      allResponses,
+      qualifiedResponses,
+      questions,
+    ),
     screeningFunnel,
+    // Sample metrics for insights prompt (Bug 4/5)
+    sampleMetrics: {
+      total_respondents:    totalPersonas,
+      screened_out:         screenedOutCount,
+      completed:            passedCount,
+      response_records_total: allResponses.length,
+    },
   };
+}
+
+/**
+ * Aggregate responses with screening awareness.
+ *
+ * Screening questions  → use ALL responses (shows the full funnel split).
+ * Non-screening questions → use only qualified responses.
+ *
+ * This ensures exports honestly show, e.g., "6 of 10 selected multiple cats"
+ * on the screener question rather than hiding the screened-out segment.
+ */
+function aggregateWithScreeningAware(allResponses, qualifiedResponses, questions) {
+  const result = {};
+  for (const q of questions) {
+    const responsesToUse = q.isScreening ? allResponses : qualifiedResponses;
+    const singleQ = aggregate(responsesToUse, [q]);
+    result[q.id] = {
+      ...singleQ[q.id],
+      // Tag so renderers can add "n_total / n_qualified" context
+      is_screening: Boolean(q.isScreening),
+      n_total: q.isScreening ? allResponses.filter(r => r.question_id === q.id).length : undefined,
+    };
+  }
+  return result;
 }
 
 // VETT brand palette
