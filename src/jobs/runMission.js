@@ -7,6 +7,13 @@
  *   2. Simulate responses per persona (Haiku, concurrency 8)
  *   3. Synthesize insights (Sonnet, single call)
  *   4. Mark mission complete + send notification + email
+ *
+ * Pass 19 — Task 0: Guaranteed Qualified Delivery
+ *   If the mission has a screening question, we oversample personas until we
+ *   have enough qualified respondents (or until we hit 3x the ordered count).
+ *   Delivery metrics (qualified_respondent_count, total_simulated_count,
+ *   qualification_rate, delivery_status) are written to the missions row so
+ *   the Results page and Admin panel can surface them.
  */
 
 const supabase = require('../db/supabase');
@@ -18,6 +25,26 @@ const { generateTargetingBrief } = require('../services/ai/targetingBrief');
 const { analyzeCreative }       = require('../services/ai/creativeAttention');
 const { updateMission } = require('../db/missionSchema');
 const emailService = require('../services/email');
+
+// Maximum oversample multiplier: we'll generate at most 3× the ordered count
+// before giving up and delivering whatever qualified respondents we have.
+const MAX_OVERSAMPLE_MULTIPLIER = 3;
+
+// If the observed qualification rate falls below this threshold we declare
+// the screener "too restrictive" rather than just "partial".
+const SCREENER_TOO_RESTRICTIVE_RATE = 0.25;
+
+/**
+ * Determine whether a persona's response set indicates they passed the
+ * screening question. Mirrors the logic in simulate.js / passesScreening().
+ */
+function wasScreenedOut(personaResponses) {
+  return personaResponses.some(r => {
+    const fromColumn  = r.screened_out === true;
+    const fromProfile = Boolean((r.persona_profile || {}).screened_out);
+    return fromColumn || fromProfile;
+  });
+}
 
 async function runMission(missionId) {
   logger.info('Mission run: starting', { missionId });
@@ -82,27 +109,171 @@ async function runMission(missionId) {
       return;
     }
 
-    // Regular survey missions: Generate personas
-    const targetCount = mission.respondent_count || 100;
-    const personas = await generatePersonas(mission, targetCount);
-    logger.info('Mission run: personas generated', { missionId, count: personas.length });
+    // ── Pass 19 Task 0: Guaranteed Qualified Delivery ──────────────────────
+    const questions = mission.questions || [];
+    const hasScreeningQ = questions.some(q => q.isScreening);
+    const orderedCount = mission.respondent_count || 100;
+    const maxTotal = orderedCount * MAX_OVERSAMPLE_MULTIPLIER;
 
-    // 3. Simulate responses
-    const responses = await simulateAllResponses(
-      personas,
-      mission.questions || [],
-      mission,
-      (completed, total) => {
-        // Progress is reflected by mission_responses row count — client polls that.
-        if (completed % 25 === 0) logger.info('Mission run: progress', { missionId, completed, total });
+    let allResponses = [];          // every simulated response row (all personas)
+    let qualifiedResponses = [];    // responses belonging to non-screened personas
+    let totalSimulated = 0;         // total personas simulated so far
+    let personaIdOffset = 0;        // prevent persona ID collisions across batches
+
+    if (!hasScreeningQ) {
+      // No screener — simple path: generate exactly orderedCount personas once.
+      const personas = await generatePersonas(mission, orderedCount);
+      logger.info('Mission run: personas generated (no screener)', { missionId, count: personas.length });
+      totalSimulated = personas.length;
+
+      allResponses = await simulateAllResponses(
+        personas,
+        questions,
+        mission,
+        (completed, total) => {
+          if (completed % 25 === 0) logger.info('Mission run: progress', { missionId, completed, total });
+        }
+      );
+      qualifiedResponses = allResponses;  // no screening → all qualify
+
+    } else {
+      // Screener present — oversample loop.
+      // Build a map of personaId → screened_out so we can deduplicate without
+      // re-scanning every response on every iteration.
+      const personaOutcomes = new Map(); // personaId → true (screened out) | false (qualified)
+
+      while (
+        qualifiedResponses.length < orderedCount &&
+        totalSimulated < maxTotal
+      ) {
+        // How many MORE do we need?
+        const stillNeeded = orderedCount - qualifiedResponses.length;
+
+        // Estimate batch size based on observed qualification rate (or 2× needed
+        // if we have no data yet).  Always request at least stillNeeded.
+        let batchSize;
+        if (totalSimulated === 0) {
+          batchSize = Math.ceil(stillNeeded * 2);  // cold start: assume 50% pass rate
+        } else {
+          const obsRate = qualifiedResponses.length / totalSimulated;
+          const safeRate = Math.max(obsRate, 0.05); // never divide by <5%
+          batchSize = Math.ceil(stillNeeded / safeRate);
+        }
+
+        // Cap so we don't overshoot the 3× ceiling in one shot
+        const remainingBudget = maxTotal - totalSimulated;
+        batchSize = Math.min(batchSize, remainingBudget, 500); // hard cap at 500/batch
+
+        if (batchSize <= 0) break;
+
+        logger.info('Mission run: oversampling batch', {
+          missionId,
+          batchSize,
+          qualifiedSoFar: qualifiedResponses.length,
+          totalSimulatedSoFar: totalSimulated,
+          target: orderedCount,
+        });
+
+        const personas = await generatePersonas(mission, batchSize, personaIdOffset);
+        personaIdOffset += batchSize;
+        totalSimulated += personas.length;
+
+        const batchResponses = await simulateAllResponses(
+          personas,
+          questions,
+          mission,
+          (completed, total) => {
+            if (completed % 25 === 0) logger.info('Mission run: batch progress', { missionId, completed, total });
+          }
+        );
+
+        allResponses = allResponses.concat(batchResponses);
+
+        // Determine which personas in this batch qualified.
+        // Group responses by persona_id to call wasScreenedOut per persona.
+        const byPersona = new Map();
+        for (const r of batchResponses) {
+          if (!byPersona.has(r.persona_id)) byPersona.set(r.persona_id, []);
+          byPersona.get(r.persona_id).push(r);
+        }
+
+        for (const [pId, pResponses] of byPersona) {
+          const screenedOut = wasScreenedOut(pResponses);
+          personaOutcomes.set(pId, screenedOut);
+        }
+
+        // Rebuild qualified list from scratch (cleaner than incremental append)
+        qualifiedResponses = allResponses.filter(r => {
+          const out = personaOutcomes.get(r.persona_id);
+          return out === false; // explicitly NOT screened out
+        });
+
+        logger.info('Mission run: oversampling iteration complete', {
+          missionId,
+          qualified: qualifiedResponses.length,
+          total: totalSimulated,
+          rate: totalSimulated > 0 ? (qualifiedResponses.length / totalSimulated).toFixed(3) : '—',
+        });
       }
-    );
 
-    logger.info('Mission run: responses simulated', { missionId, count: responses.length });
+      logger.info('Mission run: oversampling loop done', {
+        missionId,
+        qualifiedFinal: qualifiedResponses.length,
+        totalSimulated,
+        ordered: orderedCount,
+      });
+    }
+    // ── End oversampling loop ──────────────────────────────────────────────
+
+    // Compute delivery metrics
+    const qualifiedCount = qualifiedResponses.length;
+    const qualRate = totalSimulated > 0
+      ? Number((qualifiedCount / totalSimulated).toFixed(4))
+      : 1;
+
+    let deliveryStatus;
+    if (qualifiedCount >= orderedCount) {
+      deliveryStatus = 'full';
+    } else if (hasScreeningQ && qualRate < SCREENER_TOO_RESTRICTIVE_RATE) {
+      deliveryStatus = 'screener_too_restrictive';
+    } else {
+      deliveryStatus = 'partial';
+    }
+
+    logger.info('Mission run: delivery metrics', {
+      missionId,
+      qualifiedCount,
+      totalSimulated,
+      qualRate,
+      deliveryStatus,
+    });
+
+    // Trim allResponses: we expose ALL screener responses (for honest funnel
+    // data) but cap non-screener responses to orderedCount qualified personas.
+    // Build the set of persona IDs that are within the delivery cap.
+    let responsesToInsert;
+    if (!hasScreeningQ) {
+      responsesToInsert = allResponses.slice(0, orderedCount * questions.length + 1000);
+    } else {
+      // Collect the first orderedCount qualified persona IDs (preserve order)
+      const qualifiedPersonaIds = new Set();
+      for (const r of qualifiedResponses) {
+        qualifiedPersonaIds.add(r.persona_id);
+        if (qualifiedPersonaIds.size >= orderedCount) break;
+      }
+
+      responsesToInsert = allResponses.filter(r => {
+        // Always include screener responses for all personas (funnel data)
+        const q = questions.find(q2 => q2.id === r.question_id);
+        if (q && q.isScreening) return true;
+        // For non-screener questions only include capped qualified personas
+        return qualifiedPersonaIds.has(r.persona_id);
+      });
+    }
 
     // 4. Bulk insert responses (in chunks to stay under PostgREST limits)
     const CHUNK = 200;
-    const rows = responses.map(r => ({
+    const rows = responsesToInsert.map(r => ({
       mission_id:      missionId,
       persona_id:      r.persona_id,
       persona_profile: r.persona_profile,
@@ -119,13 +290,15 @@ async function runMission(missionId) {
       if (insErr) logger.warn('Mission run: responses insert chunk failed', { missionId, err: insErr });
     }
 
+    logger.info('Mission run: responses inserted', { missionId, count: rows.length });
+
     // 5. Synthesize insights (wrapped so a summary failure never blocks completion)
     // Persona responses are expensive and cannot be cheaply regenerated.
     // Summary CAN be regenerated later from stored responses, so we always
     // mark the mission completed regardless of whether analysis succeeds.
     let insights = null;
     try {
-      insights = await synthesizeInsights(mission, responses);
+      insights = await synthesizeInsights(mission, responsesToInsert);
     } catch (analysisErr) {
       logger.error('Mission run: synthesizeInsights failed (non-fatal)', {
         missionId,
@@ -153,7 +326,7 @@ async function runMission(missionId) {
     try {
       const brief = await generateTargetingBrief({
         mission,
-        responses,
+        responses: responsesToInsert,
         insights,
       });
       await supabase.from('missions').update({ targeting_brief: brief }).eq('id', missionId);
@@ -166,28 +339,40 @@ async function runMission(missionId) {
     }
 
     // 6. Mark complete — always, regardless of summary outcome
+    // Write delivery metrics at the same time.
     await updateMission(supabase, missionId, {
       status: 'completed',
       completed_at: new Date().toISOString(),
       executive_summary: insights?.executive_summary || null,
       insights: insights || null,
+      qualified_respondent_count: qualifiedCount,
+      total_simulated_count: totalSimulated,
+      qualification_rate: qualRate,
+      delivery_status: deliveryStatus,
     }, { caller: 'runMission: complete' });
 
-    logger.info('Mission run: complete', { missionId });
+    logger.info('Mission run: complete', { missionId, deliveryStatus });
 
     // Funnel event: mission_completed
     supabase.from('funnel_events').insert({
       user_id:    mission.user_id,
       event_name: 'mission_completed',
-      properties: { mission_id: missionId, goal_type: mission.goal_type },
+      properties: { mission_id: missionId, goal_type: mission.goal_type, delivery_status: deliveryStatus },
     }).then(() => {}).catch(() => {});
 
     // 7. Notification (real-time via Supabase realtime)
+    // Warn the user if delivery was imperfect.
+    const notifBody = deliveryStatus === 'full'
+      ? (insights?.executive_summary?.slice(0, 140) || 'Your synthetic audience report is ready to review.')
+      : deliveryStatus === 'screener_too_restrictive'
+        ? `Only ${qualifiedCount} of ${orderedCount} respondents passed your screener. Consider relaxing your screening criteria.`
+        : `${qualifiedCount} of ${orderedCount} qualified respondents delivered. Your results are ready.`;
+
     await supabase.from('notifications').insert({
       user_id: mission.user_id,
       type:    'mission_complete',
       title:   `${mission.title || 'Your mission'} results are ready`,
-      body:    insights.executive_summary?.slice(0, 140) || 'Your synthetic audience report is ready to review.',
+      body:    notifBody,
       link:    `/results/${missionId}`,
     });
 
@@ -199,7 +384,7 @@ async function runMission(missionId) {
           to: user.email,
           missionId,
           missionTitle: mission.title || 'Your research mission',
-          executiveSummary: insights.executive_summary || '',
+          executiveSummary: insights?.executive_summary || '',
         });
       }
     } catch (mailErr) {

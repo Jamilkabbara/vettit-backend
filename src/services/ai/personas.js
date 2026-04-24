@@ -22,17 +22,20 @@ You understand MENA, Gulf, European, US, and global markets equally well. You ha
 
 /**
  * Generate N personas in batches of BATCH_SIZE.
- * @param {object} mission  Full mission row
- * @param {number} count    How many personas to generate
+ * @param {object} mission      Full mission row
+ * @param {number} count        How many personas to generate
+ * @param {number} [idOffset=0] Starting offset for persona IDs — used by the
+ *                              oversampling loop in runMission.js to prevent
+ *                              ID collisions across successive batches.
  * @returns {Promise<Array>} Array of persona objects
  */
-async function generatePersonas(mission, count) {
+async function generatePersonas(mission, count, idOffset = 0) {
   const BATCH_SIZE = 10;
   const batches = Math.ceil(count / BATCH_SIZE);
   const targeting = mission.targeting || {};
   const allPersonas = [];
 
-  logger.info('Persona generation starting', { missionId: mission.id, count, batches });
+  logger.info('Persona generation starting', { missionId: mission.id, count, batches, idOffset });
 
   // Launch batches in parallel (capped concurrency of 5 to avoid rate limits)
   const CONCURRENCY = 5;
@@ -40,7 +43,7 @@ async function generatePersonas(mission, count) {
     const wave = [];
     for (let j = i; j < Math.min(i + CONCURRENCY, batches); j++) {
       const batchCount = Math.min(BATCH_SIZE, count - j * BATCH_SIZE);
-      const startIndex = j * BATCH_SIZE;
+      const startIndex = idOffset + j * BATCH_SIZE;
       wave.push(generatePersonaBatch(mission, targeting, batchCount, startIndex));
     }
     const results = await Promise.all(wave);
