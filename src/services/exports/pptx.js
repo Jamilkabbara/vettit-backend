@@ -34,10 +34,11 @@ function addDarkBackground(slide) {
     fill: { color: hex(BRAND.lime) },
     line: { color: hex(BRAND.lime) },
   });
-  // Footer
+  // Footer — bottom of 7.5" wide slide, well clear of chart content
   slide.addText('VETT  ·  vettit.ai', {
-    x: 0.5, y: 5.2, w: 9, h: 0.3,
+    x: 0.5, y: 7.15, w: 12.3, h: 0.3,
     fontSize: 9, color: hex(BRAND.text3), fontFace: 'Calibri',
+    align: 'center',
   });
 }
 
@@ -165,7 +166,7 @@ function buildPPTX(pack, res) {
       const total = Object.values(dist).reduce((s, v) => s + v, 0) || 1;
       const chartData = [{
         name: 'Responses',
-        labels: ['★ 1', '★ 2', '★ 3', '★ 4', '★ 5'],
+        labels: ['1 Star', '2 Stars', '3 Stars', '4 Stars', '5 Stars'],
         values: [1,2,3,4,5].map(r => Math.round(((dist[r] || 0) / total) * 100)),
       }];
       slide.addChart(pptx.ChartType.bar, chartData, {
@@ -242,11 +243,12 @@ function buildPPTX(pack, res) {
       });
     }
 
-    // Screening context note on the slide
+    // Screening context note — above footer (footer now at y:7.15)
     if (qAgg.is_screening && qAgg.n_total) {
       slide.addText(`Screening question · all ${qAgg.n_total} respondents shown`, {
-        x: 0.5, y: 6.9, w: 8, h: 0.3,
+        x: 0.5, y: 6.6, w: 12.3, h: 0.25,
         fontSize: 9, color: hex(BRAND.text3), italic: true, fontFace: 'Calibri',
+        align: 'left',
       });
     }
 
