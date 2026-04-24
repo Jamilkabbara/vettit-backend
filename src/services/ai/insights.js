@@ -115,6 +115,7 @@ Return ONLY this JSON structure:
     messages:  [{ role: 'user', content: userPrompt }],
     systemPrompt: INSIGHT_SYSTEM_PROMPT,
     maxTokens: 4000,
+    enablePromptCache: true,
   });
 
   try {

@@ -1,9 +1,11 @@
 /**
  * VETT — Excel export using exceljs.
- * Three sheets that mirror the HTML prototype:
- *   1. Cover    — title, brief, meta, executive summary
- *   2. Raw      — every persona/question row from mission_responses
- *   3. Summary  — per-question aggregated distribution / averages / verbatims
+ * Five sheets:
+ *   1. Cover                — title, brief, meta, executive summary
+ *   2. Raw responses        — every persona/question row from mission_responses
+ *   3. Summary              — per-question aggregated distribution / averages / verbatims
+ *   4. Insights             — narrative findings + recommended next actions from AI
+ *   5. Demographic breakdown — age / country / gender / occupation tables
  *
  * Dark-theme styling isn't truly visual in spreadsheets, but we adopt the
  * VETT palette for headers and banding so the file feels on-brand.
@@ -196,6 +198,162 @@ function buildXLSX(pack, res) {
     // spacer row
     summary.addRow({});
   });
+
+  // ── SHEET 4: INSIGHTS ──────────────────────────────────────
+  const insightsSheet = wb.addWorksheet('Insights', {
+    views: [{ state: 'frozen', ySplit: 1 }],
+    properties: { tabColor: { argb: argb(BRAND.lime) } },
+  });
+  insightsSheet.getColumn('A').width = 100;
+  insightsSheet.getColumn('B').width = 20;
+  insightsSheet.getColumn('C').width = 20;
+  insightsSheet.getColumn('D').width = 20;
+
+  // Title row
+  insightsSheet.mergeCells('A1:D1');
+  const insTitle = insightsSheet.getCell('A1');
+  insTitle.value = 'Executive Summary & Key Findings';
+  insTitle.font  = { name: 'Calibri', size: 16, bold: true, color: { argb: argb(BRAND.lime) } };
+  insTitle.fill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: argb(BRAND.bg) } };
+  insTitle.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+  insightsSheet.getRow(1).height = 32;
+
+  const ai = insights || {};
+  const execSummary = ai.executive_summary || ai.summary || 'Insights not available for this mission.';
+
+  // Executive summary block
+  insightsSheet.mergeCells('A3:D7');
+  const esCell = insightsSheet.getCell('A3');
+  esCell.value = execSummary;
+  esCell.font = { name: 'Calibri', size: 11 };
+  esCell.alignment = { wrapText: true, vertical: 'top' };
+  insightsSheet.getRow(3).height = 80;
+
+  let insRow = 9;
+
+  // Key Findings
+  const findings = ai.key_findings || ai.findings || [];
+  if (findings.length > 0) {
+    insightsSheet.mergeCells(`A${insRow}:D${insRow}`);
+    insightsSheet.getCell(`A${insRow}`).value = 'Key Findings';
+    insightsSheet.getCell(`A${insRow}`).font = { name: 'Calibri', size: 14, bold: true };
+    insRow += 2;
+
+    findings.forEach((f) => {
+      const titleText = typeof f === 'string' ? f : (f.title || f.headline || '');
+      const bodyText  = typeof f === 'string' ? '' : (f.description || f.body || '');
+
+      if (titleText) {
+        insightsSheet.mergeCells(`A${insRow}:D${insRow}`);
+        const tCell = insightsSheet.getCell(`A${insRow}`);
+        tCell.value = `• ${titleText}`;
+        tCell.font  = { name: 'Calibri', size: 11, bold: true };
+        insRow++;
+      }
+      if (bodyText) {
+        insightsSheet.mergeCells(`A${insRow}:D${insRow}`);
+        const bCell = insightsSheet.getCell(`A${insRow}`);
+        bCell.value = bodyText;
+        bCell.font  = { name: 'Calibri', size: 10, color: { argb: argb(BRAND.text3) } };
+        bCell.alignment = { wrapText: true };
+        insightsSheet.getRow(insRow).height = 40;
+        insRow += 2;
+      }
+    });
+  }
+
+  // Recommended Next Actions
+  const actions = ai.recommendations || ai.next_actions || [];
+  if (actions.length > 0) {
+    insRow += 1;
+    insightsSheet.mergeCells(`A${insRow}:D${insRow}`);
+    insightsSheet.getCell(`A${insRow}`).value = 'Recommended Next Actions';
+    insightsSheet.getCell(`A${insRow}`).font = { name: 'Calibri', size: 14, bold: true };
+    insRow += 2;
+
+    actions.forEach((a, i) => {
+      const text = typeof a === 'string' ? a : (a.text || a.action || JSON.stringify(a));
+      insightsSheet.mergeCells(`A${insRow}:D${insRow}`);
+      const aCell = insightsSheet.getCell(`A${insRow}`);
+      aCell.value = `${i + 1}. ${text}`;
+      aCell.font  = { name: 'Calibri', size: 11 };
+      aCell.alignment = { wrapText: true };
+      insRow++;
+    });
+  }
+
+  // ── SHEET 5: DEMOGRAPHIC BREAKDOWN ────────────────────────
+  const demoSheet = wb.addWorksheet('Demographic breakdown', {
+    properties: { tabColor: { argb: argb(BRAND.lime) } },
+  });
+  demoSheet.getColumn('A').width = 40;
+  demoSheet.getColumn('B').width = 12;
+  demoSheet.getColumn('C').width = 10;
+
+  // Build distributions from responses
+  const ageBuckets   = { '18-24': 0, '25-34': 0, '35-44': 0, '45-54': 0, '55+': 0 };
+  const countryDist  = {};
+  const genderDist   = {};
+  const occupDist    = {};
+
+  // Deduplicate by persona_id — persona appears once per question
+  const seenPersona = new Set();
+  (responses || []).forEach((r) => {
+    if (seenPersona.has(r.persona_id)) return;
+    seenPersona.add(r.persona_id);
+    const p = r.persona_profile || {};
+    if (typeof p.age === 'number') {
+      const b = p.age < 25 ? '18-24' : p.age < 35 ? '25-34' : p.age < 45 ? '35-44' : p.age < 55 ? '45-54' : '55+';
+      ageBuckets[b]++;
+    }
+    if (p.country)    countryDist[p.country]   = (countryDist[p.country]   || 0) + 1;
+    if (p.gender)     genderDist[p.gender]      = (genderDist[p.gender]     || 0) + 1;
+    const occ = p.occupation || p.role;
+    if (occ)          occupDist[occ]            = (occupDist[occ]           || 0) + 1;
+  });
+
+  const totalPersonas = seenPersona.size || 1;
+
+  function addDemoTable(sheet, startRow, sectionTitle, entries) {
+    // Section header
+    sheet.getCell(`A${startRow}`).value = sectionTitle;
+    sheet.getCell(`A${startRow}`).font  = { name: 'Calibri', size: 14, bold: true };
+    startRow += 2;
+    // Column headers
+    ['Category', 'Count', '%'].forEach((h, i) => {
+      const col = ['A','B','C'][i];
+      const hCell = sheet.getCell(`${col}${startRow}`);
+      hCell.value = h;
+      hCell.font  = { name: 'Calibri', size: 10, bold: true, color: { argb: argb(BRAND.lime) } };
+      hCell.fill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: argb(BRAND.bg) } };
+    });
+    startRow++;
+    entries.forEach(([label, count], idx) => {
+      const pct = Math.round((count / totalPersonas) * 100);
+      sheet.getCell(`A${startRow}`).value = label;
+      sheet.getCell(`B${startRow}`).value = count;
+      sheet.getCell(`C${startRow}`).value = `${pct}%`;
+      if (idx % 2 === 0) {
+        ['A','B','C'].forEach(col => {
+          sheet.getCell(`${col}${startRow}`).fill = {
+            type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8F9FC' },
+          };
+        });
+      }
+      startRow++;
+    });
+    return startRow + 2; // gap before next table
+  }
+
+  let dr = 1;
+  dr = addDemoTable(demoSheet, dr, 'Age Distribution',
+    Object.entries(ageBuckets));
+  dr = addDemoTable(demoSheet, dr, 'Country Distribution',
+    Object.entries(countryDist).sort((a, b) => b[1] - a[1]));
+  dr = addDemoTable(demoSheet, dr, 'Gender Distribution',
+    Object.entries(genderDist).sort((a, b) => b[1] - a[1]));
+  addDemoTable(demoSheet, dr, 'Top 10 Occupations',
+    Object.entries(occupDist).sort((a, b) => b[1] - a[1]).slice(0, 10));
 
   // Stream to response
   const fname = `vett-report-${(mission.title || mission.id).toString().slice(0, 40).replace(/[^a-z0-9]+/gi, '-')}.xlsx`;
