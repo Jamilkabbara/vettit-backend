@@ -7,6 +7,44 @@ const { runMission } = require('../jobs/runMission');
 const { updateMission } = require('../db/missionSchema');
 const emailService = require('../services/email');
 
+/**
+ * Pass 19 Task 3 — Stripe webhook idempotency.
+ *
+ * Before processing any event we insert event.id into stripe_webhook_events.
+ * The table has a PRIMARY KEY on event_id so a duplicate delivery will fail
+ * the INSERT and we return 200 immediately without re-processing.
+ *
+ * All `payment_intent.payment_failed` events also write an admin_alert row
+ * so the Delivery Health panel can surface them without digging through logs.
+ */
+
+/**
+ * Mark an event as processed. Returns true if this is the first time we've
+ * seen this event, false if it is a duplicate (idempotent).
+ */
+async function claimWebhookEvent(event) {
+  const { error } = await supabase
+    .from('stripe_webhook_events')
+    .insert({
+      event_id:  event.id,
+      event_type: event.type,
+      payload:   event,
+    });
+
+  if (error) {
+    // Unique-key violation means we already processed this event.
+    if (error.code === '23505' || (error.message || '').includes('duplicate')) {
+      logger.info('Stripe webhook: duplicate event skipped', { eventId: event.id, type: event.type });
+      return false;
+    }
+    // Other DB errors — log but still allow processing (safer than silent drop)
+    logger.warn('Stripe webhook: could not record event (proceeding anyway)', {
+      eventId: event.id, err: error.message,
+    });
+  }
+  return true;
+}
+
 // Stripe webhooks need the raw body — this route is mounted BEFORE the JSON parser in app.js.
 router.post('/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
@@ -19,7 +57,15 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
     return res.status(400).json({ error: `Webhook error: ${err.message}` });
   }
 
-  logger.info('Stripe webhook received', { type: event.type });
+  logger.info('Stripe webhook received', { type: event.type, eventId: event.id });
+
+  // ── Idempotency gate ──────────────────────────────────────────────────────
+  const isNew = await claimWebhookEvent(event);
+  if (!isNew) {
+    // Already processed — ack immediately so Stripe doesn't keep retrying.
+    return res.json({ received: true, duplicate: true });
+  }
+  // ─────────────────────────────────────────────────────────────────────────
 
   switch (event.type) {
     case 'payment_intent.succeeded': {
@@ -107,6 +153,20 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
             body:    'We could not process the payment for your mission. Please try again.',
             link:    `/missions/${missionId}`,
           }).then(()=>{}).catch(()=>{});
+
+          // Pass 19 Task 3: raise admin alert for payment failure
+          await supabase.from('admin_alerts').insert({
+            alert_type: 'payment_failed',
+            mission_id: missionId,
+            user_id:    mission.user_id,
+            payload: {
+              stripe_error:   pi.last_payment_error?.message || null,
+              decline_code:   pi.last_payment_error?.decline_code || null,
+              payment_intent: pi.id,
+              amount:         pi.amount,
+              currency:       pi.currency,
+            },
+          }).catch(e => logger.warn('admin_alerts insert failed', { err: e.message }));
 
           try {
             const { data: { user } } = await supabase.auth.admin.getUserById(mission.user_id);
