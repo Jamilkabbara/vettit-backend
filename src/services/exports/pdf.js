@@ -203,30 +203,39 @@ function buildPDF(pack, res) {
     } else if (q.type === 'rating') {
       doc.fontSize(11).fillColor(BRAND.lime)
          .text(`Average: ${qAgg.average || 0} / 5  ·  n=${qAgg.n || 0}`);
-      doc.moveDown(0.5);
+      doc.moveDown(0.6);
       const dist = qAgg.distribution || {};
       const total = Object.values(dist).reduce((s, v) => s + v, 0) || 1;
+
       for (let r = 5; r >= 1; r--) {
         const c = dist[r] || 0;
         const pct = Math.round((c / total) * 100);
-        // Bug 10: draw star using path primitive instead of ★ character
-        const starY = doc.y;
-        drawStar(doc, 50, starY, 12);
-        doc.fontSize(10).fillColor(BRAND.text1)
-           .text(` ${r}`, 65, starY, { continued: false });
-        // Re-use barRow but skip the leading star char by passing plain label
-        if (doc.y === starY) doc.moveDown(0.2); // ensure advance
-        // Draw bar inline
-        const barX = 50 + 200;
-        const barMaxW = doc.page.width - barX - 100;
+        const rowY = doc.y;
+        const rowHeight = 18;
+
+        // Star drawn at fixed rowY — does NOT advance doc.y
+        drawStar(doc, 50, rowY + 2, 12);
+
+        // Rating number next to star — also anchored at rowY
+        doc.fontSize(10).fillColor(BRAND.text1).font('Helvetica-Bold')
+           .text(`${r}`, 68, rowY + 3, { width: 20, lineBreak: false });
+        doc.font('Helvetica');
+
+        // Bar track + fill — same rowY baseline, no dependency on doc.y
+        const barX = 120;
+        const barMaxW = doc.page.width - barX - 110;
         const barW = Math.max(2, Math.round((pct / 100) * barMaxW));
-        const bY = doc.y - 14;
-        doc.rect(barX, bY + 3, barMaxW, 8).fill(BRAND.bg3);
-        doc.rect(barX, bY + 3, barW, 8).fill(BRAND.lime);
+        doc.rect(barX, rowY + 6, barMaxW, 8).fill(BRAND.bg3);
+        doc.rect(barX, rowY + 6, barW, 8).fill(BRAND.lime);
+
+        // Count + percent — anchored at rowY, not doc.y
         doc.fontSize(10).fillColor(BRAND.text2)
-           .text(`${c}  ·  ${pct}%`, barX + barMaxW + 8, bY, { width: 80 });
-        doc.moveDown(0.3);
+           .text(`${c}  ·  ${pct}%`, barX + barMaxW + 8, rowY + 4, { width: 80, lineBreak: false });
+
+        // Manually advance to next row
+        doc.y = rowY + rowHeight;
       }
+      doc.moveDown(0.5);
     } else if (q.type === 'multi') {
       // Bug 3: percentage = selections / n_respondents (not / total_clicks)
       const dist = qAgg.distribution || {};
