@@ -442,6 +442,74 @@ router.patch('/missions/:id/force-complete', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * POST /api/admin/missions/:id/reanalyze
+ * Regenerate insights + executive_summary for an already-completed mission.
+ *
+ * Use case: a mission completed but the analysis step failed (mission_assets.analysis_error
+ * is set, executive_summary is null/short). Persona responses are expensive and already
+ * stored — only the synthesis layer needs to be re-run.
+ *
+ * Returns 200 { success, executive_summary_length, insights_keys } on success.
+ */
+router.post('/missions/:id/reanalyze', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    // Lazy-require to avoid pulling Anthropic SDK at module load time
+    const { synthesizeInsights } = require('../services/ai/insights');
+
+    // 1. Load mission
+    const { data: mission, error: mErr } = await supabase
+      .from('missions')
+      .select('*')
+      .eq('id', id)
+      .single();
+    if (mErr || !mission) return res.status(404).json({ error: 'Mission not found' });
+
+    // 2. Load all responses (persona simulation already done)
+    const { data: responseRows, error: rErr } = await supabase
+      .from('mission_responses')
+      .select('persona_id, persona_profile, question_id, answer, screened_out')
+      .eq('mission_id', id);
+    if (rErr) throw rErr;
+    if (!responseRows || responseRows.length === 0) {
+      return res.status(400).json({ error: 'No responses found for mission — cannot reanalyze' });
+    }
+
+    // 3. Synthesize
+    const insights = await synthesizeInsights(mission, responseRows);
+
+    // 4. Persist + clear stale analysis_error stamp
+    const cleanedAssets = { ...(mission.mission_assets || {}) };
+    delete cleanedAssets.analysis_error;
+    const { error: uErr } = await supabase
+      .from('missions')
+      .update({
+        executive_summary: insights?.executive_summary || null,
+        insights:          insights || null,
+        mission_assets:    cleanedAssets,
+      })
+      .eq('id', id);
+    if (uErr) throw uErr;
+
+    logger.info('Admin reanalyzed mission', {
+      missionId: id,
+      adminEmail: req.user.email,
+      summaryLen: (insights?.executive_summary || '').length,
+    });
+
+    res.json({
+      success: true,
+      executive_summary_length: (insights?.executive_summary || '').length,
+      insights_keys: Object.keys(insights || {}),
+    });
+  } catch (err) {
+    logger.error('Admin reanalyze failed', { missionId: req.params.id, err: err.message });
+    next(err);
+  }
+});
+
 // -------------------------------------------------------------------------
 // CRM lead management (P2 + P3)
 // -------------------------------------------------------------------------
