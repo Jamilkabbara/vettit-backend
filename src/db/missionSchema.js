@@ -59,6 +59,9 @@ const ALLOWED_COLUMNS = new Set([
   'total_simulated_count',
   'qualified_respondent_count',
   'qualification_rate',
+  // Pass 21 Bug 19: top-level failure reason populated by runMission's
+  // fatal handler. Replaces fishing the message out of mission_assets.
+  'failure_reason',
 ]);
 
 /**

@@ -31,9 +31,10 @@ const { buildXLSX } = require('../services/exports/xlsx');
 // background worker claiming the mission. Without this, a user who
 // just paid would see a "Results not ready" error during that gap.
 //
-// `failure_reason` does not exist as a column on missions (Pass 21
-// will add it). For now we surface mission_assets.analysis_error.message
-// when present, otherwise a generic string.
+// Pass 21 Bug 19: missions.failure_reason is now a real top-level column,
+// populated by runMission's fatal handler with err.message (≤ 500 chars).
+// We prefer that over the legacy mission_assets.analysis_error.message,
+// which is only ever populated by the creative-attention pipeline.
 router.get('/:missionId', authenticate, async (req, res, next) => {
   try {
     const missionId = req.params.missionId;
@@ -42,7 +43,7 @@ router.get('/:missionId', authenticate, async (req, res, next) => {
     // for missions that aren't ready.
     const { data: mission, error: mErr } = await supabase
       .from('missions')
-      .select('id, status, respondent_count, questions, mission_assets')
+      .select('id, status, respondent_count, questions, mission_assets, failure_reason')
       .eq('id', missionId)
       .eq('user_id', req.user.id)
       .single();
@@ -67,8 +68,12 @@ router.get('/:missionId', authenticate, async (req, res, next) => {
 
     // Fatal failure: return 200 with reason so SPA can render error UI
     // without having to parse fetch exceptions.
+    // Pass 21 Bug 19: prefer the new top-level failure_reason column,
+    // fall back to the legacy creative-attention JSON path, then to a
+    // generic string for old failed rows that pre-date the column.
     if (mission.status === 'failed') {
-      const reason = mission.mission_assets?.analysis_error?.message
+      const reason = mission.failure_reason
+        || mission.mission_assets?.analysis_error?.message
         || 'Mission could not complete. Please contact support.';
       return res.json({ status: 'failed', error: reason });
     }

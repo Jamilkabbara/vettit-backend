@@ -235,8 +235,14 @@ async function runMission(missionId) {
     }
   } catch (err) {
     logger.error('Mission run: fatal', { missionId, err: err.message, stack: err.stack });
+    // Pass 21 Bug 19 — persist the actual reason. Truncate to a generous but
+    // bounded length so a freak megabyte stack trace doesn't bloat the row.
+    // The /results endpoint surfaces this verbatim to the user, so prefer
+    // err.message (already user-shaped) over err.stack.
+    const failureReason = String(err && err.message ? err.message : 'Unknown error').slice(0, 500);
     await updateMission(supabase, missionId, {
       status: 'failed',
+      failure_reason: failureReason,
       completed_at: new Date().toISOString(),
     }, { caller: 'runMission: fatal' });
 
