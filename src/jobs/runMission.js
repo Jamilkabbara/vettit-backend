@@ -165,12 +165,39 @@ async function runMission(missionId) {
       });
     }
 
-    // 6. Mark complete — always, regardless of summary outcome
+    // 6. Compute qualification aggregates from the in-memory persona set.
+    //    Pass 21 Bug 5: persist total_simulated_count, qualified_respondent_count,
+    //    and qualification_rate on the mission so dashboards/reports never
+    //    need to recompute from mission_responses on every read.
+    //
+    //    Definitions:
+    //      total_simulated_count       = number of distinct personas generated
+    //      qualified_respondent_count  = personas where ZERO of their answers
+    //                                    are flagged screened_out
+    //      qualification_rate          = qualified / total  (NULL if total = 0)
+    const screenedOutPersonaIds = new Set(
+      responses
+        .filter(r => Boolean((r.persona_profile || {}).screened_out) || r.screened_out === true)
+        .map(r => r.persona_id)
+    );
+    const allPersonaIds = new Set(personas.map(p => p.persona_id || p.id).filter(Boolean));
+    const totalSimulated      = allPersonaIds.size || personas.length;
+    const qualifiedRespondent = totalSimulated > 0
+      ? Math.max(0, totalSimulated - screenedOutPersonaIds.size)
+      : 0;
+    const qualificationRate   = totalSimulated > 0
+      ? Number((qualifiedRespondent / totalSimulated).toFixed(4))
+      : null;
+
+    // 6b. Mark complete — always, regardless of summary outcome
     await updateMission(supabase, missionId, {
       status: 'completed',
       completed_at: new Date().toISOString(),
       executive_summary: insights?.executive_summary || null,
       insights: insights || null,
+      total_simulated_count:       totalSimulated,
+      qualified_respondent_count:  qualifiedRespondent,
+      qualification_rate:          qualificationRate,
     }, { caller: 'runMission: complete' });
 
     logger.info('Mission run: complete', { missionId });

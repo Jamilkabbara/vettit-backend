@@ -54,6 +54,11 @@ const ALLOWED_COLUMNS = new Set([
   'chat_quota_limit',
   'creative_urls',
   'mission_assets',
+  // Pass 21 Bug 5: persist qualification aggregates so dashboards/reports
+  // never need to recompute from mission_responses on every read.
+  'total_simulated_count',
+  'qualified_respondent_count',
+  'qualification_rate',
 ]);
 
 /**
