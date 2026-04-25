@@ -81,12 +81,18 @@ router.get('/overview', async (req, res, next) => {
       .map(([type, n]) => ({ type, count: n, pct: mixTotal > 0 ? Math.round(100 * n / mixTotal) : 0 }))
       .sort((a, b) => b.count - a.count);
 
-    // Active users in range
-    const { count: activeUsers } = await supabase
+    // Active users in range — count DISTINCT user_id, not mission rows.
+    // Pass 21 Bug 1: prior code used `count: 'exact', head: true` on a SELECT
+    // of user_id, which returns the row count (mission count), not the
+    // distinct-user count. With 25 missions but ~2 active humans, the KPI
+    // showed 25 instead of 2.
+    const { data: activeUserRows } = await supabase
       .from('missions')
-      .select('user_id', { count: 'exact', head: true })
+      .select('user_id')
       .gte('created_at', start.toISOString())
-      .lt('created_at', end.toISOString());
+      .lt('created_at', end.toISOString())
+      .not('user_id', 'is', null);
+    const activeUsers = new Set((activeUserRows || []).map(r => r.user_id)).size;
 
     const s  = summary.data      || {};
     const ps = priorSummary.data || {};
@@ -97,7 +103,7 @@ router.get('/overview', async (req, res, next) => {
       kpis: {
         total_missions: { value: missionsPaid, delta_pct: calcDelta(missionsPaid, priorPaid) },
         total_revenue:  { value: s.total_revenue_usd, delta_pct: calcDelta(s.total_revenue_usd, ps.total_revenue_usd) },
-        active_users:   { value: activeUsers || 0, delta_pct: 0 },
+        active_users:   { value: activeUsers, delta_pct: 0 },
         avg_mission_value: {
           value: missionsPaid > 0 ? s.total_revenue_usd / missionsPaid : 0,
           delta_pct: 0,
