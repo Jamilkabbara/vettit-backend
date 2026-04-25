@@ -68,8 +68,9 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
         if (paidMission?.user_id) {
           supabase.from('funnel_events').insert({
             user_id:    paidMission.user_id,
-            event_name: 'mission_paid',
-            properties: { mission_id: missionId, amount_cents: pi.amount, source: 'stripe_webhook' },
+            event_type: 'mission_paid',
+            mission_id: missionId,
+            metadata:   { amount_cents: pi.amount, source: 'stripe_webhook' },
           }).then(() => {}).catch(() => {});
         }
 
