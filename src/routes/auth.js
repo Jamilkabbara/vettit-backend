@@ -11,13 +11,20 @@ router.post('/register', async (req, res, next) => {
     const { userId, email, name } = req.body;
     if (!userId || !email) return res.status(400).json({ error: 'userId and email are required' });
 
-    // Create profile record
-    await supabase.from('profiles').upsert({
-      id: userId,
-      full_name: name || '',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'id' });
+    // Pass 21 Bug 10: do NOT upsert with full_name: name || ''. The
+    // public.handle_new_user() trigger has already populated the profile
+    // from auth.users.raw_user_meta_data (including OAuth providers); a
+    // blind upsert with an empty name string would overwrite "Jamil
+    // Kabbara" with "" the next time the frontend calls this endpoint
+    // without a name. Only patch the row when we actually have a name,
+    // and even then never write an empty string. (`updated_at` is also
+    // dropped — that column does not exist on profiles.)
+    if (typeof name === 'string' && name.trim().length > 0) {
+      await supabase.from('profiles').upsert({
+        id: userId,
+        full_name: name.trim(),
+      }, { onConflict: 'id' });
+    }
 
     // Send welcome email
     await emailService.sendWelcomeEmail({ to: email, name }).catch(e =>
