@@ -53,7 +53,7 @@ JSON structure required:
     "recommendedGenders": [],
     "reasoning": "Brief explanation"
   },
-  "suggestedRespondentCount": 200
+  "suggestedRespondentCount": 50
 }
 
 Rules:
@@ -66,7 +66,12 @@ Rules:
 - NON-SCREENING: isScreening: false, qualifyingAnswer: null, screening_continue_on: null
 - Flow: screening → awareness → perception → intent → open feedback
 - Country codes: AE (UAE), US (USA), GB (UK), SA (Saudi Arabia), IN (India), AU (Australia)
-- suggestedRespondentCount: 100-500 based on targeting specificity`;
+- Pass 21 Bug 16: suggestedRespondentCount default is 50 (the entry tier, $35).
+  Use 50 for any single-market or quick-validation brief. Only escalate to
+  100-200 when the brief explicitly requires multi-segment statistical
+  comparison, multi-country roll-ups, or pricing-quartile analysis. Cap at
+  500. Most users want to TRY the platform — defaulting to 200 was burning
+  $135+ per first mission for users who only needed directional signal.`;
 
 const TARGETING_SUGGEST_SYSTEM = `You are a senior market research targeting specialist. Your job is to suggest the optimal audience targeting configuration for a given research mission.
 
@@ -118,8 +123,8 @@ JSON structure required:
     "companySizes": [],
     "reasoning": "Why these professional filters (or why none needed for B2C)"
   },
-  "suggestedRespondentCount": 200,
-  "respondentCountReasoning": "Why this sample size is statistically appropriate for the targeting specificity"
+  "suggestedRespondentCount": 50,
+  "respondentCountReasoning": "Pass 21 Bug 16: default to 50 (entry tier) unless the brief explicitly requires statistical comparison or multi-segment roll-ups; explain why this sample size fits the targeting specificity"
 }`;
 
 // ── FUNCTIONS ───────────────────────────────────────────────────────────────

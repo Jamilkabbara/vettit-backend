@@ -74,7 +74,8 @@ router.post('/', authenticate, async (req, res, next) => {
       questions, targeting, targetingConfig, respondentCount,
     } = req.body;
 
-    const respCount   = respondentCount || 100;
+    // Pass 21 Bug 16: default 100 → 50 (entry tier, $35).
+    const respCount   = respondentCount || 50;
     const finalTarget = targeting || targetingConfig || {};
     const finalQs     = questions || [];
 
@@ -128,7 +129,8 @@ router.post('/draft', authenticate, async (req, res, next) => {
       questions, targeting, respondentCount,
     } = req.body;
 
-    const respCount   = respondentCount || 100;
+    // Pass 21 Bug 16: default 100 → 50 (entry tier, $35).
+    const respCount   = respondentCount || 50;
     const finalTarget = targeting || {};
     const finalQs     = questions || [];
     const filters     = deriveFilters(finalTarget);
@@ -298,7 +300,8 @@ router.patch('/:id', authenticate, async (req, res, next) => {
         .eq('user_id', req.user.id)
         .single();
 
-      const respCount = updates.respondentCount || existing?.respondent_count || 100;
+      // Pass 21 Bug 16: default fallback 100 → 50.
+      const respCount = updates.respondentCount || existing?.respondent_count || 50;
       const finalTarget = updates.targeting || updates.targetingConfig || existing?.targeting || {};
       const finalQs = updates.questions || existing?.questions || [];
       const pricing = calculateMissionPrice(respCount, deriveFilters(finalTarget), finalQs.length);

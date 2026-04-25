@@ -64,11 +64,14 @@ router.post('/quote', optionalAuthenticate, async (req, res, next) => {
         return res.status(404).json({ error: 'Mission not found' });
       }
 
-      respCount       = mission.respondent_count || 100;
+      // Pass 21 Bug 16: default fallback 100 → 50 to align with the new
+      // entry-tier default. Existing missions still respect their stored
+      // respondent_count; this only affects rows where it's null/0.
+      respCount       = mission.respondent_count || 50;
       missionRow      = mission;
       qCount          = Array.isArray(mission.questions) ? mission.questions.length : 0;
     } else {
-      respCount = bodyRespCount || 100;
+      respCount = bodyRespCount || 50;
       missionRow = { targeting: targetingConfig || targeting || {} };
       qCount = Array.isArray(questions)
         ? questions.length
