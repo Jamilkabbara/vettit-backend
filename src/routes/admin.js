@@ -516,6 +516,158 @@ router.post('/missions/:id/reanalyze', async (req, res, next) => {
   }
 });
 
+/**
+ * POST /api/admin/missions/bulk-reanalyze
+ *
+ * Pass 21 Bug 20 — bulk-reanalyze stale missions in one admin action.
+ *
+ * "Stale" = status='completed' AND any of:
+ *   • executive_summary IS NULL or shorter than 100 chars
+ *   • insights IS NULL or {} (synthesis never ran)
+ *   • mission_assets.analysis_error is set (synthesis errored mid-run)
+ *
+ * Body (all optional):
+ *   { limit?: number, dryRun?: boolean }
+ *
+ * limit  — cost guardrail. synthesizeInsights is one Sonnet call per
+ *          mission (~$0.10–0.30). Default 25, capped at 100.
+ * dryRun — if true, returns the candidate list without spending tokens.
+ *
+ * Runs sequentially (not parallel) so we get a clean per-mission audit
+ * trail and don't trip Anthropic rate limits when the queue is large.
+ *
+ * Response shape:
+ *   { totalStale, processed, succeeded, failed,
+ *     results: [{ missionId, ok, summaryLen?, error? }] }
+ */
+router.post('/missions/bulk-reanalyze', async (req, res, next) => {
+  try {
+    const limitRaw = Number(req.body?.limit);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.floor(limitRaw)), 100) : 25;
+    const dryRun = !!req.body?.dryRun;
+
+    const { synthesizeInsights } = require('../services/ai/insights');
+
+    // 1. Find candidates. Use a single SQL with OR to match any of the
+    // three stale signals. Order by completed_at ASC so we re-process the
+    // oldest stale missions first (most likely to have user complaints).
+    const { data: candidates, error: cErr } = await supabase
+      .from('missions')
+      .select('id, executive_summary, insights, mission_assets, completed_at')
+      .eq('status', 'completed')
+      .or('executive_summary.is.null,insights.is.null')
+      .order('completed_at', { ascending: true })
+      .limit(limit);
+    if (cErr) throw cErr;
+
+    // The .or() above only catches the NULL signals — short-summary and
+    // analysis_error need a JS-side filter because PostgREST .or() can't
+    // cleanly express length() or mission_assets ? 'analysis_error'.
+    // Pull a wider net then refine below.
+    const { data: extraCandidates } = await supabase
+      .from('missions')
+      .select('id, executive_summary, insights, mission_assets, completed_at')
+      .eq('status', 'completed')
+      .order('completed_at', { ascending: true })
+      .limit(500);
+
+    const stale = [];
+    const seen = new Set();
+    const isStale = (m) => {
+      if (!m.executive_summary || m.executive_summary.length < 100) return true;
+      if (!m.insights || (typeof m.insights === 'object' && Object.keys(m.insights).length === 0)) return true;
+      if (m.mission_assets && m.mission_assets.analysis_error) return true;
+      return false;
+    };
+    for (const m of [...(candidates || []), ...(extraCandidates || [])]) {
+      if (seen.has(m.id)) continue;
+      seen.add(m.id);
+      if (isStale(m)) stale.push(m);
+      if (stale.length >= limit) break;
+    }
+
+    if (dryRun) {
+      return res.json({
+        dryRun: true,
+        totalStale: stale.length,
+        candidateIds: stale.map(m => m.id),
+      });
+    }
+
+    if (stale.length === 0) {
+      return res.json({
+        totalStale: 0,
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        results: [],
+      });
+    }
+
+    // 2. Process sequentially — collect per-mission outcome.
+    const results = [];
+    let succeeded = 0;
+    let failed = 0;
+
+    for (const c of stale) {
+      const missionId = c.id;
+      try {
+        // Reuse the same logic as POST /missions/:id/reanalyze.
+        const { data: mission } = await supabase
+          .from('missions').select('*').eq('id', missionId).single();
+        if (!mission) throw new Error('mission not found');
+
+        const { data: responseRows } = await supabase
+          .from('mission_responses')
+          .select('persona_id, persona_profile, question_id, answer, screened_out')
+          .eq('mission_id', missionId);
+        if (!responseRows || responseRows.length === 0) {
+          throw new Error('no responses to reanalyze');
+        }
+
+        const insights = await synthesizeInsights(mission, responseRows);
+        const cleanedAssets = { ...(mission.mission_assets || {}) };
+        delete cleanedAssets.analysis_error;
+        const { error: uErr } = await supabase
+          .from('missions')
+          .update({
+            executive_summary: insights?.executive_summary || null,
+            insights:          insights || null,
+            mission_assets:    cleanedAssets,
+          })
+          .eq('id', missionId);
+        if (uErr) throw uErr;
+
+        const summaryLen = (insights?.executive_summary || '').length;
+        results.push({ missionId, ok: true, summaryLen });
+        succeeded++;
+      } catch (err) {
+        results.push({ missionId, ok: false, error: err?.message || 'unknown' });
+        failed++;
+        // Continue — one bad mission shouldn't block the rest.
+      }
+    }
+
+    logger.info('Admin bulk reanalyze complete', {
+      adminEmail: req.user.email,
+      totalStale: stale.length,
+      succeeded,
+      failed,
+    });
+
+    res.json({
+      totalStale: stale.length,
+      processed: stale.length,
+      succeeded,
+      failed,
+      results,
+    });
+  } catch (err) {
+    logger.error('Admin bulk reanalyze failed', { err: err.message });
+    next(err);
+  }
+});
+
 // -------------------------------------------------------------------------
 // CRM lead management (P2 + P3)
 // -------------------------------------------------------------------------
