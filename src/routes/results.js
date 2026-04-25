@@ -17,22 +17,80 @@ const { buildPPTX } = require('../services/exports/pptx');
 const { buildXLSX } = require('../services/exports/xlsx');
 
 // ─── GET /api/results/:missionId ─────────────────────────────
-// Returns the full payload needed by the Results view: mission, insights,
-// per-question aggregates, and the raw responses (capped for over-the-wire sanity).
+// Bug 7 (Pass 20): this endpoint now serves three response shapes,
+// keyed off mission.status so the SPA can render the right UI without
+// needing to hit a separate /status endpoint:
+//
+//   • completed                     → full results payload (unchanged)
+//   • paid | processing             → 200 { status:'processing', progress:{collected,target,percent} }
+//   • failed                        → 200 { status:'failed', error:<reason> }
+//   • draft | pending_payment       → 400 (user shouldn't be here yet)
+//
+// `paid` is included alongside `processing` because there's a brief
+// (~1–10s) window between the webhook acking the payment and the
+// background worker claiming the mission. Without this, a user who
+// just paid would see a "Results not ready" error during that gap.
+//
+// `failure_reason` does not exist as a column on missions (Pass 21
+// will add it). For now we surface mission_assets.analysis_error.message
+// when present, otherwise a generic string.
 router.get('/:missionId', authenticate, async (req, res, next) => {
   try {
-    const pack = await loadMissionForExport(req.params.missionId, req.user.id);
+    const missionId = req.params.missionId;
+
+    // Cheap status check first — avoids loading responses + aggregating
+    // for missions that aren't ready.
+    const { data: mission, error: mErr } = await supabase
+      .from('missions')
+      .select('id, status, respondent_count, questions, mission_assets')
+      .eq('id', missionId)
+      .eq('user_id', req.user.id)
+      .single();
+
+    if (mErr || !mission) return res.status(404).json({ error: 'Mission not found' });
+
+    // In-flight states: return progress envelope.
+    if (mission.status === 'paid' || mission.status === 'processing') {
+      const { count } = await supabase
+        .from('mission_responses')
+        .select('persona_id', { count: 'exact', head: true })
+        .eq('mission_id', missionId);
+      const collected = count || 0;
+      const questionCount = Array.isArray(mission.questions) ? mission.questions.length : 1;
+      const target = (mission.respondent_count || 1) * Math.max(1, questionCount);
+      const percent = Math.min(100, Math.round((collected / (target || 1)) * 100));
+      return res.json({
+        status: 'processing',
+        progress: { collected, target, percent },
+      });
+    }
+
+    // Fatal failure: return 200 with reason so SPA can render error UI
+    // without having to parse fetch exceptions.
+    if (mission.status === 'failed') {
+      const reason = mission.mission_assets?.analysis_error?.message
+        || 'Mission could not complete. Please contact support.';
+      return res.json({ status: 'failed', error: reason });
+    }
+
+    // Pre-payment states — user shouldn't be on /results yet.
+    if (mission.status !== 'completed') {
+      return res.status(400).json({ error: 'Results not ready yet — mission is not complete' });
+    }
+
+    // Completed: full payload.
+    const pack = await loadMissionForExport(missionId, req.user.id);
     if (!pack) return res.status(404).json({ error: 'Mission not found' });
     if (pack.error) return res.status(400).json({ error: pack.error });
 
-    const { mission, responses, insights, aggregatedByQuestion, screeningFunnel } = pack;
+    const { mission: full, responses, insights, aggregatedByQuestion, screeningFunnel } = pack;
 
     res.json({
-      mission,
+      status: 'completed',
+      mission: full,
       insights,
       aggregatedByQuestion,
       screeningFunnel: screeningFunnel || null,
-      // Cap to 500 rows in the REST payload; the full set is always reachable via /export/xlsx
       responses: (responses || []).slice(0, 500),
       responseCount: (responses || []).length,
     });
