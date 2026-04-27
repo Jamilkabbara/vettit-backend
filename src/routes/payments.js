@@ -7,6 +7,7 @@ const supabase = require('../db/supabase');
 const { calculateMissionPrice, extractCountriesFromMission } = require('../utils/pricingEngine');
 const { runMission } = require('../jobs/runMission');
 const { updateMission } = require('../db/missionSchema');
+const { logPaymentError, shapeStripeError } = require('../services/paymentErrors');
 const logger = require('../utils/logger');
 
 /**
@@ -15,20 +16,36 @@ const logger = require('../utils/logger');
  * SERVER-SIDE PRICING: recalculates from scratch using the mission row, never trusts client totals.
  */
 router.post('/create-intent', authenticate, async (req, res, next) => {
+  const { missionId, promoCode } = req.body || {};
+  let mission = null;
+  let pricing = null;
+
   try {
-    const { missionId, promoCode } = req.body;
     if (!missionId) return res.status(400).json({ error: 'missionId is required' });
 
-    const { data: mission, error: missionError } = await supabase
+    const { data: missionRow, error: missionError } = await supabase
       .from('missions')
       .select('*')
       .eq('id', missionId)
       .eq('user_id', req.user.id)
       .single();
 
-    if (missionError || !mission) return res.status(404).json({ error: 'Mission not found' });
+    if (missionError || !missionRow) return res.status(404).json({ error: 'Mission not found' });
+    mission = missionRow;
 
     const status = (mission.status || 'draft').toLowerCase();
+    // Pass 22 Bug 22.23: short-circuit on terminal mission states. If the
+    // mission is already paid/processing/completed, the user should be
+    // redirected to results — not asked to pay again. Returning 409 makes
+    // the error path explicit and prevents PI sprawl on accidental retries.
+    if (['paid', 'processing', 'completed'].includes(status)) {
+      logger.info('Payments create-intent: mission already paid', { missionId, status });
+      return res.status(409).json({
+        error: 'Mission already paid',
+        status,
+        redirectTo: `/results/${missionId}`,
+      });
+    }
     if (status !== 'draft' && status !== 'pending_payment') {
       return res.status(400).json({ error: 'Mission is not in draft status' });
     }
@@ -46,11 +63,8 @@ router.post('/create-intent', authenticate, async (req, res, next) => {
     }
 
     // Recalculate server-side — SINGLE SOURCE OF TRUTH
-    // extractCountriesFromMission checks targeting.geography.countries first,
-    // then falls back to target_audience.aiTargeting.countries so that missions
-    // whose targeting column is null (but aiTargeting has countries) price correctly.
     const countries = extractCountriesFromMission(mission);
-    const pricing = calculateMissionPrice({
+    pricing = calculateMissionPrice({
       respondentCount: mission.respondent_count,
       targeting:       mission.targeting || {},
       questionCount:   (mission.questions || []).length,
@@ -61,6 +75,41 @@ router.post('/create-intent', authenticate, async (req, res, next) => {
     if (pricing.totalCents < 50) {
       return res.status(400).json({ error: 'Minimum payment is $0.50' });
     }
+
+    // Pass 22 Bug 22.23 — IDEMPOTENCY GUARD ────────────────────────────────
+    // Before creating a fresh PI, check if this mission already has an
+    // in-flight one we can resume. The forensic audit found 6+ stuck
+    // mission/PI pairs because the old code minted a new PI on every retry.
+    //
+    // Resume conditions (all in services/stripe.js assessPIResumability):
+    //   * status in {requires_payment_method, requires_confirmation,
+    //                requires_action, processing}
+    //   * created < 24h ago
+    //   * amount matches the freshly-recalculated total (catches promo drift)
+    if (mission.latest_payment_intent_id) {
+      const existingPI = await stripeService.retrievePaymentIntent(mission.latest_payment_intent_id);
+      const verdict = stripeService.assessPIResumability(existingPI, pricing.totalCents);
+      if (verdict.resumable) {
+        logger.info('Payments create-intent: resuming existing PI', {
+          missionId,
+          paymentIntentId: existingPI.id,
+          status: existingPI.status,
+        });
+        return res.json({
+          clientSecret:    existingPI.client_secret,
+          paymentIntentId: existingPI.id,
+          pricing,
+          resumed:         true,
+        });
+      }
+      logger.info('Payments create-intent: existing PI not resumable, creating new', {
+        missionId,
+        existingPI: mission.latest_payment_intent_id,
+        existingStatus: existingPI?.status,
+        reason: verdict.reason,
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────────
 
     // Get user email for the Stripe receipt
     const { data: { user } } = await supabase.auth.admin.getUserById(req.user.id);
@@ -73,24 +122,39 @@ router.post('/create-intent', authenticate, async (req, res, next) => {
       pricingBreakdown: pricing,
     });
 
-    // Snapshot pricing onto the mission for audit. Phantom columns
-    // (stripe_payment_intent_id, pricing_breakdown) are stripped by
-    // sanitizeMissionPatch — Stripe stores the PI id, and breakdown
-    // is reconstructable from the individual cost columns.
+    // Snapshot pricing + the new PI id onto the mission for audit and
+    // future-retry idempotency. latest_payment_intent_id is whitelisted
+    // by missionSchema.js (Pass 22 Bug 22.23 entry).
     await updateMission(supabase, missionId, {
-      base_cost_usd:            pricing.baseCost,
-      targeting_surcharge_usd:  pricing.targetingSurcharge,
-      extra_questions_cost_usd: pricing.extraQuestionsCost,
-      total_price_usd:          pricing.total,
-      promo_code:               promo?.code || null,
-      discount_usd:             pricing.discount,
-      status:                   'pending_payment',
+      base_cost_usd:             pricing.baseCost,
+      targeting_surcharge_usd:   pricing.targetingSurcharge,
+      extra_questions_cost_usd:  pricing.extraQuestionsCost,
+      total_price_usd:           pricing.total,
+      promo_code:                promo?.code || null,
+      discount_usd:              pricing.discount,
+      status:                    'pending_payment',
+      latest_payment_intent_id:  paymentIntentId,
     }, { caller: 'POST /payments/create-intent' });
 
-    logger.info('Payment intent created', { missionId, amount: pricing.total });
+    logger.info('Payment intent created', { missionId, amount: pricing.total, paymentIntentId });
 
     res.json({ clientSecret, paymentIntentId, pricing });
   } catch (err) {
+    // Pass 22 Bug 22.9 — log the failure to payment_errors before bubbling.
+    const shaped = shapeStripeError(err);
+    logPaymentError({
+      userId:                req.user?.id,
+      missionId,
+      stripePaymentIntentId: null,
+      errorCode:             shaped.errorCode,
+      errorMessage:          shaped.errorMessage || err.message,
+      declineCode:           shaped.declineCode,
+      paymentMethod:         shaped.paymentMethod,
+      amountCents:           pricing?.totalCents ?? null,
+      currency:              'usd',
+      stage:                 'create_intent',
+      userAgent:             req.headers?.['user-agent'] || null,
+    }).catch(() => {});
     next(err);
   }
 });
@@ -102,14 +166,30 @@ router.post('/create-intent', authenticate, async (req, res, next) => {
  * verifies payment and triggers the synthetic-audience pipeline.
  */
 router.post('/confirm', authenticate, async (req, res, next) => {
+  const { missionId, paymentIntentId } = req.body || {};
   try {
-    const { missionId, paymentIntentId } = req.body;
     if (!missionId || !paymentIntentId) {
       return res.status(400).json({ error: 'missionId and paymentIntentId are required' });
     }
 
     const payment = await stripeService.verifyPayment(paymentIntentId);
     if (!payment.success) {
+      // Pass 22 Bug 22.9 — log the verify-failure to payment_errors so the
+      // admin viewer surfaces "user reached confirm but Stripe says PI not
+      // succeeded" cases (3DS abandoned, wallet sheet dismissed, etc).
+      logPaymentError({
+        userId:                req.user?.id,
+        missionId,
+        stripePaymentIntentId: paymentIntentId,
+        errorCode:             `pi_status:${payment.status}`,
+        errorMessage:          'Payment not confirmed by Stripe',
+        declineCode:           null,
+        paymentMethod:         null,
+        amountCents:           Number.isFinite(payment.amountCents) ? payment.amountCents : null,
+        currency:              'usd',
+        stage:                 'confirm',
+        userAgent:             req.headers?.['user-agent'] || null,
+      }).catch(() => {});
       return res.status(400).json({ error: 'Payment not confirmed by Stripe' });
     }
 
@@ -168,6 +248,21 @@ router.post('/confirm', authenticate, async (req, res, next) => {
 
     res.json({ success: true, missionId, status: 'processing' });
   } catch (err) {
+    // Pass 22 Bug 22.9 — confirm catch logs to payment_errors.
+    const shaped = shapeStripeError(err);
+    logPaymentError({
+      userId:                req.user?.id,
+      missionId,
+      stripePaymentIntentId: paymentIntentId,
+      errorCode:             shaped.errorCode,
+      errorMessage:          shaped.errorMessage || err.message,
+      declineCode:           shaped.declineCode,
+      paymentMethod:         shaped.paymentMethod,
+      amountCents:           null,
+      currency:              'usd',
+      stage:                 'confirm',
+      userAgent:             req.headers?.['user-agent'] || null,
+    }).catch(() => {});
     next(err);
   }
 });
@@ -255,6 +350,54 @@ router.post('/free-launch', authenticate, async (req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+/**
+ * Pass 22 Bug 22.9 — POST /api/payments/errors/log
+ *
+ * Frontend reports a Stripe-related failure that happened on the client side
+ * (confirmCardPayment caught error, wallet sheet dismissed, Element-not-ready,
+ * etc.) so the row lands in payment_errors alongside backend errors. Same
+ * stage taxonomy as backend writes; client_* prefix marks frontend origin.
+ *
+ * Body shape (all fields optional except stage; the user is derived from
+ * the auth middleware so the client cannot spoof user_id):
+ *   {
+ *     stage: 'client_confirm_card' | 'client_wallet_payment_method' | 'client_chat_overage' | 'client_element_not_ready',
+ *     missionId, stripePaymentIntentId,
+ *     errorCode, errorMessage, declineCode, paymentMethod,
+ *     amountCents, currency, viewportWidth
+ *   }
+ *
+ * Always returns 201 — never bubble logger errors to the user; they have
+ * bigger problems than telemetry.
+ */
+router.post('/errors/log', authenticate, async (req, res) => {
+  const b = req.body || {};
+  const allowedStages = new Set([
+    'client_confirm_card',
+    'client_wallet_payment_method',
+    'client_chat_overage',
+    'client_element_not_ready',
+  ]);
+  const stage = allowedStages.has(b.stage) ? b.stage : 'client_unknown';
+
+  const id = await logPaymentError({
+    userId:                req.user.id,
+    missionId:             b.missionId             || null,
+    stripePaymentIntentId: b.stripePaymentIntentId || null,
+    errorCode:             b.errorCode             || null,
+    errorMessage:          b.errorMessage          || null,
+    declineCode:           b.declineCode           || null,
+    paymentMethod:         b.paymentMethod         || null,
+    amountCents:           Number.isFinite(b.amountCents) ? b.amountCents : null,
+    currency:              b.currency || 'usd',
+    stage,
+    userAgent:             req.headers?.['user-agent'] || null,
+    viewportWidth:         Number.isFinite(b.viewportWidth) ? b.viewportWidth : null,
+  });
+
+  res.status(201).json({ logged: !!id, id });
 });
 
 module.exports = router;

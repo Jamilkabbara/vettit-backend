@@ -43,6 +43,80 @@ async function verifyPayment(paymentIntentId) {
 }
 
 /**
+ * Pass 22 Bug 22.23 — Retrieve a Stripe PI by id. Returns the raw PI on
+ * success or null on any failure (404, network, etc.). Never throws — the
+ * caller decides whether to fall back to creating a fresh PI.
+ *
+ * Used by /api/payments/create-intent to resume an in-flight PI rather than
+ * sprawl a fresh one on every retry.
+ */
+async function retrievePaymentIntent(paymentIntentId) {
+  if (!paymentIntentId) return null;
+  try {
+    return await stripe.paymentIntents.retrieve(paymentIntentId);
+  } catch (err) {
+    logger.warn('Stripe PI retrieve failed (returning null)', {
+      paymentIntentId,
+      err: err.message,
+    });
+    return null;
+  }
+}
+
+/**
+ * Pass 22 Bug 22.23 — States from which the same PI can still be confirmed by
+ * the user. Anything outside this set means "create a new PI."
+ *
+ * Stripe PI lifecycle reference:
+ *   requires_payment_method → no PM attached or last attempt failed (most stuck PIs)
+ *   requires_confirmation   → PM attached, awaiting confirm (rare in our flow)
+ *   requires_action         → 3DS / SCA pending — same checkout session
+ *   processing              → async (e.g. bank transfer) — wait, do not duplicate
+ *   succeeded / canceled    → terminal
+ */
+const RESUMABLE_PI_STATUSES = new Set([
+  'requires_payment_method',
+  'requires_confirmation',
+  'requires_action',
+  'processing',
+]);
+
+/**
+ * Pass 22 Bug 22.23 — Decide whether a PI returned from Stripe is still safe
+ * to reuse for the same mission, or whether we should abandon it and mint a
+ * new one. Three conditions must all hold:
+ *
+ *   1) status is in RESUMABLE_PI_STATUSES
+ *   2) PI age < 24h (Stripe expires PIs in some states; quotes drift)
+ *   3) PI amount matches the freshly-recalculated server-side total
+ *      (promo applied/removed, country tier changed, etc.)
+ *
+ * Returns { resumable: boolean, reason: string }.
+ */
+function assessPIResumability(pi, expectedAmountCents) {
+  if (!pi) return { resumable: false, reason: 'no_pi' };
+  if (pi.status === 'succeeded') return { resumable: false, reason: 'already_succeeded' };
+  if (pi.status === 'canceled')  return { resumable: false, reason: 'canceled' };
+  if (!RESUMABLE_PI_STATUSES.has(pi.status)) {
+    return { resumable: false, reason: `terminal_status:${pi.status}` };
+  }
+
+  // Freshness — created is unix seconds; allow 24h.
+  const ageSec = Math.floor(Date.now() / 1000) - (pi.created || 0);
+  if (ageSec > 24 * 60 * 60) {
+    return { resumable: false, reason: 'stale_>24h' };
+  }
+
+  // Price drift — refuse to reuse a PI whose amount doesn't match the
+  // current quote. Promo applied, promo removed, country re-targeting, etc.
+  if (Number.isFinite(expectedAmountCents) && pi.amount !== expectedAmountCents) {
+    return { resumable: false, reason: `amount_drift:${pi.amount}_vs_${expectedAmountCents}` };
+  }
+
+  return { resumable: true, reason: 'ok' };
+}
+
+/**
  * Create a refund
  */
 async function createRefund({ paymentIntentId, reason = 'requested_by_customer' }) {
@@ -65,4 +139,12 @@ function constructWebhookEvent(payload, signature) {
   );
 }
 
-module.exports = { createPaymentIntent, verifyPayment, createRefund, constructWebhookEvent };
+module.exports = {
+  createPaymentIntent,
+  verifyPayment,
+  retrievePaymentIntent,
+  assessPIResumability,
+  RESUMABLE_PI_STATUSES,
+  createRefund,
+  constructWebhookEvent,
+};

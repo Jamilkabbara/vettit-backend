@@ -5,6 +5,7 @@ const supabase = require('../db/supabase');
 const logger = require('../utils/logger');
 const { runMission } = require('../jobs/runMission');
 const { updateMission } = require('../db/missionSchema');
+const { logPaymentError, shapeStripeError } = require('../services/paymentErrors');
 const emailService = require('../services/email');
 
 // Stripe webhooks need the raw body — this route is mounted BEFORE the JSON parser in app.js.
@@ -91,6 +92,28 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
     case 'payment_intent.payment_failed': {
       const pi = event.data.object;
       const missionId = pi.metadata?.missionId;
+      const userId    = pi.metadata?.userId || null;
+
+      // Pass 22 Bug 22.9 — log every payment_intent.payment_failed to
+      // payment_errors so the admin viewer sees the authoritative Stripe
+      // failure record alongside any client-side reports for the same PI.
+      const shaped = shapeStripeError(pi.last_payment_error || {});
+      logPaymentError({
+        userId,
+        missionId,
+        stripePaymentIntentId: pi.id,
+        errorCode:             shaped.errorCode,
+        errorMessage:          shaped.errorMessage,
+        declineCode:           shaped.declineCode,
+        paymentMethod:         shaped.paymentMethod
+                                || (pi.payment_method_types && pi.payment_method_types[0])
+                                || null,
+        amountCents:           pi.amount,
+        currency:              pi.currency || 'usd',
+        stage:                 'webhook_payment_failed',
+        userAgent:             null, // backend webhook has no UA
+      }).catch(() => {});
+
       if (missionId) {
         await updateMission(supabase, missionId, {
           status: 'failed',

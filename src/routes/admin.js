@@ -1033,4 +1033,72 @@ router.post('/insights/refresh', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * Pass 22 Bug 22.9 — GET /api/admin/payment-errors
+ *
+ * Admin viewer for the payment_errors table. Returns the most recent rows,
+ * filterable by date range, mission_id, error_code, and stage. Backend uses
+ * the service-role singleton (set up by Bug 22.6 lockdown) so RLS is
+ * bypassed and we read every row regardless of which user owned the failure.
+ *
+ * Query params (all optional):
+ *   limit       1-500, default 100
+ *   stage       client_*, create_intent, confirm, webhook_payment_failed
+ *   missionId   uuid filter
+ *   errorCode   exact match (e.g. 'card_declined')
+ *   since       ISO timestamp lower bound (default: 30 days ago)
+ *   until       ISO timestamp upper bound (default: now)
+ *
+ * Response: { rows, count, summary: { byStage, byErrorCode } }.
+ * The summary block lets the admin UI render group-by-stage/group-by-code
+ * sparklines without a second roundtrip.
+ */
+router.get('/payment-errors', async (req, res, next) => {
+  try {
+    const limit     = Math.max(1, Math.min(500, parseInt(req.query.limit, 10) || 100));
+    const stage     = req.query.stage     || null;
+    const missionId = req.query.missionId || null;
+    const errorCode = req.query.errorCode || null;
+    const sinceTs   = req.query.since
+      ? new Date(req.query.since).toISOString()
+      : new Date(Date.now() - 30 * 86400 * 1000).toISOString();
+    const untilTs   = req.query.until
+      ? new Date(req.query.until).toISOString()
+      : new Date().toISOString();
+
+    let q = supabase
+      .from('payment_errors')
+      .select('*')
+      .gte('created_at', sinceTs)
+      .lte('created_at', untilTs)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (stage)     q = q.eq('stage_at_failure', stage);
+    if (missionId) q = q.eq('mission_id', missionId);
+    if (errorCode) q = q.eq('error_code', errorCode);
+
+    const { data: rows, error } = await q;
+    if (error) throw error;
+
+    // In-process aggregation. Cheap given limit=100; for larger windows we'd
+    // push this to a SECURITY DEFINER aggregate RPC, but the admin viewer is
+    // a low-traffic surface and the row count is bounded.
+    const byStage = {};
+    const byErrorCode = {};
+    for (const r of rows || []) {
+      const s = r.stage_at_failure || 'unknown';
+      const c = r.error_code       || 'unknown';
+      byStage[s]     = (byStage[s]     || 0) + 1;
+      byErrorCode[c] = (byErrorCode[c] || 0) + 1;
+    }
+
+    res.json({
+      rows: rows || [],
+      count: (rows || []).length,
+      window: { since: sinceTs, until: untilTs },
+      summary: { byStage, byErrorCode },
+    });
+  } catch (err) { next(err); }
+});
+
 module.exports = router;
