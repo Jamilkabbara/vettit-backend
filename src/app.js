@@ -118,9 +118,38 @@ app.use(errorHandler);
 
 // ─── Start Server ────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   logger.info(`🚀 Vettit backend running on port ${PORT}`);
   logger.info(`📡 Environment: ${process.env.NODE_ENV}`);
+
+  // Pass 22 Bug 22.10 — start mission recovery cron after the HTTP server
+  // is up, so we don't block /health or first-request availability on the
+  // first interval tick. Skipped in NODE_ENV=test (handled inside init).
+  const missionRecovery = require('./jobs/missionRecovery');
+  missionRecovery.init();
 });
+
+// Pass 22 Bug 22.10 — clean shutdown so Railway redeploys don't leave
+// orphaned setInterval handles in old pods. SIGTERM is what Railway sends;
+// SIGINT covers local Ctrl-C.
+function gracefulShutdown(signal) {
+  logger.info(`Received ${signal}, shutting down gracefully...`);
+  try {
+    require('./jobs/missionRecovery').shutdown();
+  } catch (err) {
+    logger.warn('missionRecovery.shutdown failed', { err: err?.message });
+  }
+  server.close(() => {
+    logger.info('HTTP server closed');
+    process.exit(0);
+  });
+  // Hard cutoff if close() hangs (e.g. websockets we don't track)
+  setTimeout(() => {
+    logger.warn('Forcing exit after 10s grace period');
+    process.exit(1);
+  }, 10000).unref();
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 
 module.exports = app;
