@@ -1034,6 +1034,42 @@ router.post('/insights/refresh', async (req, res, next) => {
 });
 
 /**
+ * Pass 22 Bug 22.2 — GET /api/admin/micro-funnel?range=30d|month|quarter|all
+ *
+ * Stage-to-stage funnel counts. Each count is DISTINCT user_id (or session_id
+ * for landing_view, since most landing_views are anon). The frontend renders
+ * adjacent transitions with conversion %.
+ */
+router.get('/micro-funnel', async (req, res, next) => {
+  try {
+    const { start, end } = resolveRange(req.query.range || '30d');
+    const { data, error } = await supabase.rpc('admin_micro_funnel', {
+      range_start: start, range_end: end,
+    });
+    if (error) throw error;
+    res.json({ ...(data || {}), window: { since: start, until: end } });
+  } catch (err) { next(err); }
+});
+
+/**
+ * Pass 22 Bug 22.3 — GET /api/admin/session-funnel?range=30d|month|quarter|all
+ *
+ * Of distinct landing_view sessions in the window, what % later signed up?
+ * This is the only way to compute landing → signup conversion since
+ * landing_view is anon (no user_id correlation possible without session_id).
+ */
+router.get('/session-funnel', async (req, res, next) => {
+  try {
+    const { start, end } = resolveRange(req.query.range || '30d');
+    const { data, error } = await supabase.rpc('admin_session_funnel', {
+      range_start: start, range_end: end,
+    });
+    if (error) throw error;
+    res.json({ ...(data || {}), window: { since: start, until: end } });
+  } catch (err) { next(err); }
+});
+
+/**
  * Pass 22 Bug 22.9 — GET /api/admin/payment-errors
  *
  * Admin viewer for the payment_errors table. Returns the most recent rows,

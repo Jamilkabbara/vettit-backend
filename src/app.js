@@ -23,6 +23,7 @@ const blogRoutes = require('./routes/blog');
 const chatRoutes = require('./routes/chat');
 const pricingRoutes = require('./routes/pricing');
 const crmRoutes = require('./routes/crm');
+const funnelRoutes = require('./routes/funnel');
 
 const app = express();
 
@@ -84,6 +85,22 @@ const chatLimiter = rateLimit({
   max: 30,
   message: { error: 'Chat rate limit reached. Please wait a moment.' }
 });
+// Pass 22 Bug 22.1 — funnel ingestion is anon-friendly tracking; legitimate
+// sessions emit 5-10 events. The 100/15min global limiter would bite for
+// rapid navigation. 200/15min per IP is generous; abusive volume gets
+// silently dropped without affecting the rest of the API.
+const funnelLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  message: { accepted: false, reason: 'rate_limited' },
+  standardHeaders: false,
+  legacyHeaders: false,
+});
+
+// Mount funnel BEFORE the global limiter and its own dedicated route so the
+// 100/15min global gate does not apply.
+app.use('/api/funnel', funnelLimiter, funnelRoutes);
+
 app.use('/api/', limiter);
 app.use('/api/ai', aiLimiter);
 app.use('/api/chat', chatLimiter);
