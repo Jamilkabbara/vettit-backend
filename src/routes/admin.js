@@ -1,38 +1,27 @@
 const express = require('express');
 const router = express.Router();
-const { createClient } = require('@supabase/supabase-js');
 const { authenticate } = require('../middleware/auth');
 const { adminOnly } = require('../middleware/adminOnly');
-const supabase = require('../db/supabase'); // service-role client for non-RPC queries
+const supabase = require('../db/supabase'); // service-role client for all admin queries (RPC + tables)
 const logger = require('../utils/logger');
 
 // All routes are gated: authenticate → adminOnly
 router.use(authenticate, adminOnly);
 
-/**
- * Create a user-scoped Supabase client using the caller's JWT.
- *
- * PostgREST derives auth.uid() from the Authorization header's JWT claim —
- * NOT from the API key. By passing the user's Bearer token as the Authorization
- * header while keeping the service-role key, we get:
- *   - auth.uid() = the authenticated user's UUID (so SECURITY DEFINER RPCs can
- *     call is_admin_user(auth.uid()) correctly)
- *   - Full DB access (service role bypasses RLS for table queries we own)
- *
- * This is required because the global `supabase` singleton uses only the
- * service-role key, which leaves auth.uid() as NULL inside PLPGSQL functions.
- */
-function userSupabase(req) {
-  const token = (req.headers.authorization || '').replace('Bearer ', '');
-  return createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_KEY,
-    {
-      global: { headers: { Authorization: `Bearer ${token}` } },
-      auth: { autoRefreshToken: false, persistSession: false },
-    }
-  );
-}
+// ─── Pass 22 Bug 22.6 ──────────────────────────────────────────────────────
+// Admin RPC calls use the service-role singleton (`supabase`) directly.
+//
+// Previously this file built a per-request user-scoped client (userSupabase())
+// that passed the caller's JWT through to PostgREST. That made RPC calls run
+// AS `authenticated`, so the SECURITY DEFINER `is_admin_user(auth.uid())`
+// guard inside each admin RPC could verify the caller's email.
+//
+// Pass 22 Bug 22.6 removed that guard from the 8 admin RPCs and revoked
+// EXECUTE on those functions from PUBLIC/anon/authenticated. The route
+// itself is gated by `authenticate + adminOnly` middleware (above), so the
+// app-layer admin gate is the sole admin check. Calling via service_role
+// from the backend bypasses the (now-removed) inner guard cleanly.
+// ─────────────────────────────────────────────────────────────────────────
 
 // ── Range helper ─────────────────────────────────────────────────────────────
 function resolveRange(range) {
@@ -56,14 +45,13 @@ router.get('/overview', async (req, res, next) => {
   try {
     const { start, end } = resolveRange(req.query.range || '30d');
     const priorStart = new Date(start.getTime() - (end.getTime() - start.getTime()));
-    const uSupa = userSupabase(req); // user-scoped client so auth.uid() is set in RPCs
 
     const [summary, priorSummary, funnel, segments, activity] = await Promise.all([
-      uSupa.rpc('admin_ai_cost_summary', { range_start: start, range_end: end }),
-      uSupa.rpc('admin_ai_cost_summary', { range_start: priorStart, range_end: start }),
-      uSupa.rpc('admin_funnel', { range_start: start, range_end: end }),
-      uSupa.rpc('admin_user_segments'),
-      uSupa.rpc('admin_activity_feed', { row_limit: 20 }),
+      supabase.rpc('admin_ai_cost_summary', { range_start: start, range_end: end }),
+      supabase.rpc('admin_ai_cost_summary', { range_start: priorStart, range_end: start }),
+      supabase.rpc('admin_funnel', { range_start: start, range_end: end }),
+      supabase.rpc('admin_user_segments'),
+      supabase.rpc('admin_activity_feed', { row_limit: 20 }),
     ]);
 
     // Mission type mix
@@ -219,15 +207,14 @@ router.get('/ai-costs', async (req, res, next) => {
   try {
     const { start, end } = resolveRange(req.query.range || '30d');
     const priorStart = new Date(start.getTime() - (end.getTime() - start.getTime()));
-    const uSupa = userSupabase(req);
 
     const [summary, priorSummary, byOperation, modelMix, margins, buckets] = await Promise.all([
-      uSupa.rpc('admin_ai_cost_summary',      { range_start: start,      range_end: end }),
-      uSupa.rpc('admin_ai_cost_summary',      { range_start: priorStart, range_end: start }),
-      uSupa.rpc('admin_ai_cost_by_operation', { range_start: start,      range_end: end }),
-      uSupa.rpc('admin_ai_model_mix',         { range_start: start,      range_end: end }),
-      uSupa.rpc('admin_mission_margins',      { range_start: start,      range_end: end }),
-      uSupa.rpc('daily_revenue_buckets',      { range_start: start,      range_end: end }),
+      supabase.rpc('admin_ai_cost_summary',      { range_start: start,      range_end: end }),
+      supabase.rpc('admin_ai_cost_summary',      { range_start: priorStart, range_end: start }),
+      supabase.rpc('admin_ai_cost_by_operation', { range_start: start,      range_end: end }),
+      supabase.rpc('admin_ai_model_mix',         { range_start: start,      range_end: end }),
+      supabase.rpc('admin_mission_margins',      { range_start: start,      range_end: end }),
+      supabase.rpc('daily_revenue_buckets',      { range_start: start,      range_end: end }),
     ]);
 
     const s  = summary.data      || {};
@@ -856,7 +843,6 @@ router.get('/revenue', async (req, res, next) => {
   try {
     const { start, end, days } = resolveRange(req.query.range || '30d');
     const priorStart = new Date(start.getTime() - (end.getTime() - start.getTime()));
-    const uSupa = userSupabase(req);
 
     const [missionsRes, priorMissionsRes, bucketsRes] = await Promise.all([
       supabase.from('missions')
@@ -869,7 +855,7 @@ router.get('/revenue', async (req, res, next) => {
         .in('status', ['paid', 'completed'])
         .gte('paid_at', priorStart.toISOString())
         .lt('paid_at', start.toISOString()),
-      uSupa.rpc('daily_revenue_buckets', { range_start: start, range_end: end }),
+      supabase.rpc('daily_revenue_buckets', { range_start: start, range_end: end }),
     ]);
 
     const curr = missionsRes.data      || [];
@@ -964,15 +950,15 @@ router.post('/users/:id/notes', async (req, res, next) => {
 const _insightsCache = { data: null, generatedAt: null };
 const INSIGHTS_TTL_MS = 6 * 60 * 60 * 1000; // 6 h
 
-async function _generateInsights(adminUserId, uSupa) {
+async function _generateInsights(adminUserId) {
   const { callClaude, extractJSON } = require('../services/ai/anthropic');
   const now   = new Date();
   const since = new Date(now.getTime() - 30 * 24 * 3600 * 1000);
 
   const [summaryRes, funnelRes, segmentsRes] = await Promise.all([
-    uSupa.rpc('admin_ai_cost_summary', { range_start: since, range_end: now }),
-    uSupa.rpc('admin_funnel',          { range_start: since, range_end: now }),
-    uSupa.rpc('admin_user_segments'),
+    supabase.rpc('admin_ai_cost_summary', { range_start: since, range_end: now }),
+    supabase.rpc('admin_funnel',          { range_start: since, range_end: now }),
+    supabase.rpc('admin_user_segments'),
   ]);
 
   const contextData = {
@@ -1019,7 +1005,7 @@ router.get('/insights', async (req, res, next) => {
       || (now - _insightsCache.generatedAt) > INSIGHTS_TTL_MS;
 
     if (stale) {
-      _insightsCache.data        = await _generateInsights(req.user.id, userSupabase(req));
+      _insightsCache.data        = await _generateInsights(req.user.id);
       _insightsCache.generatedAt = now;
     }
 
@@ -1036,7 +1022,7 @@ router.get('/insights', async (req, res, next) => {
  */
 router.post('/insights/refresh', async (req, res, next) => {
   try {
-    _insightsCache.data        = await _generateInsights(req.user.id, userSupabase(req));
+    _insightsCache.data        = await _generateInsights(req.user.id);
     _insightsCache.generatedAt = Date.now();
 
     res.json({
