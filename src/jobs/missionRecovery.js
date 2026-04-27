@@ -254,25 +254,38 @@ async function runJob2() {
 }
 
 /**
- * Per-mission reconciliation. Three branches based on Stripe PI state:
- *   succeeded  → webhook miss; recover the mission (mark paid, run pipeline)
- *   resumable  → PI is still alive; LEAVE the mission alone (Bug 22.9 idempotency
- *                will resume on next user attempt; cron is older than that signal)
- *   terminal   → flip to draft, clear latest_payment_intent_id (user retries clean)
+ * Per-mission reconciliation. Branches based on whether we have a PI on the
+ * row (Bug 22.9) and the Stripe PI state:
+ *
+ *   no PI on row (pre-Bug-22.9 historical orphans)
+ *              → ALERT ONLY. Cannot safely auto-reset — Stripe forensic
+ *                showed pre-Bug-22.9 rows can have a succeeded PI in Stripe
+ *                (webhook miss) that's not tracked on the mission row.
+ *                Auto-flipping to draft would silently lose paid missions.
+ *                Operator must reconcile manually via Stripe Dashboard.
+ *
+ *   PI succeeded → webhook miss; recover the mission (mark paid, run pipeline)
+ *
+ *   PI in any non-succeeded state (canceled / failed / requires_* / processing
+ *                                  >6h old)
+ *              → flip to draft, clear latest_payment_intent_id (user retries
+ *                clean with a fresh quote)
  */
 async function reconcileOrphanPendingPayment(m) {
-  // No PI ever recorded — legacy or pre-Bug-22.9 mission. Reset to draft.
+  // No PI ever recorded — legacy / pre-Bug-22.9 mission. SAFE PATH: alert,
+  // do NOT auto-mutate. The Bali forensic showed these rows can have a
+  // succeeded PI in Stripe (webhook miss; user paid) that we don't know
+  // about because we never stored the PI id on the mission row.
   if (!m.latest_payment_intent_id) {
-    await updateMission(supabase, m.id, {
-      status: 'draft',
-    }, { caller: 'cron:missionRecovery:job2:reset_no_pi' });
-    await alertAdmin('orphan_pending_payment_reset', m.id, {
-      user_id:    m.user_id,
-      title:      m.title,
-      reason:     'no_latest_payment_intent_id',
-      stuck_since: m.created_at,
+    await alertAdmin('orphan_pending_payment_legacy_unsafe_to_auto_reset', m.id, {
+      user_id:           m.user_id,
+      title:             m.title,
+      reason:            'no_latest_payment_intent_id (predates Pass 22 Bug 22.9)',
+      stuck_since:       m.created_at,
+      stuck_after_hours: JOB2_STUCK_AFTER_HOURS,
+      action_required:   'Manual Stripe Dashboard reconciliation: search PIs by metadata.missionId; if any succeeded, recover the row; otherwise admin can flip to draft.',
     });
-    logger.warn('[cron] job2 reset (no PI)', { missionId: m.id });
+    logger.warn('[cron] job2 alert-only (legacy, no PI tracked)', { missionId: m.id });
     return;
   }
 
