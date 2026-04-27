@@ -372,12 +372,27 @@ function init(opts = {}) {
   _job1Timer = setInterval(() => { runJob1().catch(() => {}); }, job1IntervalMs);
   _job2Timer = setInterval(() => { runJob2().catch(() => {}); }, job2IntervalMs);
 
+  // Pass 22 Bug 22.10c hotfix — kick off both jobs ~30s after init so the
+  // first tick happens regardless of redeploy frequency. Without this,
+  // every Railway redeploy resets the setInterval clock to T+0, and Job 2's
+  // 30min interval means a busy deploy day (B1, B2, hotfixes) can keep
+  // pushing the first tick past the redeploy window — Job 2 effectively
+  // never fires.
+  //
+  // The advisory lock in cron_locks prevents this primer-run from racing
+  // with the regular interval tick (or with another instance during a
+  // rolling deploy).
+  setTimeout(() => { runJob1().catch(() => {}); }, 30 * 1000);
+  setTimeout(() => { runJob2().catch(() => {}); }, 45 * 1000);
+
   logger.info('[cron] missionRecovery started', {
     instance: _instanceId,
     job1IntervalMs,
     job2IntervalMs,
     job1StuckAfterHours: JOB1_STUCK_AFTER_HOURS,
     job2StuckAfterHours: JOB2_STUCK_AFTER_HOURS,
+    primerTickJob1Sec: 30,
+    primerTickJob2Sec: 45,
   });
 }
 
