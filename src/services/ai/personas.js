@@ -5,20 +5,22 @@
  */
 
 const { callClaude, extractJSON } = require('./anthropic');
+const { WRITING_STYLE } = require('./writingStyle');
 const logger = require('../../utils/logger');
 
-// Stable system prompt — cached across all calls within a mission to cut costs ~50% on inputs.
+// Stable system prompt, cached across all calls within a mission to cut costs ~50% on inputs.
 const PERSONA_SYSTEM_PROMPT = `You are VETT's persona simulation engine. Your job is to create realistic, diverse synthetic market-research respondents that match a given targeting specification.
 
 Rules:
 - Each persona must feel like a real individual, not a demographic template.
-- Distribute attributes realistically across the sample (don't cluster; reflect plausible population statistics).
+- Distribute attributes realistically across the sample (don't cluster, reflect plausible population statistics).
 - Give each persona a believable interior life: motivations, anxieties, day-to-day habits, decision triggers.
 - Never use real names of public figures. Use first names plausible for the target geography and gender.
 - Stay within the targeting constraints supplied. If a constraint is missing, use the most reasonable distribution for the market.
-- Output must be STRICTLY VALID JSON matching the requested schema — no commentary, no markdown code fences around the JSON.
+- Output must be STRICTLY VALID JSON matching the requested schema, no commentary, no markdown code fences around the JSON.
 
-You understand MENA, Gulf, European, US, and global markets equally well. You handle B2B, B2C, and niche segments.`;
+You understand MENA, Gulf, European, US, and global markets equally well. You handle B2B, B2C, and niche segments.
+${WRITING_STYLE}`;
 
 /**
  * Generate N personas in batches of BATCH_SIZE.

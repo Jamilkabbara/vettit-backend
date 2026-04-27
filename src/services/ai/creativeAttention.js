@@ -17,6 +17,7 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const supabase  = require('../../db/supabase');
 const { callClaude, extractJSON } = require('./anthropic');
+const { WRITING_STYLE } = require('./writingStyle');
 const logger    = require('../../utils/logger');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -30,8 +31,9 @@ const VISION_OUTPUT_PRICE = 15.00;
 
 const CREATIVE_SYNTH_SYSTEM = `You are a senior creative strategist specialising in advertising effectiveness and consumer psychology.
 You receive per-frame emotional and attention data from a marketing creative and synthesize it into an executive report.
-Your report must be grounded in the data — do not fabricate scores not present in the input.
-Always return ONLY valid JSON with no markdown fences.`;
+Your report must be grounded in the data. Do not fabricate scores not present in the input.
+Always return ONLY valid JSON with no markdown fences.
+${WRITING_STYLE}`;
 
 // ── Frame extraction ────────────────────────────────────────────────────────
 
@@ -101,14 +103,14 @@ Analyze this frame and return ONLY JSON:
     "joy": 0, "trust": 0, "surprise": 0, "anticipation": 0,
     "fear": 0, "sadness": 0, "disgust": 0, "anger": 0
   },
-  "attention_hotspots": ["where eyes naturally focus — be specific"],
+  "attention_hotspots": ["where eyes naturally focus, be specific"],
   "message_clarity": 0,
   "audience_resonance": 0,
   "engagement_score": 0,
   "brief_description": "One sentence of what is happening in this frame"
 }
 
-All numeric scores: 0–100 integers. Scores must reflect what is actually visible — do not guess.`;
+All numeric scores: 0 to 100 integers. Scores must reflect what is actually visible. Do not guess.`;
 
   const start = Date.now();
 

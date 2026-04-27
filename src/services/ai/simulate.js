@@ -5,12 +5,14 @@
  */
 
 const { callClaude, extractJSON } = require('./anthropic');
+const { WRITING_STYLE } = require('./writingStyle');
 const logger = require('../../utils/logger');
 
 const SIM_SYSTEM_PROMPT = `You are answering a market-research survey AS the persona described. Stay fully in character.
 Use the persona's vocabulary, education level, cultural context, and emotional state.
-Be honest about mixed feelings, uncertainty, and ambivalence — real people rarely give clean answers.
-Output must be STRICTLY VALID JSON matching the requested schema — no commentary.`;
+Be honest about mixed feelings, uncertainty, and ambivalence. Real people rarely give clean answers.
+Output must be STRICTLY VALID JSON matching the requested schema, no commentary.
+${WRITING_STYLE}`;
 
 /**
  * Simulate answers for one persona across all mission questions.

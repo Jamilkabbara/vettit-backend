@@ -8,6 +8,7 @@
  */
 
 const { callClaude } = require('./anthropic');
+const { WRITING_STYLE } = require('./writingStyle');
 
 /**
  * Generate a targeting brief JSON for a completed mission.
@@ -111,9 +112,9 @@ Return ONLY a valid JSON object with these exact fields. No markdown fences, no 
   },
   "lookalike_seed": "2-3 sentences on building lookalike audiences from top responders",
   "ad_copy_angles": [
-    "Angle 1 — 1-2 sentences on emotional hook or value prop",
-    "Angle 2 — ...",
-    "Angle 3 — ..."
+    "Angle 1: 1-2 sentences on emotional hook or value prop",
+    "Angle 2: ...",
+    "Angle 3: ..."
   ]
 }
 
@@ -121,7 +122,7 @@ Rules:
 - Use real interest/industry names that actually exist on those ad platforms (e.g. "Small business owners" not "Business type 1")
 - Age range should reflect the top 2 age buckets in the demographic data
 - Locations should be the top countries by respondent count
-- Be specific and actionable — a media buyer should be able to paste this directly into Ads Manager
+- Be specific and actionable. A media buyer should be able to paste this directly into Ads Manager.
 - Return ONLY the JSON, nothing else`;
 
   // ── Call Claude ──────────────────────────────────────────────────────────
@@ -131,7 +132,7 @@ Rules:
     missionId:   mission.id,
     userId:      mission.user_id,
     messages:    [{ role: 'user', content: prompt }],
-    systemPrompt: 'You are a paid media strategist. Always respond with valid JSON only — no markdown, no explanation.',
+    systemPrompt: `You are a paid media strategist. Always respond with valid JSON only, no markdown, no explanation.\n${WRITING_STYLE}`,
     maxTokens:   2000,
     enablePromptCache: false,
   });
