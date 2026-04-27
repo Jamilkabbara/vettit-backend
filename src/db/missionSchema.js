@@ -62,6 +62,10 @@ const ALLOWED_COLUMNS = new Set([
   // Pass 21 Bug 19: top-level failure reason populated by runMission's
   // fatal handler. Replaces fishing the message out of mission_assets.
   'failure_reason',
+  // Pass 22 Bug 22.23: track the most recent Stripe PI for this mission so
+  // /api/payments/create-intent can resume an in-flight PI instead of creating
+  // a new one on every retry. See migrations/pass-22/03_bug_22_9_*.sql.
+  'latest_payment_intent_id',
 ]);
 
 /**
