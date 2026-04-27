@@ -119,6 +119,34 @@ async function runMission(missionId) {
       if (insErr) logger.warn('Mission run: responses insert chunk failed', { missionId, err: insErr });
     }
 
+    // 4b. Pass 22 Bug 22.14 — persist per-persona reasoning for click-through
+    // "why did this persona answer X?" modal. Cost-bounded: skip on missions
+    // with >50 personas (reasoning is generated inline in simulate's prompt
+    // anyway, so the marginal cost is just the storage write).
+    if (responses.length > 0 && (personas?.length || 0) <= 50) {
+      const reasoningRows = responses
+        .filter(r => r.reasoning && typeof r.reasoning === 'string' && r.reasoning.trim().length > 0)
+        .map(r => ({
+          mission_id:     missionId,
+          persona_id:     r.persona_id,
+          question_id:    r.question_id,
+          // Stringify multi-select / numeric answers for the response_value
+          // text column so the click-through filter works uniformly.
+          response_value: Array.isArray(r.answer)
+            ? r.answer.join(', ')
+            : (r.answer == null ? null : String(r.answer)),
+          reasoning_text: r.reasoning.trim().slice(0, 1000),
+        }));
+
+      for (let i = 0; i < reasoningRows.length; i += CHUNK) {
+        const { error: rErr } = await supabase
+          .from('persona_response_reasoning')
+          .insert(reasoningRows.slice(i, i + CHUNK));
+        if (rErr) logger.warn('Mission run: reasoning insert chunk failed', { missionId, err: rErr });
+      }
+      logger.info('Mission run: persona reasoning persisted', { missionId, count: reasoningRows.length });
+    }
+
     // 5. Synthesize insights (wrapped so a summary failure never blocks completion)
     // Persona responses are expensive and cannot be cheaply regenerated.
     // Summary CAN be regenerated later from stored responses, so we always

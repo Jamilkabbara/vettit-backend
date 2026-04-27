@@ -30,8 +30,12 @@ Mission brief: ${mission.brief || mission.mission_statement || ''}
 Answer every question below as this persona. For each question:
 - "single" / "opinion" → pick ONE option from the provided options
 - "multi"              → pick 1-N options from the provided options (only select what the persona actually agrees with)
-- "rating"             → a whole number 1–5
+- "rating"             → a whole number 1 to 5
 - "text"               → 1-3 sentences in the persona's voice (free text)
+
+For EVERY answer, also include a "reasoning" field: 1 to 2 sentences explaining
+why this persona answered that way given their context. Be specific to the
+persona (their job, family, anxieties, decision triggers). Do not be generic.
 
 Questions:
 ${questions.map((q, i) => {
@@ -42,10 +46,10 @@ ${questions.map((q, i) => {
 Return ONLY this JSON:
 {
   "responses": [
-    { "question_id": "q1", "answer": "Option A" },
-    { "question_id": "q2", "answer": ["Option A", "Option C"] },
-    { "question_id": "q3", "answer": 4 },
-    { "question_id": "q4", "answer": "I'm honestly torn. The price feels high but..." }
+    { "question_id": "q1", "answer": "Option A", "reasoning": "1-2 sentences in persona's voice." },
+    { "question_id": "q2", "answer": ["Option A", "Option C"], "reasoning": "..." },
+    { "question_id": "q3", "answer": 4, "reasoning": "..." },
+    { "question_id": "q4", "answer": "I'm honestly torn. The price feels high but...", "reasoning": "..." }
   ]
 }`;
 
@@ -155,6 +159,10 @@ async function simulateAllResponses(personas, questions, mission, onProgress) {
           persona_profile: personaProfile,
           question_id:     r.question_id,
           answer:          r.answer,
+          // Pass 22 Bug 22.14 — reasoning trace passed through to runMission
+          // for persistence into persona_response_reasoning when the mission
+          // is small enough (<=50 personas).
+          reasoning:       typeof r.reasoning === 'string' ? r.reasoning : null,
         });
       }
 

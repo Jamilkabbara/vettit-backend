@@ -62,7 +62,20 @@ Rules:
 - For "single" and "multi": always include "options" array (3-5 items)
 - For "opinion": options = ["Strongly Agree", "Agree", "Neutral", "Disagree", "Strongly Disagree"]
 - For "rating" and "text": options array can be empty
-- SCREENING QUESTION (q1 only): isScreening: true, qualifyingAnswer: the primary qualifying answer (string), qualifying_answers: ALL answers that qualify (array — include EVERY affirmative/target option, not just one), screening_continue_on: same array as qualifying_answers
+- SCREENING QUESTION (q1 only): isScreening: true, qualifyingAnswer: the primary qualifying answer (string), qualifying_answers: ALL answers that qualify (array, include EVERY affirmative/target option, not just one), screening_continue_on: same array as qualifying_answers
+
+  Pass 22 Bug 22.24 — SCREENER CALIBRATION RULE:
+  When the mission is about validating a new product, early-adopter intent, or potential customers
+  (NOT current users only), qualifying_answers MUST include near-future-intent options, not just
+  "currently uses". Use this matrix:
+    - "Currently uses [thing]"               → ALWAYS qualify (include in qualifying_answers)
+    - "Plans to use within 6 months"         → qualify (include in qualifying_answers)
+    - "Plans to use within 12 months"        → qualify (include in qualifying_answers)
+    - "Has heard of but not used"            → include only if the mission targets awareness/consideration
+    - "Never heard of [thing]"               → include only if the mission explicitly targets cold prospects
+  Default screener for new-product validation: include the top 3 (current + near-future intent).
+  This prevents the early-adopter target segment (e.g. "plans to invest in influencer marketing in
+  next 12 months") from being incorrectly screened out as not-current-users.
 - NON-SCREENING: isScreening: false, qualifyingAnswer: null, screening_continue_on: null
 - Flow: screening → awareness → perception → intent → open feedback
 - Country codes: AE (UAE), US (USA), GB (UK), SA (Saudi Arabia), IN (India), AU (Australia)

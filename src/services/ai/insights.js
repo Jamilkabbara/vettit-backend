@@ -142,6 +142,30 @@ async function synthesizeInsights(mission, responses) {
   const screenedOutCount = [...personaSet.values()].filter(Boolean).length;
   const completedCount = totalPersonas - screenedOutCount;
 
+  // Pass 22 Bug 22.15 — build a compact per-persona summary so the model can
+  // identify cross-cut segmentation axes. Dedup by persona_id and pull only
+  // demographic-ish fields to keep the prompt size bounded; full persona
+  // profiles are 5-10x larger and not needed for axis identification.
+  const personaSummaries = [];
+  const seenPersonaIds = new Set();
+  for (const r of responses) {
+    if (seenPersonaIds.has(r.persona_id)) continue;
+    seenPersonaIds.add(r.persona_id);
+    const p = r.persona_profile || {};
+    const summary = { id: r.persona_id };
+    // Whitelist of demographic-ish keys; ignore the rest. The model is
+    // instructed to pick whichever 2-3 axes are most informative.
+    for (const k of [
+      'age', 'age_bracket', 'gender', 'role', 'occupation', 'industry',
+      'income', 'income_bracket', 'location', 'country', 'city',
+      'family_status', 'tech_savvy', 'lifestage', 'segment',
+    ]) {
+      if (p[k] != null) summary[k] = p[k];
+    }
+    if (p.screened_out === true) summary.screened_out = true;
+    personaSummaries.push(summary);
+  }
+
   const userPrompt = `Mission brief: ${mission.brief || mission.mission_statement || ''}
 Goal: ${mission.goal_type || 'general research'}
 
@@ -157,6 +181,9 @@ It is NOT a headcount. Do not use it as a dropout or completion metric under any
 
 Per-question aggregated data:
 ${JSON.stringify(agg, null, 2)}
+
+Persona summaries (for cross-cut segmentation; pick the 2-3 most informative axes):
+${JSON.stringify(personaSummaries, null, 2)}
 
 Return ONLY this JSON structure:
 {
@@ -193,8 +220,22 @@ Return ONLY this JSON structure:
       "tension_description": "One to two sentences on what the two questions disagree about and why it matters.",
       "severity": "high|medium|low"
     }
+  ],
+  "segment_breakdowns": [
+    {
+      "axis": "age_bracket | income_bracket | role | location | family_status | tech_savvy | (whichever 2-3 axes are most informative)",
+      "segments": [
+        {
+          "name": "18-29",
+          "n": 12,
+          "key_findings": "1-2 sentences on what this segment thinks differently from the rest, with specific question-level evidence."
+        }
+      ]
+    }
   ]
-}`;
+}
+
+Identify the 2 to 3 most informative segmentation axes from the persona profiles. For each axis, return per-segment counts (n) and one to two sentences calling out where that segment diverges from the overall result. Skip axes that don't produce meaningful differentiation. If the sample is too small or homogeneous to segment usefully, return an empty array.`;
 
   const response = await callClaude({
     callType: 'insight_synth',
@@ -208,8 +249,9 @@ Return ONLY this JSON structure:
 
   try {
     const parsed = extractJSON(response.text);
-    // Defensive default for contradictions in case the model omits the field.
-    if (!Array.isArray(parsed.contradictions)) parsed.contradictions = [];
+    // Defensive defaults in case the model omits these optional fields.
+    if (!Array.isArray(parsed.contradictions))     parsed.contradictions     = [];
+    if (!Array.isArray(parsed.segment_breakdowns)) parsed.segment_breakdowns = [];
     return parsed;
   } catch (err) {
     logger.error('Insight synthesis parse failed', { missionId: mission.id, err: err.message });
@@ -221,6 +263,7 @@ Return ONLY this JSON structure:
       recommendations: [],
       follow_ups: [],
       contradictions: [],
+      segment_breakdowns: [],
     };
   }
 }

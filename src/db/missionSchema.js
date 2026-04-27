@@ -66,6 +66,10 @@ const ALLOWED_COLUMNS = new Set([
   // /api/payments/create-intent can resume an in-flight PI instead of creating
   // a new one on every retry. See migrations/pass-22/03_bug_22_9_*.sql.
   'latest_payment_intent_id',
+  // Pass 22 Bug 22.24: user-editable screener acceptance criteria. Set on
+  // mission setup before launch; runMission reads it when generating the
+  // screener prompt.
+  'screener_criteria',
 ]);
 
 /**
