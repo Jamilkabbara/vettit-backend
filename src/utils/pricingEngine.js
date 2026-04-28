@@ -67,27 +67,84 @@ const TIER_RATES = {
   3: 1.90,
 };
 
-// ── Volume tier ladder — Pass 23 Bug 23.PRICING ─────────────────────────────
+// ── Volume tier ladders — Pass 23 Bug 23.PRICING + 23.51 ──────────────────────
+//
+// Three goal-keyed ladders. The default ladder (validate / naming_messaging /
+// marketing / fallback) is the original VOLUME_TIERS, extended with Scale and
+// Enterprise tiers per the master Pass 23 plan. Brand Lift uses
+// statistical-sample-size tiers only (no Sniff Test, no Validate). Creative
+// Attention is flat-per-asset, not per-respondent.
+//
+// Each tier carries packagePrice + (for respondent-based) ratePerResp +
+// anchorCount. Creative Attention tiers carry assetCount instead of anchor
+// count, with packagePrice as the flat charge.
 
-/**
- * Four named packages anchored on respondent-count thresholds. The frontend
- * preset chips and landing-page copy mirror this exactly.
- *
- * `maxCount` is inclusive — i.e. count <= maxCount uses this tier's rate.
- * Counts above the largest maxCount fall through to the last tier's rate
- * (Deep Dive at $1.20/resp, also covering 250+).
- */
+/** Default volume ladder — used by validate, naming_messaging, marketing. */
 const VOLUME_TIERS = [
-  { id: 'sniff_test', name: 'Sniff Test', anchorCount: 5,   maxCount: 5,   ratePerResp: 1.80, packagePrice: 9   },
-  { id: 'validate',   name: 'Validate',   anchorCount: 10,  maxCount: 10,  ratePerResp: 3.50, packagePrice: 35  },
-  { id: 'confidence', name: 'Confidence', anchorCount: 50,  maxCount: 50,  ratePerResp: 1.98, packagePrice: 99  },
-  { id: 'deep_dive',  name: 'Deep Dive',  anchorCount: 250, maxCount: Infinity, ratePerResp: 1.20, packagePrice: 299 },
+  { id: 'sniff_test', name: 'Sniff Test', anchorCount: 5,    maxCount: 5,    ratePerResp: 1.80, packagePrice: 9    },
+  { id: 'validate',   name: 'Validate',   anchorCount: 10,   maxCount: 10,   ratePerResp: 3.50, packagePrice: 35   },
+  { id: 'confidence', name: 'Confidence', anchorCount: 50,   maxCount: 50,   ratePerResp: 1.98, packagePrice: 99   },
+  { id: 'deep_dive',  name: 'Deep Dive',  anchorCount: 250,  maxCount: 250,  ratePerResp: 1.20, packagePrice: 299  },
+  { id: 'scale',      name: 'Scale',      anchorCount: 1000, maxCount: 1000, ratePerResp: 0.90, packagePrice: 899  },
+  { id: 'enterprise', name: 'Enterprise', anchorCount: 5000, maxCount: Infinity, ratePerResp: 0.40, packagePrice: 1990 },
+];
+
+/** Brand Lift — minimum statistical sample sizes (no Sniff Test / Validate). */
+const BRAND_LIFT_TIERS = [
+  { id: 'pulse',      name: 'Pulse',      anchorCount: 50,   maxCount: 50,   ratePerResp: 1.98, packagePrice: 99,   minRespondents: 50 },
+  { id: 'tracker',    name: 'Tracker',    anchorCount: 200,  maxCount: 200,  ratePerResp: 1.50, packagePrice: 299,  minRespondents: 50 },
+  { id: 'wave',       name: 'Wave',       anchorCount: 500,  maxCount: 500,  ratePerResp: 1.20, packagePrice: 599,  minRespondents: 50 },
+  { id: 'enterprise', name: 'Enterprise', anchorCount: 2000, maxCount: Infinity, ratePerResp: 0.75, packagePrice: 1499, minRespondents: 50 },
+];
+
+/** Creative Attention — flat per-asset charges, not per-respondent. */
+const CREATIVE_ATTENTION_TIERS = [
+  { id: 'image',  name: 'Image',  assetCount: 1,  packagePrice: 19,  mediaType: 'image'  },
+  { id: 'video',  name: 'Video',  assetCount: 1,  packagePrice: 39,  mediaType: 'video'  },
+  { id: 'bundle', name: 'Bundle', assetCount: 5,  packagePrice: 79,  mediaType: 'bundle' },
+  { id: 'series', name: 'Series', assetCount: 20, packagePrice: 249, mediaType: 'series' },
 ];
 
 /**
- * Resolve the volume tier for a given respondent count. Counts above the
- * largest anchor (250) still use the Deep Dive rate ($1.20/resp). The
- * returned object is one of VOLUME_TIERS — always defined.
+ * Resolve the active tier ladder for a goal_type. Unrecognised goal types
+ * fall back to the default volume ladder (so a new goal added to the UI
+ * without backend awareness still gets a price).
+ */
+function getPricingForGoalType(goalType) {
+  switch (goalType) {
+    case 'brand_lift':         return BRAND_LIFT_TIERS;
+    case 'creative_attention': return CREATIVE_ATTENTION_TIERS;
+    default:                   return VOLUME_TIERS;
+  }
+}
+
+/**
+ * Resolve the tier object for a {goalType, respondentCount, mediaType}
+ * combo. For Creative Attention the count is meaningless; mediaType picks
+ * the tier directly.
+ *
+ * Returns one of the goal-specific tier objects, or null on invalid combo
+ * (e.g. brand_lift with count < minRespondents). Validation callers should
+ * surface the null as a 400 with a friendly message.
+ */
+function resolveTier({ goalType, respondentCount, mediaType }) {
+  if (goalType === 'creative_attention') {
+    const desiredId = mediaType || 'image';
+    const tier = CREATIVE_ATTENTION_TIERS.find(t => t.id === desiredId)
+              || CREATIVE_ATTENTION_TIERS.find(t => t.mediaType === desiredId);
+    return tier || CREATIVE_ATTENTION_TIERS[0]; // fallback: image
+  }
+  const ladder = getPricingForGoalType(goalType);
+  const c = Math.max(0, Number(respondentCount) || 0);
+  if (goalType === 'brand_lift' && c < (ladder[0].minRespondents || 50)) {
+    return null; // signal: brand_lift requires >= minRespondents
+  }
+  return ladder.find(t => c <= t.maxCount) || ladder[ladder.length - 1];
+}
+
+/**
+ * Legacy helper kept for callers that haven't migrated to resolveTier.
+ * Always returns a default-ladder tier (no goal_type awareness).
  */
 function getVolumeTier(count) {
   const c = Math.max(0, Number(count) || 0);
@@ -163,13 +220,24 @@ function calculateMissionPrice({
   promoCode = null,
   isScreeningActive = false,
 } = {}) {
-  // 1. Base rate from volume tier (Pass 23 Bug 23.PRICING). Country tier is
-  // resolved for backwards-compat reporting only; the rate that drives the
-  // charge is the volume tier the respondent_count falls in.
+  // 1. Base rate via goal-type-aware tier resolution (Pass 23 Bug 23.51).
+  // Validate / naming / marketing → respondent-count ladder (default).
+  // Brand Lift → statistical-sample ladder (Pulse/Tracker/Wave/Enterprise).
+  // Creative Attention → flat per-asset (Image/Video/Bundle/Series).
   const countryTier = resolveHighestTier(countries);
-  const volumeTier  = getVolumeTier(respondentCount);
-  const ratePerResp = volumeTier.ratePerResp;
-  const base        = respondentCount * ratePerResp;
+  const goalType    = arguments[0]?.goalType || 'validate';
+  const mediaType   = arguments[0]?.mediaType || null;
+  const tier        = resolveTier({ goalType, respondentCount, mediaType });
+  const isCreative  = goalType === 'creative_attention';
+  const ratePerResp = isCreative ? null : (tier?.ratePerResp || VOLUME_TIERS[0].ratePerResp);
+  // Creative Attention: flat package price, count irrelevant.
+  // Other goals: rate × count. Tier null (brand_lift below minRespondents)
+  // falls back to the cheapest in-ladder tier rate × count for safety;
+  // route layer should reject the invalid combo BEFORE calling here.
+  const base = isCreative
+    ? (tier?.packagePrice || CREATIVE_ATTENTION_TIERS[0].packagePrice)
+    : respondentCount * ratePerResp;
+  const volumeTier = tier || (isCreative ? CREATIVE_ATTENTION_TIERS[0] : VOLUME_TIERS[0]);
 
   // 2. Extra questions
   const extraQ         = Math.max(0, questionCount - FREE_QUESTIONS);
@@ -256,9 +324,14 @@ function round2(val) {
 module.exports = {
   calculateMissionPrice,
   extractCountriesFromMission,
-  // Volume-tier (Pass 23 Bug 23.PRICING — canonical pricing model)
-  getVolumeTier,
+  // Goal-keyed tier ladders (Pass 23 Bug 23.51 — canonical)
+  getPricingForGoalType,
+  resolveTier,
   VOLUME_TIERS,
+  BRAND_LIFT_TIERS,
+  CREATIVE_ATTENTION_TIERS,
+  // Default-ladder helper kept for backwards compat
+  getVolumeTier,
   // Country-tier (legacy, no longer affects price; retained for analytics)
   resolveHighestTier,
   getCountryTier,
