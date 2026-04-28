@@ -377,6 +377,35 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
         await updateMission(supabase, missionId, {
           checkout_session_id: null,
         }, { caller: 'webhook:checkout.session.completed' });
+
+        // Pass 23 Bug 23.12 — payment_received notification. Fires once per
+        // successful checkout, after mission state flip. The PI succeeded
+        // handler runs in parallel and triggers runMission; that's where
+        // mission_complete or mission_partial fires later. This is the
+        // immediate "we got your payment" pulse so users see signal in
+        // the bell within seconds of returning from Stripe Checkout.
+        try {
+          const { data: paidMission } = await supabase
+            .from('missions')
+            .select('user_id, title')
+            .eq('id', missionId)
+            .maybeSingle();
+          if (paidMission?.user_id) {
+            const titleSafe = (paidMission.title || '').trim() || 'Your VETT mission';
+            const truncated = titleSafe.length > 60 ? `${titleSafe.slice(0, 57)}...` : titleSafe;
+            await supabase.from('notifications').insert({
+              user_id: paidMission.user_id,
+              type:    'payment_received',
+              title:   'Payment received',
+              body:    `Mission "${truncated}" is now processing.`,
+              link:    `/dashboard/${missionId}`,
+            });
+          }
+        } catch (notifErr) {
+          logger.warn('payment_received notification insert failed (non-fatal)', {
+            missionId, err: notifErr.message,
+          });
+        }
       }
       break;
     }
