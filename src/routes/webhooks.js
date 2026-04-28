@@ -237,9 +237,18 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
         } else {
           // payment_status + updated_at columns don't exist in public.missions
           // — sanitizer strips them. `status: 'paid'` is the canonical signal.
+          //
+          // Pass 23 Bug 23.25 — also stamp latest_payment_intent_id (so
+          // runMission's partial-refund branch can reach Stripe) and
+          // paid_amount_cents (the actual amount charged, accounting for any
+          // Stripe-side promo redeemed at Checkout). These were dropped in the
+          // Bug 23.0e v2 migration when /create-intent went away; restoring
+          // them here keeps the canonical place at PI succeed.
           await updateMission(supabase, missionId, {
             status: 'paid',
             paid_at: new Date().toISOString(),
+            latest_payment_intent_id: pi.id,
+            paid_amount_cents: Number.isFinite(pi.amount_received) ? pi.amount_received : null,
           }, { caller: 'webhook:payment_intent.succeeded' });
           logger.info('Payment confirmed via webhook → triggering mission run', { missionId, amount: pi.amount });
 

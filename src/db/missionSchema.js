@@ -75,6 +75,15 @@ const ALLOWED_COLUMNS = new Set([
   // checkout.session.expired webhook. Parallel to latest_payment_intent_id
   // (Stripe Checkout still creates a PaymentIntent under the hood).
   'checkout_session_id',
+  // Pass 23 Bug 23.25 — delivery integrity columns. Stamped by runMission's
+  // over-recruit loop or the partial-delivery branch. delivery_status is the
+  // canonical {full|partial} flag; the rest are forensic + idempotency for
+  // the auto-refund path.
+  'delivery_status',
+  'delivery_check_at',
+  'paid_amount_cents',
+  'partial_refund_id',
+  'partial_refund_amount_cents',
 ]);
 
 /**

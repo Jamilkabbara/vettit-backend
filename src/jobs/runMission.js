@@ -3,20 +3,25 @@
  * Triggered by Stripe payment_intent.succeeded webhook.
  *
  * Flow:
- *   1. Generate N personas (Haiku, batched 10x, concurrency 5)
- *   2. Simulate responses per persona (Haiku, concurrency 8)
+ *   1. Generate personas in over-recruit batches (Pass 23 Bug 23.25): keep
+ *      simulating until qualified_respondent_count == respondent_count or a
+ *      5x cap is hit. Each batch persists responses immediately (crash-safe).
+ *   2. If cap hit before reaching the qualified target → mark mission
+ *      delivery_status='partial', issue a proportional Stripe refund, raise
+ *      an admin alert, send a partial-delivery email.
+ *      Else → mark delivery_status='full'.
  *   3. Synthesize insights (Sonnet, single call)
- *   4. Mark mission complete + send notification + email
+ *   4. Mark mission complete + send completion notification + email
  */
 
 const supabase = require('../db/supabase');
 const logger = require('../utils/logger');
-const { generatePersonas } = require('../services/ai/personas');
-const { simulateAllResponses } = require('../services/ai/simulate');
+const { runOverRecruitedSurvey, MAX_OVER_RECRUIT_MULTIPLIER } = require('./overRecruit');
 const { synthesizeInsights } = require('../services/ai/insights');
 const { generateTargetingBrief } = require('../services/ai/targetingBrief');
 const { analyzeCreative }       = require('../services/ai/creativeAttention');
 const { updateMission } = require('../db/missionSchema');
+const { createRefund } = require('../services/stripe');
 const emailService = require('../services/email');
 
 async function runMission(missionId) {
@@ -82,70 +87,27 @@ async function runMission(missionId) {
       return;
     }
 
-    // Regular survey missions: Generate personas
-    const targetCount = mission.respondent_count || 100;
-    const personas = await generatePersonas(mission, targetCount);
-    logger.info('Mission run: personas generated', { missionId, count: personas.length });
-
-    // 3. Simulate responses
-    const responses = await simulateAllResponses(
+    // ─── Pass 23 Bug 23.25 — over-recruit survey loop ──────────────────────
+    // Replaces the old single-shot generatePersonas + simulateAllResponses
+    // with an adaptive multi-round loop that persists responses incrementally
+    // and exits when qualified_count >= respondent_count OR cap is reached.
+    const targetQualified = mission.respondent_count || 100;
+    const {
       personas,
-      mission.questions || [],
-      mission,
-      (completed, total) => {
-        // Progress is reflected by mission_responses row count — client polls that.
-        if (completed % 25 === 0) logger.info('Mission run: progress', { missionId, completed, total });
-      }
-    );
+      responses,
+      totalSimulated,
+      qualifiedCount: actualQualifiedCount,
+      rounds,
+      capHit,
+    } = await runOverRecruitedSurvey({ mission, missionId });
 
-    logger.info('Mission run: responses simulated', { missionId, count: responses.length });
+    logger.info('Mission run: over-recruit complete', {
+      missionId, rounds, totalSimulated, actualQualifiedCount, targetQualified, capHit,
+    });
 
-    // 4. Bulk insert responses (in chunks to stay under PostgREST limits)
-    const CHUNK = 200;
-    const rows = responses.map(r => ({
-      mission_id:      missionId,
-      persona_id:      r.persona_id,
-      persona_profile: r.persona_profile,
-      question_id:     r.question_id,
-      answer:          r.answer,
-      // Bug 1/2 fix: persist screened_out as first-class column so
-      // aggregation can filter without parsing JSONB on every query.
-      screened_out:    Boolean((r.persona_profile || {}).screened_out),
-    }));
-    for (let i = 0; i < rows.length; i += CHUNK) {
-      const { error: insErr } = await supabase
-        .from('mission_responses')
-        .insert(rows.slice(i, i + CHUNK));
-      if (insErr) logger.warn('Mission run: responses insert chunk failed', { missionId, err: insErr });
-    }
-
-    // 4b. Pass 22 Bug 22.14 — persist per-persona reasoning for click-through
-    // "why did this persona answer X?" modal. Cost-bounded: skip on missions
-    // with >50 personas (reasoning is generated inline in simulate's prompt
-    // anyway, so the marginal cost is just the storage write).
-    if (responses.length > 0 && (personas?.length || 0) <= 50) {
-      const reasoningRows = responses
-        .filter(r => r.reasoning && typeof r.reasoning === 'string' && r.reasoning.trim().length > 0)
-        .map(r => ({
-          mission_id:     missionId,
-          persona_id:     r.persona_id,
-          question_id:    r.question_id,
-          // Stringify multi-select / numeric answers for the response_value
-          // text column so the click-through filter works uniformly.
-          response_value: Array.isArray(r.answer)
-            ? r.answer.join(', ')
-            : (r.answer == null ? null : String(r.answer)),
-          reasoning_text: r.reasoning.trim().slice(0, 1000),
-        }));
-
-      for (let i = 0; i < reasoningRows.length; i += CHUNK) {
-        const { error: rErr } = await supabase
-          .from('persona_response_reasoning')
-          .insert(reasoningRows.slice(i, i + CHUNK));
-        if (rErr) logger.warn('Mission run: reasoning insert chunk failed', { missionId, err: rErr });
-      }
-      logger.info('Mission run: persona reasoning persisted', { missionId, count: reasoningRows.length });
-    }
+    // Cap qualifiedCount at target for reporting so dashboards don't show
+    // 12/10 — extras still live in mission_responses for the user's benefit.
+    const qualifiedRespondent = Math.min(actualQualifiedCount, targetQualified);
 
     // 5. Synthesize insights (wrapped so a summary failure never blocks completion)
     // Persona responses are expensive and cannot be cheaply regenerated.
@@ -193,49 +155,176 @@ async function runMission(missionId) {
       });
     }
 
-    // 6. Compute qualification aggregates from the in-memory persona set.
-    //    Pass 21 Bug 5: persist total_simulated_count, qualified_respondent_count,
-    //    and qualification_rate on the mission so dashboards/reports never
-    //    need to recompute from mission_responses on every read.
-    //
-    //    Definitions:
-    //      total_simulated_count       = number of distinct personas generated
-    //      qualified_respondent_count  = personas where ZERO of their answers
-    //                                    are flagged screened_out
-    //      qualification_rate          = qualified / total  (NULL if total = 0)
-    const screenedOutPersonaIds = new Set(
-      responses
-        .filter(r => Boolean((r.persona_profile || {}).screened_out) || r.screened_out === true)
-        .map(r => r.persona_id)
-    );
-    const allPersonaIds = new Set(personas.map(p => p.persona_id || p.id).filter(Boolean));
-    const totalSimulated      = allPersonaIds.size || personas.length;
-    const qualifiedRespondent = totalSimulated > 0
-      ? Math.max(0, totalSimulated - screenedOutPersonaIds.size)
-      : 0;
-    const qualificationRate   = totalSimulated > 0
-      ? Number((qualifiedRespondent / totalSimulated).toFixed(4))
+    // ─── Pass 23 Bug 23.25 — delivery decision + partial-refund branch ─────
+    const deliveryFull = qualifiedRespondent >= targetQualified;
+    const deliveryStatus = deliveryFull ? 'full' : 'partial';
+    const qualificationRate = totalSimulated > 0
+      ? Number((actualQualifiedCount / totalSimulated).toFixed(4))
       : null;
 
-    // 6b. Mark complete — always, regardless of summary outcome
+    // Compute the proportional refund amount (cents) for partial deliveries.
+    // Source of truth is paid_amount_cents (cached from pi.amount_received at
+    // PI succeed). Fallback to total_price_usd*100 if paid_amount_cents is
+    // missing for any reason (legacy/orphan rows).
+    let refundResult = null;  // { id, amountCents } | null
+    let refundFailed = false;
+
+    if (!deliveryFull) {
+      const gap = targetQualified - qualifiedRespondent;
+      const paidCents = Number.isFinite(mission.paid_amount_cents)
+        ? mission.paid_amount_cents
+        : Math.round(Number(mission.total_price_usd || 0) * 100);
+      const refundCents = Math.floor((paidCents * gap) / targetQualified);
+
+      logger.warn('Mission run: partial delivery — issuing refund', {
+        missionId,
+        targetQualified,
+        actualQualifiedCount,
+        qualifiedRespondent,
+        gap,
+        paidCents,
+        refundCents,
+        cap: targetQualified * MAX_OVER_RECRUIT_MULTIPLIER,
+        capHit,
+        rounds,
+      });
+
+      // ── Admin alert — dedup pattern matching missionRecovery::alertAdmin ──
+      // Insert only if no unresolved partial_delivery alert exists for this
+      // mission. Best-effort; failure to insert is logged but not fatal.
+      try {
+        const { data: existingAlert } = await supabase
+          .from('admin_alerts')
+          .select('id')
+          .eq('alert_type', 'partial_delivery')
+          .eq('mission_id', missionId)
+          .eq('resolved', false)
+          .limit(1)
+          .maybeSingle();
+        if (!existingAlert?.id) {
+          await supabase.from('admin_alerts').insert({
+            alert_type: 'partial_delivery',
+            mission_id: missionId,
+            user_id:    mission.user_id,
+            payload: {
+              paid_for: targetQualified,
+              qualified: qualifiedRespondent,
+              total_simulated: totalSimulated,
+              gap,
+              cap: targetQualified * MAX_OVER_RECRUIT_MULTIPLIER,
+              cap_hit: capHit,
+              paid_amount_cents: paidCents,
+              proposed_refund_amount_cents: refundCents,
+              rounds,
+            },
+            resolved: false,
+          });
+        }
+      } catch (alertErr) {
+        logger.warn('Mission run: admin_alerts partial_delivery insert failed (non-fatal)', {
+          missionId, err: alertErr.message,
+        });
+      }
+
+      // ── Auto-refund via Stripe — idempotent ────────────────────────────
+      // Idempotency key ensures a runMission retry doesn't double-refund the
+      // same gap. Stripe returns the same refund object on the second call
+      // with the same key.
+      if (mission.latest_payment_intent_id && refundCents > 0) {
+        try {
+          const refund = await createRefund({
+            paymentIntentId: mission.latest_payment_intent_id,
+            amountCents:     refundCents,
+            idempotencyKey:  `partial_refund:${missionId}`,
+            reason:          'requested_by_customer',
+            metadata: {
+              missionId,
+              userId: mission.user_id || '',
+              reason_code: 'partial_delivery',
+              paid_for: String(targetQualified),
+              qualified: String(qualifiedRespondent),
+              gap: String(gap),
+            },
+          });
+          refundResult = { id: refund.id, amountCents: refund.amount };
+          logger.info('Mission run: partial-refund issued', {
+            missionId, refundId: refund.id, amountCents: refund.amount, status: refund.status,
+          });
+        } catch (refundErr) {
+          refundFailed = true;
+          logger.error('Mission run: partial-refund failed', {
+            missionId,
+            paymentIntentId: mission.latest_payment_intent_id,
+            err: refundErr.message,
+          });
+          // Surface to the admin_alerts row's payload so ops can retry manually.
+          try {
+            await supabase
+              .from('admin_alerts')
+              .update({
+                payload: {
+                  paid_for: targetQualified,
+                  qualified: qualifiedRespondent,
+                  total_simulated: totalSimulated,
+                  gap,
+                  cap: targetQualified * MAX_OVER_RECRUIT_MULTIPLIER,
+                  cap_hit: capHit,
+                  paid_amount_cents: paidCents,
+                  proposed_refund_amount_cents: refundCents,
+                  rounds,
+                  refund_failed: true,
+                  refund_error: refundErr.message,
+                },
+              })
+              .eq('mission_id', missionId)
+              .eq('alert_type', 'partial_delivery')
+              .eq('resolved', false);
+          } catch { /* logging is best-effort */ }
+        }
+      } else {
+        // Can't refund — no PI on the row. Log but don't crash. Admin alert
+        // already has the forensic; ops will resolve manually.
+        refundFailed = true;
+        logger.warn('Mission run: partial delivery without PI — manual refund required', {
+          missionId,
+          hasLatestPI: Boolean(mission.latest_payment_intent_id),
+          refundCents,
+        });
+      }
+    }
+
+    // 6. Mark complete with all the Bug 23.25 forensic fields populated.
     await updateMission(supabase, missionId, {
       status: 'completed',
       completed_at: new Date().toISOString(),
       executive_summary: insights?.executive_summary || null,
       insights: insights || null,
-      total_simulated_count:       totalSimulated,
-      qualified_respondent_count:  qualifiedRespondent,
-      qualification_rate:          qualificationRate,
+      total_simulated_count:        totalSimulated,
+      qualified_respondent_count:   qualifiedRespondent,
+      qualification_rate:           qualificationRate,
+      delivery_status:              deliveryStatus,
+      delivery_check_at:            new Date().toISOString(),
+      partial_refund_id:            refundResult?.id || null,
+      partial_refund_amount_cents:  refundResult?.amountCents || null,
     }, { caller: 'runMission: complete' });
 
-    logger.info('Mission run: complete', { missionId });
+    logger.info('Mission run: complete', {
+      missionId, deliveryStatus, qualifiedRespondent, totalSimulated,
+      refundId: refundResult?.id || null, refundFailed,
+    });
 
     // Funnel event: mission_completed
     supabase.from('funnel_events').insert({
       user_id:    mission.user_id,
       event_type: 'mission_completed',
       mission_id: missionId,
-      metadata:   { goal_type: mission.goal_type },
+      metadata:   {
+        goal_type: mission.goal_type,
+        delivery_status: deliveryStatus,
+        qualified: qualifiedRespondent,
+        paid_for: targetQualified,
+        total_simulated: totalSimulated,
+      },
     }).then(() => {}).catch(() => {});
 
     // 7. Notification (real-time via Supabase realtime)
@@ -243,20 +332,46 @@ async function runMission(missionId) {
       user_id: mission.user_id,
       type:    'mission_complete',
       title:   `${mission.title || 'Your mission'} results are ready`,
-      body:    insights.executive_summary?.slice(0, 140) || 'Your synthetic audience report is ready to review.',
+      body:    insights?.executive_summary?.slice(0, 140)
+            || 'Your synthetic audience report is ready to review.',
       link:    `/results/${missionId}`,
     });
 
-    // 8. Email (best-effort)
+    // 8. Email — completion or partial-delivery (best-effort).
     try {
       const { data: { user } } = await supabase.auth.admin.getUserById(mission.user_id);
       if (user?.email) {
-        await emailService.sendMissionCompleteEmail?.({
-          to: user.email,
-          missionId,
-          missionTitle: mission.title || 'Your research mission',
-          executiveSummary: insights.executive_summary || '',
-        });
+        if (!deliveryFull) {
+          const refundUsd = (refundResult?.amountCents || 0) / 100;
+          const proposedRefundUsd = ((mission.paid_amount_cents
+            || Math.round(Number(mission.total_price_usd || 0) * 100))
+            * (targetQualified - qualifiedRespondent)
+            / targetQualified) / 100;
+          await emailService.sendPartialDeliveryEmail?.({
+            to: user.email,
+            name: user.user_metadata?.name || user.email.split('@')[0],
+            missionTitle: mission.title || 'Your VETT mission',
+            missionId,
+            paidFor: targetQualified,
+            qualified: qualifiedRespondent,
+            refundAmountUsd: refundResult ? refundUsd : proposedRefundUsd,
+            refundFailed,
+          });
+        } else {
+          // Note: the legacy call site used 'sendMissionCompleteEmail' (no
+          // 'd'), which silently no-op'd via optional chaining — completion
+          // emails never actually went out. Pass 23 Bug 23.25 fixes both the
+          // name and the arg shape so users actually get the email when
+          // their full-delivery mission completes.
+          await emailService.sendMissionCompletedEmail?.({
+            to: user.email,
+            name: user.user_metadata?.name || user.email.split('@')[0],
+            missionStatement: mission.title || 'Your research mission',
+            totalResponses: qualifiedRespondent,
+            missionId,
+            headline: insights?.executive_summary?.slice(0, 200) || '',
+          });
+        }
       }
     } catch (mailErr) {
       logger.warn('Mission run: email send failed', { missionId, err: mailErr.message });

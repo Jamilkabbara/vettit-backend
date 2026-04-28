@@ -239,6 +239,81 @@ async function sendRetargetingRefundEmail({ to, name, refundAmountUsd, missionCo
   } catch (err) { logger.warn('sendRetargetingRefundEmail failed', { err: err.message }); }
 }
 
+// ─── Partial delivery + auto-refund (Pass 23 Bug 23.25) ─────────────────
+async function sendPartialDeliveryEmail({
+  to,
+  name,
+  missionTitle,
+  missionId,
+  paidFor,
+  qualified,
+  refundAmountUsd,
+  refundFailed = false,
+}) {
+  try {
+    const gap = paidFor - qualified;
+    const subject = refundFailed
+      ? `Partial delivery on your VETT mission — we owe you a refund`
+      : `Partial delivery on your VETT mission — $${refundAmountUsd.toFixed(2)} refunded`;
+    return await resend.emails.send({
+      from: FROM,
+      to,
+      subject,
+      html: shell({
+        preheader: refundFailed
+          ? `We delivered ${qualified} of ${paidFor} qualified respondents. Refund failed; we'll process it manually.`
+          : `We delivered ${qualified} of ${paidFor} qualified respondents. $${refundAmountUsd.toFixed(2)} refunded automatically.`,
+        body: `
+          <h1 style="color:#fff;font-size:22px;margin:0 0 12px;">We delivered ${qualified} of ${paidFor}.</h1>
+          <p style="color:#9ca3af;line-height:1.7;">Hi ${name || 'there'},</p>
+          <p style="color:#9ca3af;line-height:1.7;">
+            Your mission &ldquo;<strong style="color:#fff;">${missionTitle || 'VETT mission'}</strong>&rdquo;
+            completed, but the screener was tighter than the audience on this one. We over-recruited
+            personas to try to hit your target; the screener kept dropping them, and we capped at
+            5&times; to keep your AI cost in check.
+          </p>
+          ${card(`
+            <div style="color:#BEF264;font-weight:700;margin-bottom:8px;">What you got</div>
+            <p style="color:#9ca3af;line-height:1.7;margin:0;">
+              <strong style="color:#fff;">${qualified} qualified respondents</strong> out of
+              <strong style="color:#fff;">${paidFor}</strong> you paid for.
+              The ${gap} we couldn&rsquo;t fill stayed inside the screener gate.
+            </p>
+          `)}
+          ${refundFailed
+            ? card(`
+                <div style="color:#fbbf24;font-weight:700;margin-bottom:8px;">Refund pending</div>
+                <p style="color:#9ca3af;line-height:1.7;margin:0;">
+                  We tried to auto-refund <strong style="color:#fff;">$${refundAmountUsd.toFixed(2)}</strong>
+                  for the ${gap} respondent gap, but the refund didn&rsquo;t land cleanly. Our team has
+                  been alerted and will process it manually within one business day.
+                </p>
+              `)
+            : card(`
+                <div style="color:#BEF264;font-weight:700;margin-bottom:8px;">Refund issued</div>
+                <p style="color:#9ca3af;line-height:1.7;margin:0;">
+                  We&rsquo;ve refunded
+                  <strong style="color:#fff;">$${refundAmountUsd.toFixed(2)}</strong>
+                  proportionally for the ${gap} respondent gap. The refund will hit your card in
+                  5&ndash;10 business days.
+                </p>
+              `)}
+          ${card(`
+            <div style="color:#BEF264;font-weight:700;margin-bottom:8px;">Tip for next time</div>
+            <p style="color:#9ca3af;line-height:1.7;margin:0;">
+              Loosen the screener criteria one notch and we'll likely fill the full target. The
+              report is still real signal &mdash; only qualified respondents counted toward your insights.
+            </p>
+          `)}
+          <div style="margin-top:20px;">
+            ${btn('See the report →', `${APP_URL}/results/${missionId}`)}
+          </div>
+        `,
+      }),
+    });
+  } catch (err) { logger.warn('sendPartialDeliveryEmail failed', { err: err.message }); }
+}
+
 // ─── Chat overage receipt ─────────────────────────────────
 async function sendChatOverageEmail({ to, name, messagesGranted = 50, priceUsd = 5 }) {
   try {
@@ -267,4 +342,5 @@ module.exports = {
   sendPaymentFailedEmail,
   sendChatOverageEmail,
   sendRetargetingRefundEmail,
+  sendPartialDeliveryEmail, // Pass 23 Bug 23.25
 };

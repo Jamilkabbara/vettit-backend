@@ -117,14 +117,40 @@ function assessPIResumability(pi, expectedAmountCents) {
 }
 
 /**
- * Create a refund
+ * Create a refund.
+ *
+ * Pass 23 Bug 23.25 — extended to take optional `amountCents` (partial refund),
+ * `idempotencyKey` (so a runMission retry doesn't double-refund the same gap),
+ * and `metadata` (forensic). Backwards-compatible with the old signature: if
+ * `amountCents` is omitted Stripe issues a full refund as before.
+ *
+ * Reason values Stripe accepts: 'duplicate' | 'fraudulent' | 'requested_by_customer'.
+ * For partial-delivery refunds we pass 'requested_by_customer' (closest semantic
+ * fit) and put the real reason in metadata so the Stripe Dashboard surfaces it.
  */
-async function createRefund({ paymentIntentId, reason = 'requested_by_customer' }) {
-  const refund = await stripe.refunds.create({
+async function createRefund({
+  paymentIntentId,
+  amountCents,
+  idempotencyKey,
+  metadata = {},
+  reason = 'requested_by_customer',
+}) {
+  const params = {
     payment_intent: paymentIntentId,
     reason,
+  };
+  if (Number.isFinite(amountCents) && amountCents > 0) {
+    params.amount = Math.floor(amountCents);
+  }
+  if (metadata && typeof metadata === 'object') {
+    params.metadata = metadata;
+  }
+  const opts = idempotencyKey ? { idempotencyKey } : undefined;
+  const refund = await stripe.refunds.create(params, opts);
+  logger.info('Stripe refund created', {
+    paymentIntentId, refundId: refund.id,
+    amountCents: refund.amount, status: refund.status, idempotencyKey: idempotencyKey || null,
   });
-  logger.info('Stripe refund created', { paymentIntentId, refundId: refund.id });
   return refund;
 }
 
