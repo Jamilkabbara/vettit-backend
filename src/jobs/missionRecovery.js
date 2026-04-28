@@ -135,7 +135,43 @@ async function releaseLock(jobName) {
 
 // ─── Admin alert helper ───────────────────────────────────────────────────
 
+/**
+ * Pass 22 Bug 22.10d — dedup before insert.
+ *
+ * Job 2's "no PI tracked" branch (alert-only safety hotfix from 0204240)
+ * fires every 30min for the same legacy orphan missions, so production
+ * accumulated 150 rows for 6 missions (25 dupes each) over ~12h.
+ *
+ * Job 1 and Job 2's other branches are self-deduping because they flip
+ * the mission status (processing→failed, pending_payment→paid|draft) so
+ * the next tick's WHERE clause excludes them. The legacy no-PI branch
+ * intentionally does not mutate the mission row, so it would re-alert
+ * forever. Dedup centrally here so all three callers stay safe.
+ *
+ * Predicate: an unresolved alert with the same (alert_type, mission_id)
+ * already exists. Once the operator marks it resolved=true after manual
+ * Stripe Dashboard reconciliation, future ticks can re-alert if the
+ * mission re-enters the legacy state.
+ */
 async function alertAdmin(alertType, missionId, payload) {
+  // Skip insert if an unresolved alert with the same scope already exists.
+  if (missionId) {
+    const { data: existing } = await supabase
+      .from('admin_alerts')
+      .select('id')
+      .eq('alert_type', alertType)
+      .eq('mission_id', missionId)
+      .eq('resolved', false)
+      .limit(1)
+      .maybeSingle();
+    if (existing?.id) {
+      logger.debug('[cron] alertAdmin dedup: existing unresolved alert', {
+        alertType, missionId, existingId: existing.id,
+      });
+      return;
+    }
+  }
+
   const { error } = await supabase.from('admin_alerts').insert({
     alert_type: alertType,
     mission_id: missionId,
