@@ -315,6 +315,74 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
       break;
     }
 
+    // ───────────────────────────────────────────────────────────────────
+    // Pass 23 Bug 23.0e v2 — Stripe Checkout Session lifecycle.
+    //
+    // checkout.session.completed fires alongside payment_intent.succeeded.
+    // The PI handler above already does the heavy lifting (mark mission
+    // paid + trigger runMission). This handler is mostly observational —
+    // it confirms the Session resolved cleanly and clears
+    // checkout_session_id from the mission row so the "Resume checkout"
+    // UI on /missions doesn't re-link to a completed Session.
+    case 'checkout.session.completed': {
+      const session = event.data.object;
+      const missionId = session.metadata?.missionId || null;
+      logger.info('Checkout Session completed', {
+        sessionId: session.id, missionId, paymentStatus: session.payment_status,
+      });
+      if (missionId && session.payment_status === 'paid') {
+        // Clear the active session_id so the mission row reflects no
+        // pending Checkout. paid_at and status='paid' were already set by
+        // the payment_intent.succeeded handler.
+        await updateMission(supabase, missionId, {
+          checkout_session_id: null,
+        }, { caller: 'webhook:checkout.session.completed' });
+      }
+      break;
+    }
+
+    case 'checkout.session.expired': {
+      const session = event.data.object;
+      const missionId = session.metadata?.missionId || null;
+      logger.warn('Checkout Session expired', { sessionId: session.id, missionId });
+      if (missionId) {
+        // Revert the mission to draft so the user can retry from a clean
+        // state via the "Resume checkout" CTA.
+        const { data: mission } = await supabase
+          .from('missions').select('status, checkout_session_id').eq('id', missionId).maybeSingle();
+        // Only revert if the row still references THIS session. A user
+        // could have created a fresh Session before expiry fired; don't
+        // clobber that.
+        if (mission && mission.status === 'pending_payment' && mission.checkout_session_id === session.id) {
+          await updateMission(supabase, missionId, {
+            status:              'draft',
+            checkout_session_id: null,
+          }, { caller: 'webhook:checkout.session.expired' });
+          logger.info('Mission reverted to draft after Checkout expiry', { missionId });
+        }
+      }
+      break;
+    }
+
+    case 'checkout.session.async_payment_failed': {
+      // Rare for card payments, common for bank-redirect methods. We don't
+      // ship those today, but log it for forensic if it ever fires.
+      const session = event.data.object;
+      const missionId = session.metadata?.missionId || null;
+      logPaymentError({
+        userId:                session.metadata?.userId || null,
+        missionId,
+        stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : null,
+        errorCode:             'checkout_session_async_failed',
+        errorMessage:          'Stripe Checkout Session async payment failed',
+        amountCents:           session.amount_total ?? null,
+        currency:              session.currency || 'usd',
+        stage:                 'webhook_payment_failed',
+        userAgent:             null,
+      }).catch(() => {});
+      break;
+    }
+
     case 'charge.refunded': {
       const charge = event.data.object;
       logger.info('Charge refunded', { chargeId: charge.id, amount: charge.amount_refunded });

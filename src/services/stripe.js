@@ -183,6 +183,115 @@ async function findSalvageablePI(missionId, expectedAmountCents) {
   }
 }
 
+/**
+ * Pass 23 Bug 23.0e v2 — create a Stripe Checkout Session for a mission.
+ *
+ * Replaces the previous PaymentIntent + Stripe Elements integration. The
+ * user is redirected to checkout.stripe.com (Stripe-hosted form) which
+ * works reliably across all browsers including Safari (where iframe
+ * Element mount kept failing despite multiple defensive layers).
+ *
+ * payment_intent_data.metadata is inherited by the underlying PI, so
+ * existing payment_intent.succeeded / payment_intent.payment_failed
+ * webhook handlers continue to work without modification (mission_id /
+ * userId etc. land on the PI metadata exactly as before).
+ *
+ * Returns { id, url, paymentIntentId } where url is the redirect target.
+ * paymentIntentId is set immediately because Stripe creates the PI
+ * synchronously when the Session is created.
+ */
+async function createCheckoutSession({
+  amountCents,
+  missionId,
+  userId,
+  userEmail,
+  pricingBreakdown,
+  productName,
+  productDescription,
+  successUrl,
+  cancelUrl,
+  metadata = {},
+}) {
+  const session = await stripe.checkout.sessions.create({
+    mode: 'payment',
+    payment_method_types: ['card'],
+    payment_method_options: {
+      card: { request_three_d_secure: 'automatic' },
+    },
+    line_items: [{
+      price_data: {
+        currency: 'usd',
+        product_data: {
+          name: productName || `Vettit Mission`,
+          description: productDescription || undefined,
+        },
+        unit_amount: amountCents,
+      },
+      quantity: 1,
+    }],
+    customer_email: userEmail,
+    success_url: successUrl,
+    cancel_url:  cancelUrl,
+    // 1-hour expiry on Sessions; user can re-create via "Resume checkout".
+    expires_at: Math.floor(Date.now() / 1000) + 60 * 60,
+    // Stripe-native promotion code field on the Checkout page. Pre-applied
+    // promos via our /api/pricing/quote bake into the unit_amount; this
+    // toggle lets users enter additional codes Stripe-side if we ever
+    // sync our promo_codes table to Stripe Coupons.
+    allow_promotion_codes: true,
+    // Session-level metadata for checkout.session.* webhook events.
+    metadata: {
+      missionId: missionId || '',
+      userId:    userId    || '',
+      ...metadata,
+    },
+    // Inherited onto the underlying PaymentIntent — keeps the existing
+    // payment_intent.succeeded / payment_failed webhook handlers working.
+    payment_intent_data: {
+      metadata: {
+        missionId: missionId || '',
+        userId:    userId    || '',
+        userEmail: userEmail || '',
+        baseCost:  pricingBreakdown?.baseCost ?? '',
+        total:     pricingBreakdown?.total    ?? '',
+        ...metadata,
+      },
+      receipt_email: userEmail,
+      description:   productName ? `Vettit Mission: ${productName}` : `Vettit Mission`,
+    },
+  });
+
+  logger.info('Stripe Checkout Session created', {
+    missionId, sessionId: session.id, paymentIntentId: session.payment_intent,
+  });
+
+  return {
+    id: session.id,
+    url: session.url,
+    paymentIntentId: typeof session.payment_intent === 'string'
+      ? session.payment_intent
+      : session.payment_intent?.id || null,
+  };
+}
+
+/**
+ * Pass 23 Bug 23.0e v2 — retrieve a Stripe Checkout Session by id. Returns
+ * the raw session object on success or null on any failure. Never throws.
+ * Used by GET /api/payments/checkout-session/:id (frontend polling on
+ * /payment-success page) and by the webhook handler.
+ */
+async function retrieveCheckoutSession(sessionId) {
+  if (!sessionId) return null;
+  try {
+    return await stripe.checkout.sessions.retrieve(sessionId);
+  } catch (err) {
+    logger.warn('Stripe Checkout Session retrieve failed (returning null)', {
+      sessionId, err: err.message,
+    });
+    return null;
+  }
+}
+
 module.exports = {
   createPaymentIntent,
   verifyPayment,
@@ -192,4 +301,7 @@ module.exports = {
   RESUMABLE_PI_STATUSES,
   createRefund,
   constructWebhookEvent,
+  // Pass 23 Bug 23.0e v2 — Checkout Session migration
+  createCheckoutSession,
+  retrieveCheckoutSession,
 };
