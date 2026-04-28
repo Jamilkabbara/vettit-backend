@@ -1,13 +1,25 @@
 /**
- * VETT PRICING ENGINE — Country-tier based pricing (server-side source of truth)
+ * VETT PRICING ENGINE — Volume-tier based pricing (server-side source of truth)
  *
  * This is the CANONICAL formula. The frontend (src/utils/pricingEngine.ts)
  * mirrors it exactly for display. Any change here must be reflected there.
  *
- * Rate per respondent (based on highest-quality country selected):
- *   Tier 1 (US, UAE, UK, AU, etc.)   → $3.50 / respondent
- *   Tier 2 (secondary/emerging)       → $2.75 / respondent
- *   Tier 3 (frontier markets)         → $1.90 / respondent  ← default
+ * Pass 23 Bug 23.PRICING — switched from country-tier to a 4-tier respondent-
+ * count ladder. AI-simulated personas have the same marginal cost regardless
+ * of the country mocked, so charging more for "tier 1" countries was an
+ * artifact of the panel-recruitment era. The new ladder anchors price-per-
+ * mission at four named packages:
+ *
+ *   Sniff Test  — 5 resp     · $9    · $1.80/resp
+ *   Validate    — 10 resp    · $35   · $3.50/resp   (the default first mission)
+ *   Confidence  — 50 resp    · $99   · $1.98/resp
+ *   Deep Dive   — 250 resp   · $299  · $1.20/resp   (also covers 250+)
+ *
+ * Bracket pricing applies the rate of the tier the count falls in. Boundary
+ * effect: counts that straddle a tier boundary (e.g. 49 vs 50) can produce
+ * non-monotonic totals because the per-respondent rate jumps. This is a
+ * known consequence of value-based packaging — users who pick a non-anchor
+ * count generally land within one tier and the boundary is a small minority.
  *
  * Extra questions:  $20 each beyond the first 5 (free)
  *
@@ -23,20 +35,24 @@
  *   are FREE — covered by the base rate.
  *
  * PRICING HISTORY
- *   Prior formula (until 2026-04-23) used volume-based tiers ($0.90/resp
- *   for ≤200 respondents) regardless of country. This caused the UAE
- *   mission 7f54fb42 to be charged $9 (900 cents) while the UI showed
- *   $35 — a $26 undercharge. This file is the corrected implementation.
+ *   - until 2026-04-23: volume-based ($0.90/resp ≤200 across the board) —
+ *     caused $26 undercharge on UAE mission 7f54fb42 (UI showed $35, charge $9).
+ *   - 2026-04-23 → 2026-04-28: country-tier ($3.50 / $2.75 / $1.90 by ISO).
+ *   - 2026-04-28 (this file): volume-tier 4-package ladder.
  */
 
-// ── Country tier registry ────────────────────────────────────────────────────
+// ── Country tier registry — kept for backwards-compat only ──────────────────
+// Pass 23 Bug 23.PRICING: country tier is no longer used in the price
+// calculation. The sets and helpers below are retained because callers
+// elsewhere may import getCountryTier or resolveHighestTier for analytics
+// or country grouping. New code should use getVolumeTier instead.
 
-/** Tier 1 — premium research markets */
+/** Tier 1 — premium research markets (legacy, no longer affects price) */
 const TIER_1 = new Set([
   'AE','AU','CA','CH','DE','DK','FR','GB','IE','JP','KR','NL','NO','NZ','SE','SG','US',
 ]);
 
-/** Tier 2 — secondary / major emerging markets */
+/** Tier 2 — secondary / major emerging markets (legacy) */
 const TIER_2 = new Set([
   'AR','AT','BD','BE','BG','BH','BR','CL','CN','CO','CY','CZ','EE','ES','FI','GR',
   'HK','HR','HU','ID','IN','IS','IT','JO','KW','LB','LK','LT','LU','LV','MT','MX',
@@ -44,12 +60,39 @@ const TIER_2 = new Set([
   'TW','UA','VN','ZA',
 ]);
 
-/** Rate per respondent by tier */
+/** Country-tier rates — legacy, retained so analytics callers don't break. */
 const TIER_RATES = {
   1: 3.50,
   2: 2.75,
   3: 1.90,
 };
+
+// ── Volume tier ladder — Pass 23 Bug 23.PRICING ─────────────────────────────
+
+/**
+ * Four named packages anchored on respondent-count thresholds. The frontend
+ * preset chips and landing-page copy mirror this exactly.
+ *
+ * `maxCount` is inclusive — i.e. count <= maxCount uses this tier's rate.
+ * Counts above the largest maxCount fall through to the last tier's rate
+ * (Deep Dive at $1.20/resp, also covering 250+).
+ */
+const VOLUME_TIERS = [
+  { id: 'sniff_test', name: 'Sniff Test', anchorCount: 5,   maxCount: 5,   ratePerResp: 1.80, packagePrice: 9   },
+  { id: 'validate',   name: 'Validate',   anchorCount: 10,  maxCount: 10,  ratePerResp: 3.50, packagePrice: 35  },
+  { id: 'confidence', name: 'Confidence', anchorCount: 50,  maxCount: 50,  ratePerResp: 1.98, packagePrice: 99  },
+  { id: 'deep_dive',  name: 'Deep Dive',  anchorCount: 250, maxCount: Infinity, ratePerResp: 1.20, packagePrice: 299 },
+];
+
+/**
+ * Resolve the volume tier for a given respondent count. Counts above the
+ * largest anchor (250) still use the Deep Dive rate ($1.20/resp). The
+ * returned object is one of VOLUME_TIERS — always defined.
+ */
+function getVolumeTier(count) {
+  const c = Math.max(0, Number(count) || 0);
+  return VOLUME_TIERS.find(t => c <= t.maxCount) || VOLUME_TIERS[VOLUME_TIERS.length - 1];
+}
 
 const EXTRA_QUESTION_PRICE = 20; // $ per question beyond the 5th
 const FREE_QUESTIONS        = 5;
@@ -120,9 +163,12 @@ function calculateMissionPrice({
   promoCode = null,
   isScreeningActive = false,
 } = {}) {
-  // 1. Base rate from country tier
-  const tier        = resolveHighestTier(countries);
-  const ratePerResp = TIER_RATES[tier] ?? 1.90;
+  // 1. Base rate from volume tier (Pass 23 Bug 23.PRICING). Country tier is
+  // resolved for backwards-compat reporting only; the rate that drives the
+  // charge is the volume tier the respondent_count falls in.
+  const countryTier = resolveHighestTier(countries);
+  const volumeTier  = getVolumeTier(respondentCount);
+  const ratePerResp = volumeTier.ratePerResp;
   const base        = respondentCount * ratePerResp;
 
   // 2. Extra questions
@@ -190,7 +236,9 @@ function calculateMissionPrice({
     total,
     totalCents: Math.round(total * 100),
     // Extra metadata for logging / breakdown lines:
-    tier,
+    tier:         countryTier,                  // legacy alias = country tier
+    countryTier,                                // new explicit name
+    volumeTier:   { id: volumeTier.id, name: volumeTier.name, anchorCount: volumeTier.anchorCount, packagePrice: volumeTier.packagePrice },
     ratePerResp,
     countries,
     respondentCount,
@@ -208,6 +256,10 @@ function round2(val) {
 module.exports = {
   calculateMissionPrice,
   extractCountriesFromMission,
+  // Volume-tier (Pass 23 Bug 23.PRICING — canonical pricing model)
+  getVolumeTier,
+  VOLUME_TIERS,
+  // Country-tier (legacy, no longer affects price; retained for analytics)
   resolveHighestTier,
   getCountryTier,
   TIER_RATES,
