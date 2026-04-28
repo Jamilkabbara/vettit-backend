@@ -48,24 +48,46 @@ const emailService = require('../services/email');
  * mutation.
  */
 async function isStaleWebhookForMission(missionId, eventPaymentIntentId) {
-  if (!missionId || !eventPaymentIntentId) return { stale: false, reason: 'no_check' };
+  if (!missionId || !eventPaymentIntentId) return { stale: false, reason: 'no_check', missionStatus: null };
   const { data: row, error } = await supabase
     .from('missions')
-    .select('latest_payment_intent_id')
+    .select('latest_payment_intent_id, status')
     .eq('id', missionId)
     .maybeSingle();
-  if (error || !row) return { stale: false, reason: 'lookup_failed' };
+  if (error || !row) return { stale: false, reason: 'lookup_failed', missionStatus: null };
   // No latest_payment_intent_id recorded — accept the event (legacy missions
   // pre-dating Bug 22.9 won't have this field set).
-  if (!row.latest_payment_intent_id) return { stale: false, reason: 'no_latest_pi' };
+  if (!row.latest_payment_intent_id) {
+    return { stale: false, reason: 'no_latest_pi', missionStatus: row.status || null };
+  }
   if (row.latest_payment_intent_id === eventPaymentIntentId) {
-    return { stale: false, reason: 'matches_latest' };
+    return { stale: false, reason: 'matches_latest', missionStatus: row.status || null };
   }
   return {
     stale: true,
     reason: `stale:event_pi=${eventPaymentIntentId} != latest=${row.latest_payment_intent_id}`,
+    missionStatus: row.status || null,
   };
 }
+
+/**
+ * Pass 23 Bug 23.0e v2 sanity guard — short-circuit a payment_intent.succeeded
+ * event when the mission has already advanced past the pending-payment phase.
+ *
+ * Stripe Checkout sends BOTH `checkout.session.completed` and
+ * `payment_intent.succeeded` for the same payment, with different event_ids,
+ * so Bug 22.8 idempotency lets both through. The PI handler does the heavy
+ * lifting (mark paid + trigger runMission); the Session handler just clears
+ * checkout_session_id. So today there's no actual double runMission risk
+ * from THIS webhook pair.
+ *
+ * Defence-in-depth still matters: a manual webhook replay during debugging,
+ * a rare Stripe re-delivery with a fresh event_id, or a future code change
+ * that adds runMission to a second handler would re-trigger work that
+ * burns AI budget before runMission's claim guard fires. Skipping here is
+ * cheap and safe.
+ */
+const POST_PAYMENT_STATUSES = new Set(['paid', 'processing', 'completed']);
 
 /**
  * Pass 22 Bug 22.8 — claim the event_id row. Returns one of:
@@ -202,6 +224,15 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
         if (stale.stale) {
           logger.warn('webhook:payment_intent.succeeded — stale PI, skipping mission update', {
             missionId, pi_id: pi.id, reason: stale.reason,
+          });
+        } else if (stale.missionStatus && POST_PAYMENT_STATUSES.has(stale.missionStatus)) {
+          // Pass 23 Bug 23.0e v2 sanity guard — mission already advanced past
+          // pending_payment, so this is a duplicate/replay. The earlier event
+          // already marked it paid and spawned runMission; firing again would
+          // burn AI budget on prep work before runMission's claim guard
+          // catches the duplicate. Skip.
+          logger.warn('webhook:payment_intent.succeeded — mission already past pending_payment, skipping', {
+            missionId, pi_id: pi.id, status: stale.missionStatus,
           });
         } else {
           // payment_status + updated_at columns don't exist in public.missions
