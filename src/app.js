@@ -101,6 +101,19 @@ const funnelLimiter = rateLimit({
 // 100/15min global gate does not apply.
 app.use('/api/funnel', funnelLimiter, funnelRoutes);
 
+// Pass 23 Bug 23.0c — anon-friendly payment-error telemetry. The whole
+// point is logging mount/auth-edge failures that the standard authenticate
+// middleware would 401 + swallow. Strict rate limit (10/min/IP) since this
+// is anon-callable; abusive volume is dropped before reaching the route.
+const paymentErrorsLogLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  message: { logged: false, reason: 'rate_limited' },
+  standardHeaders: false,
+  legacyHeaders: false,
+});
+app.use('/api/payments/errors/log', paymentErrorsLogLimiter);
+
 app.use('/api/', limiter);
 app.use('/api/ai', aiLimiter);
 app.use('/api/chat', chatLimiter);

@@ -111,6 +111,51 @@ router.post('/create-intent', authenticate, async (req, res, next) => {
     }
     // ─────────────────────────────────────────────────────────────────────
 
+    // Pass 23 Bug 23.0d — Stripe metadata salvage fallback ───────────────
+    // The Bali forensic showed missions can have orphan PIs in Stripe
+    // (created by older code paths or by a manual recovery) that aren't
+    // tracked on missions.latest_payment_intent_id. Without this fallback,
+    // create-intent always mints a fresh PI even when a perfectly-good
+    // resumable one already exists in Stripe — driving the multi-PI
+    // sprawl observed in the audit.
+    //
+    // Strategy: before creating a new PI, search Stripe by
+    // metadata['missionId'] for any salvageable PI from the last 24h that
+    // matches the current price. If found, backfill the row column
+    // (preventing future drift) and resume.
+    if (!mission.latest_payment_intent_id) {
+      try {
+        const salvaged = await stripeService.findSalvageablePI(missionId, pricing.totalCents);
+        if (salvaged) {
+          logger.info('Payments create-intent: salvaged orphan PI from Stripe metadata', {
+            missionId,
+            salvagedPI: salvaged.id,
+            status: salvaged.status,
+          });
+          // Backfill the row column so subsequent create-intent calls hit
+          // the fast path above and not this Stripe-search path.
+          await updateMission(supabase, missionId, {
+            latest_payment_intent_id: salvaged.id,
+          }, { caller: 'POST /payments/create-intent: salvage-backfill' });
+          return res.json({
+            clientSecret:    salvaged.client_secret,
+            paymentIntentId: salvaged.id,
+            pricing,
+            resumed:         true,
+            salvaged:        true,
+          });
+        }
+      } catch (searchErr) {
+        // Stripe Search API can fail or be eventually-consistent; never
+        // block create-intent on a salvage failure. Just fall through to
+        // creating a fresh PI.
+        logger.warn('Payments create-intent: salvage search failed (non-fatal)', {
+          missionId, err: searchErr.message,
+        });
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
     // Get user email for the Stripe receipt
     const { data: { user } } = await supabase.auth.admin.getUserById(req.user.id);
 
@@ -353,37 +398,62 @@ router.post('/free-launch', authenticate, async (req, res, next) => {
 });
 
 /**
- * Pass 22 Bug 22.9 — POST /api/payments/errors/log
+ * Pass 22 Bug 22.9 + Pass 23 Bug 23.0c — POST /api/payments/errors/log
  *
- * Frontend reports a Stripe-related failure that happened on the client side
- * (confirmCardPayment caught error, wallet sheet dismissed, Element-not-ready,
- * etc.) so the row lands in payment_errors alongside backend errors. Same
- * stage taxonomy as backend writes; client_* prefix marks frontend origin.
+ * Frontend reports a Stripe-related failure that happened on the client
+ * side (confirmCardPayment caught error, wallet sheet dismissed, Element
+ * not mounted in 5s, etc.) so the row lands in payment_errors alongside
+ * backend errors.
  *
- * Body shape (all fields optional except stage; the user is derived from
- * the auth middleware so the client cannot spoof user_id):
- *   {
- *     stage: 'client_confirm_card' | 'client_wallet_payment_method' | 'client_chat_overage' | 'client_element_not_ready',
- *     missionId, stripePaymentIntentId,
- *     errorCode, errorMessage, declineCode, paymentMethod,
- *     amountCents, currency, viewportWidth
- *   }
+ * Pass 23 Bug 23.0c — auth is now OPTIONAL. The Bali Safari forensic
+ * showed the original logger silently failed because the user's session
+ * had expired before the Element timeout fired, returning 401 from this
+ * endpoint and swallowing the only telemetry we'd have. The whole point
+ * of mount-failure capture is logging failures that happen pre-auth or
+ * with stale sessions. user_id is best-effort resolved from the
+ * Authorization JWT if present; null otherwise.
  *
- * Always returns 201 — never bubble logger errors to the user; they have
- * bigger problems than telemetry.
+ * Pass 23 Bug 23.0a / 23.0c — added stages:
+ *   client_element_mount_timeout — 5s ready-event timeout
+ *   elements_provider_error      — Stripe Elements provider onError
+ *
+ * Always returns 202 — never block the user-visible error path on
+ * telemetry. Rate limiter is mounted at the route level in app.js so
+ * abusive volume gets dropped without affecting the rest of the API.
  */
-router.post('/errors/log', authenticate, async (req, res) => {
+async function resolveUserIdFromAuth(req) {
+  const auth = req.headers?.authorization || '';
+  if (!auth.startsWith('Bearer ')) return null;
+  const token = auth.slice('Bearer '.length).trim();
+  if (!token) return null;
+  try {
+    const { data, error } = await supabase.auth.getUser(token);
+    if (error || !data?.user?.id) return null;
+    return data.user.id;
+  } catch (_) {
+    return null;
+  }
+}
+
+router.post('/errors/log', async (req, res) => {
   const b = req.body || {};
   const allowedStages = new Set([
     'client_confirm_card',
     'client_wallet_payment_method',
     'client_chat_overage',
     'client_element_not_ready',
+    // Pass 23 Bug 23.0a / 23.0c additions
+    'client_element_mount_timeout',
+    'elements_provider_error',
   ]);
   const stage = allowedStages.has(b.stage) ? b.stage : 'client_unknown';
 
+  // Best-effort user_id resolution. Anon emits land with user_id=null;
+  // session_id-less mount failures still land for forensic.
+  const userId = await resolveUserIdFromAuth(req);
+
   const id = await logPaymentError({
-    userId:                req.user.id,
+    userId,
     missionId:             b.missionId             || null,
     stripePaymentIntentId: b.stripePaymentIntentId || null,
     errorCode:             b.errorCode             || null,
@@ -397,7 +467,10 @@ router.post('/errors/log', authenticate, async (req, res) => {
     viewportWidth:         Number.isFinite(b.viewportWidth) ? b.viewportWidth : null,
   });
 
-  res.status(201).json({ logged: !!id, id });
+  // 202 Accepted — telemetry is fire-and-forget; client should never
+  // gate UX on this response. (Was 201; matches the funnel.js ingestion
+  // pattern from Pass 22 Bug 22.1.)
+  res.status(202).json({ logged: !!id, id });
 });
 
 module.exports = router;

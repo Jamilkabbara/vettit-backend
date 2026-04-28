@@ -139,11 +139,56 @@ function constructWebhookEvent(payload, signature) {
   );
 }
 
+/**
+ * Pass 23 Bug 23.0d — find an orphaned PI for this mission via Stripe
+ * metadata search.
+ *
+ * Used as a salvage fallback in /api/payments/create-intent when
+ * mission.latest_payment_intent_id is NULL (legacy mission predating Bug
+ * 22.23, or row column drifted out of sync). Without this fallback, the
+ * route always creates a fresh PI even when a perfectly-good resumable
+ * one already exists in Stripe.
+ *
+ * Returns the most recently created salvageable PI, or null if none.
+ *
+ * Salvageable conditions:
+ *   * status in RESUMABLE_PI_STATUSES (no terminal states)
+ *   * created < 24h ago (Stripe expires unattended PIs around this window)
+ *   * amount === expectedAmountCents (catches promo / pricing drift)
+ *
+ * Stripe Search API note: it has eventual consistency (~1-2s). For a
+ * just-created PI, search may not return it. That's fine — the row-column
+ * fast-path above covers fresh PIs; salvage is only for orphans.
+ */
+async function findSalvageablePI(missionId, expectedAmountCents) {
+  if (!missionId) return null;
+  try {
+    const result = await stripe.paymentIntents.search({
+      query: `metadata['missionId']:'${missionId}'`,
+      limit: 10,
+    });
+    if (!result?.data || result.data.length === 0) return null;
+
+    const cutoffSec = Math.floor(Date.now() / 1000) - 24 * 60 * 60;
+    const salvageable = result.data
+      .filter((pi) => RESUMABLE_PI_STATUSES.has(pi.status))
+      .filter((pi) => (pi.created || 0) > cutoffSec)
+      .filter((pi) => pi.amount === expectedAmountCents)
+      .sort((a, b) => (b.created || 0) - (a.created || 0));
+
+    return salvageable[0] || null;
+  } catch (err) {
+    logger.warn('findSalvageablePI search failed', { missionId, err: err.message });
+    return null;
+  }
+}
+
 module.exports = {
   createPaymentIntent,
   verifyPayment,
   retrievePaymentIntent,
   assessPIResumability,
+  findSalvageablePI,
   RESUMABLE_PI_STATUSES,
   createRefund,
   constructWebhookEvent,
