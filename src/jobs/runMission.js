@@ -17,6 +17,16 @@
 const supabase = require('../db/supabase');
 const logger = require('../utils/logger');
 const { runOverRecruitedSurvey, MAX_OVER_RECRUIT_MULTIPLIER } = require('./overRecruit');
+
+// Pass 23 Bug 23.12 — notification copy templates. Truncate long mission
+// titles so the body stays scannable in the bell dropdown (max ~80 chars
+// per spec). Ellipsis + 57-char window means the longest body is roughly
+// 90 chars including the surrounding "Your "..." results are ready." copy.
+function truncateTitle(title, max = 60) {
+  const t = (title || '').trim();
+  if (!t) return 'Your VETT mission';
+  return t.length > max ? `${t.slice(0, max - 3)}...` : t;
+}
 const { synthesizeInsights } = require('../services/ai/insights');
 const { generateTargetingBrief } = require('../services/ai/targetingBrief');
 const { analyzeCreative }       = require('../services/ai/creativeAttention');
@@ -75,12 +85,12 @@ async function runMission(missionId) {
       await analyzeCreative({ mission });
       logger.info('Mission run: creative analysis complete', { missionId });
 
-      // Notification
+      // Notification — Bug 23.12 templated copy.
       await supabase.from('notifications').insert({
         user_id: mission.user_id,
         type:    'mission_complete',
-        title:   `${mission.title || 'Creative analysis'} is ready`,
-        body:    'Your creative attention analysis is complete.',
+        title:   'Mission complete',
+        body:    `Your "${truncateTitle(mission.title)}" creative analysis is ready.`,
         link:    `/creative-results/${missionId}`,
       }).catch(() => {});
 
@@ -327,15 +337,33 @@ async function runMission(missionId) {
       },
     }).then(() => {}).catch(() => {});
 
-    // 7. Notification (real-time via Supabase realtime)
-    await supabase.from('notifications').insert({
-      user_id: mission.user_id,
-      type:    'mission_complete',
-      title:   `${mission.title || 'Your mission'} results are ready`,
-      body:    insights?.executive_summary?.slice(0, 140)
-            || 'Your synthetic audience report is ready to review.',
-      link:    `/results/${missionId}`,
-    });
+    // 7. Notification (real-time via Supabase realtime).
+    //    Pass 23 Bug 23.12 — branch on delivery decision: full → mission_complete,
+    //    partial → mission_partial. Both link to /dashboard/:id (mission control)
+    //    where the user can both see the report and follow up on the gap.
+    if (deliveryFull) {
+      await supabase.from('notifications').insert({
+        user_id: mission.user_id,
+        type:    'mission_complete',
+        title:   'Mission complete',
+        body:    `Your "${truncateTitle(mission.title)}" results are ready.`,
+        link:    `/dashboard/${missionId}`,
+      });
+    } else {
+      const gap = targetQualified - qualifiedRespondent;
+      const refundDollarsForBody = refundResult?.amountCents
+        ? (refundResult.amountCents / 100).toFixed(2)
+        : (((mission.paid_amount_cents
+            || Math.round(Number(mission.total_price_usd || 0) * 100))
+          * gap / targetQualified) / 100).toFixed(2);
+      await supabase.from('notifications').insert({
+        user_id: mission.user_id,
+        type:    'mission_partial',
+        title:   'Mission delivered partially',
+        body:    `Your "${truncateTitle(mission.title)}" delivered ${qualifiedRespondent} of ${targetQualified} qualified respondents. We refunded $${refundDollarsForBody}.`,
+        link:    `/dashboard/${missionId}`,
+      });
+    }
 
     // 8. Email — completion or partial-delivery (best-effort).
     try {
@@ -389,12 +417,15 @@ async function runMission(missionId) {
       completed_at: new Date().toISOString(),
     }, { caller: 'runMission: fatal' });
 
+    // Pass 23 Bug 23.12 — templated copy + link to /dashboard/:id (mission
+    // control) where the user can see the failure context, not /results
+    // which would render an empty report.
     await supabase.from('notifications').insert({
       user_id: mission.user_id,
       type:    'mission_failed',
-      title:   'Mission could not complete',
-      body:    'We hit an error processing your mission. Our team has been notified.',
-      link:    `/results/${missionId}`,
+      title:   'Mission failed',
+      body:    `Your "${truncateTitle(mission.title)}" encountered an error and was refunded. Our team has been notified.`,
+      link:    `/dashboard/${missionId}`,
     }).then(() => {}).catch(() => {});
   }
 }
