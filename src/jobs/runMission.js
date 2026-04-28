@@ -86,13 +86,34 @@ async function runMission(missionId) {
       logger.info('Mission run: creative analysis complete', { missionId });
 
       // Notification — Bug 23.12 templated copy.
-      await supabase.from('notifications').insert({
-        user_id: mission.user_id,
-        type:    'mission_complete',
-        title:   'Mission complete',
-        body:    `Your "${truncateTitle(mission.title)}" creative analysis is ready.`,
-        link:    `/creative-results/${missionId}`,
-      }).catch(() => {});
+      // Pass 23 Bug 23.50 — supabase-js v2 returns a thenable, not a real
+      // Promise, from .insert(). Calling `.catch()` directly on the
+      // builder (or after `await`-ing it) throws "TypeError:
+      // ...insert(...).catch is not a function" and propagates out — the
+      // creative analysis itself ran fine, but this line crashed the
+      // mission to status='failed' and lost the notification. Mission
+      // f64eabcb was the first repro. Fix: use the canonical
+      // `await + destructure` pattern so the call is a no-throw.
+      try {
+        const { error: notifErr } = await supabase
+          .from('notifications')
+          .insert({
+            user_id: mission.user_id,
+            type:    'mission_complete',
+            title:   'Mission complete',
+            body:    `Your "${truncateTitle(mission.title)}" creative analysis is ready.`,
+            link:    `/creative-results/${missionId}`,
+          });
+        if (notifErr) {
+          logger.warn('Mission run: creative_attention notification insert failed', {
+            missionId, err: notifErr.message,
+          });
+        }
+      } catch (notifThrow) {
+        logger.warn('Mission run: creative_attention notification insert threw', {
+          missionId, err: notifThrow.message,
+        });
+      }
 
       return;
     }
