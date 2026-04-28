@@ -3,20 +3,24 @@
  * - POST /api/chat/message      Non-streaming: returns full reply
  * - POST /api/chat/stream       SSE: streams reply token-by-token
  * - GET  /api/chat/session      Fetch existing session + history
- * - POST /api/chat/buy-overage  Create PaymentIntent for +50 messages ($5)
- * - POST /api/chat/confirm-overage  Credit the session after payment succeeds
+ * - POST /api/chat/buy-overage  Create Checkout Session for +50 messages ($5)
+ *                               (Pass 23 Bug 23.0e v2: redirect to Stripe Checkout)
+ * - POST /api/chat/confirm-overage  Idempotent confirm + credit (kept as
+ *                               webhook-race fallback; primary credit happens
+ *                               via the existing payment_intent.succeeded
+ *                               webhook handler when metadata.purpose='chat_overage')
  */
 
 const express = require('express');
 const router  = express.Router();
-const Stripe  = require('stripe');
 
 const { authenticate } = require('../middleware/auth');
+const stripeService = require('../services/stripe');
 const supabase  = require('../db/supabase');
 const chat      = require('../services/ai/chat');
 const logger    = require('../utils/logger');
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://www.vettit.ai';
 
 // Hard cap so a buggy frontend can't DOS the model
 const MAX_MESSAGE_LEN = 4000;
@@ -108,7 +112,12 @@ router.get('/session', authenticate, async (req, res, next) => {
 });
 
 // ─── POST /api/chat/buy-overage ──────────────────────────────
-// Creates a $5 Stripe PaymentIntent. On success → POST /confirm-overage.
+// Pass 23 Bug 23.0e v2: creates a Stripe Checkout Session and returns
+// its URL. Frontend redirects: window.location.href = url. The
+// payment_intent_data.metadata fields are inherited onto the underlying
+// PI, so the existing payment_intent.succeeded webhook handler (which
+// already handles metadata.purpose='chat_overage') credits the session
+// without modification.
 router.post('/buy-overage', authenticate, async (req, res, next) => {
   try {
     const { sessionId } = req.body;
@@ -123,23 +132,39 @@ router.post('/buy-overage', authenticate, async (req, res, next) => {
 
     const { data: { user } } = await supabase.auth.admin.getUserById(req.user.id);
 
-    const pi = await stripe.paymentIntents.create({
-      amount: chat.OVERAGE_PRICE_USD * 100,
-      currency: 'usd',
+    // Pick where to send the user back. Prefer the Referer header (the
+    // page that triggered the chat overage modal). Falls back to the
+    // dashboard if Referer is missing or off-site.
+    const referer = req.headers?.referer || '';
+    const safeReturn = referer.startsWith(FRONTEND_URL) ? referer : `${FRONTEND_URL}/missions`;
+
+    const checkout = await stripeService.createCheckoutSession({
+      amountCents:        chat.OVERAGE_PRICE_USD * 100,
+      missionId:          session.mission_id || null,
+      userId:             req.user.id,
+      userEmail:          user?.email,
+      pricingBreakdown:   { baseCost: chat.OVERAGE_PRICE_USD, total: chat.OVERAGE_PRICE_USD },
+      productName:        `VETT chat overage +${chat.OVERAGE_MESSAGES} messages`,
+      productDescription: `Adds ${chat.OVERAGE_MESSAGES} messages to your chat session`,
+      // Custom return path encodes the chat session id and the page the
+      // user was on, so /payment-success can call /api/chat/confirm-overage
+      // and bounce back.
+      successUrl:         `${FRONTEND_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}&kind=chat_overage&chat_session_id=${encodeURIComponent(sessionId)}&return=${encodeURIComponent(safeReturn)}`,
+      cancelUrl:          `${FRONTEND_URL}/payment-cancel?kind=chat_overage&return=${encodeURIComponent(safeReturn)}`,
+      // The payment_intent_data.metadata is what the existing
+      // payment_intent.succeeded webhook handler reads. purpose='chat_overage'
+      // routes the credit to chat_sessions; sessionId scopes the credit.
       metadata: {
-        purpose: 'chat_overage',
+        purpose:         'chat_overage',
         sessionId,
-        userId: req.user.id,
-        missionId: session.mission_id || '',
-        messagesGranted: chat.OVERAGE_MESSAGES,
+        messagesGranted: String(chat.OVERAGE_MESSAGES),
       },
-      receipt_email: user?.email,
-      description: `VETT chat overage +${chat.OVERAGE_MESSAGES} messages`,
     });
 
     res.json({
-      clientSecret: pi.client_secret,
-      paymentIntentId: pi.id,
+      url: checkout.url,
+      sessionId: checkout.id,
+      paymentIntentId: checkout.paymentIntentId,
       amountUsd: chat.OVERAGE_PRICE_USD,
       messagesGranted: chat.OVERAGE_MESSAGES,
     });

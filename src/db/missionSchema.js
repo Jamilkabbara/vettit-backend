@@ -70,6 +70,11 @@ const ALLOWED_COLUMNS = new Set([
   // mission setup before launch; runMission reads it when generating the
   // screener prompt.
   'screener_criteria',
+  // Pass 23 Bug 23.0e v2: active Stripe Checkout Session id for this mission.
+  // Set on POST /api/payments/create-checkout-session; cleared on
+  // checkout.session.expired webhook. Parallel to latest_payment_intent_id
+  // (Stripe Checkout still creates a PaymentIntent under the hood).
+  'checkout_session_id',
 ]);
 
 /**
