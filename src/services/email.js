@@ -314,6 +314,65 @@ async function sendPartialDeliveryEmail({
   } catch (err) { logger.warn('sendPartialDeliveryEmail failed', { err: err.message }); }
 }
 
+// ─── Mission hard-failure + auto-refund (Pass 23 Bug 23.80) ─────────────
+async function sendMissionFailedRefundEmail({
+  to,
+  name,
+  missionTitle,
+  missionId,
+  refundAmountUsd,
+  refundFailed = false,
+  friendlyReason = '',
+}) {
+  try {
+    const subject = refundFailed
+      ? `Your VETT mission ran into an issue — we owe you a refund`
+      : `Your VETT mission ran into an issue — full refund issued`;
+    const refundLine = refundFailed
+      ? `We tried to refund <strong style="color:#fff;">$${refundAmountUsd.toFixed(2)}</strong> automatically and it didn't go through. Our team has been alerted and will process it manually within one business day.`
+      : `We've refunded <strong style="color:#fff;">$${refundAmountUsd.toFixed(2)}</strong> automatically. The refund will hit your card in 5&ndash;10 business days.`;
+    return await resend.emails.send({
+      from: FROM,
+      to,
+      subject,
+      html: shell({
+        preheader: refundFailed
+          ? `Your mission hit an issue. Refund failed; we'll process it manually.`
+          : `Your mission hit an issue. We've refunded $${refundAmountUsd.toFixed(2)} automatically.`,
+        body: `
+          <h1 style="color:#fff;font-size:22px;margin:0 0 12px;">Your mission ran into an issue.</h1>
+          <p style="color:#9ca3af;line-height:1.7;">Hi ${name || 'there'},</p>
+          <p style="color:#9ca3af;line-height:1.7;">
+            Your mission &ldquo;<strong style="color:#fff;">${missionTitle || 'Your VETT mission'}</strong>&rdquo;
+            hit an issue on our side and could not complete. The fault is ours, not yours.
+          </p>
+          ${friendlyReason ? card(`
+            <div style="color:#fbbf24;font-weight:700;margin-bottom:8px;">What happened</div>
+            <p style="color:#9ca3af;line-height:1.7;margin:0;">
+              ${friendlyReason}
+            </p>
+          `) : ''}
+          ${card(`
+            <div style="color:${refundFailed ? '#fbbf24' : '#BEF264'};font-weight:700;margin-bottom:8px;">${refundFailed ? 'Refund pending' : 'Full refund issued'}</div>
+            <p style="color:#9ca3af;line-height:1.7;margin:0;">
+              ${refundLine}
+            </p>
+          `)}
+          <p style="color:#9ca3af;line-height:1.7;">
+            Want to retry? Most issues clear up with a fresh upload. The same audience and brand
+            context can be re-entered in under a minute.
+          </p>
+          <div style="margin-top:20px;">${btn('Try a fresh mission →', `${APP_URL}/creative-attention/new`)}</div>
+          <p style="color:#6b7280;font-size:13px;line-height:1.6;margin-top:20px;">
+            If you'd rather not retry, no action is needed. Reply to this email if you want a
+            human to look at what went wrong.
+          </p>
+        `,
+      }),
+    });
+  } catch (err) { logger.warn('sendMissionFailedRefundEmail failed', { err: err.message }); }
+}
+
 // ─── Chat overage receipt ─────────────────────────────────
 async function sendChatOverageEmail({ to, name, messagesGranted = 50, priceUsd = 5 }) {
   try {
@@ -343,4 +402,5 @@ module.exports = {
   sendChatOverageEmail,
   sendRetargetingRefundEmail,
   sendPartialDeliveryEmail, // Pass 23 Bug 23.25
+  sendMissionFailedRefundEmail, // Pass 23 Bug 23.80
 };

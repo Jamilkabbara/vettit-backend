@@ -41,6 +41,46 @@ ${WRITING_STYLE}`;
 
 // ── Frame extraction ────────────────────────────────────────────────────────
 
+/**
+ * Pass 23 Bug 23.79 — detect image MIME from magic bytes.
+ *
+ * Anthropic Vision API requires media_type to match the actual image
+ * format (image/jpeg, image/png, image/gif, image/webp). The previous
+ * code hardcoded 'image/jpeg' for every frame, which hard-failed on
+ * WebP uploads (Nike Air Jordan mission dcbc3b6f, $19 lost). File
+ * extensions and Content-Type headers can lie; magic bytes don't.
+ *
+ * Returns one of: 'image/jpeg', 'image/png', 'image/gif', 'image/webp'.
+ * Throws an explicit error for unsupported formats so the runMission
+ * catch path can auto-refund (Bug 23.80) instead of letting the
+ * Anthropic 400 propagate as an opaque failure.
+ */
+function detectImageMime(buffer) {
+  if (!buffer || buffer.length < 12) {
+    throw new Error('Unsupported image: file too small to identify');
+  }
+  // JPEG: FF D8 FF
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+    return 'image/png';
+  }
+  // GIF: GIF87a or GIF89a → "GIF8" (47 49 46 38)
+  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38) {
+    return 'image/gif';
+  }
+  // WebP: RIFF....WEBP — bytes [0..3]='RIFF' (52 49 46 46), [8..11]='WEBP' (57 45 42 50)
+  if (
+    buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
+    buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50
+  ) {
+    return 'image/webp';
+  }
+  throw new Error('Unsupported image format. Anthropic Vision accepts JPG, PNG, WebP, GIF.');
+}
+
 async function extractVideoFrames(buffer, { intervalSec = 1, maxFrames = 30 } = {}) {
   const ffmpeg     = require('fluent-ffmpeg');
   const { path: ffmpegPath } = require('@ffmpeg-installer/ffmpeg');
@@ -92,7 +132,7 @@ async function extractVideoFrames(buffer, { intervalSec = 1, maxFrames = 30 } = 
 
 // ── Per-frame vision analysis ───────────────────────────────────────────────
 
-async function analyzeFrame({ frame, mission }) {
+async function analyzeFrame({ frame, mission, mediaType = 'image/jpeg' }) {
   const prompt = `You are analyzing frame at ${frame.timestamp}s of a marketing creative.
 
 Brand: ${mission.brand_name || 'unknown'}
@@ -129,7 +169,7 @@ All numeric scores: 0 to 100 integers. Scores must reflect what is actually visi
             type: 'image',
             source: {
               type:       'base64',
-              media_type: 'image/jpeg',
+              media_type: mediaType,
               data:        frame.base64,
             },
           },
@@ -281,22 +321,33 @@ async function analyzeCreative({ mission }) {
   const buffer  = Buffer.from(await fileData.arrayBuffer());
   const isVideo = (attachment.mimeType || '').startsWith('video/');
 
-  // 2. Extract frames
+  // 2. Extract frames + resolve the media_type the Anthropic Vision API
+  //    expects. Pass 23 Bug 23.79 — detect from magic bytes so WebP /
+  //    PNG / GIF uploads don't hard-fail with the old hardcoded
+  //    image/jpeg. Video frames come out of ffmpeg as JPEG so the video
+  //    branch always uses image/jpeg.
   let frames = [];
+  let frameMediaType = 'image/jpeg';
   if (isVideo) {
     logger.info('[CreativeAttention] extracting video frames', { missionId: mission.id });
     frames = await extractVideoFrames(buffer, { intervalSec: 1, maxFrames: 30 });
+    // ffmpeg output → image/jpeg
   } else {
-    // Single image — analyze as one frame
+    // Single image — detect MIME from magic bytes (extension/Content-Type
+    // can lie; buffer header doesn't). Throws on unsupported format so
+    // runMission's catch block can auto-refund per Bug 23.80.
+    frameMediaType = detectImageMime(buffer);
     frames = [{ base64: buffer.toString('base64'), timestamp: 0 }];
   }
 
-  logger.info('[CreativeAttention] frames ready', { missionId: mission.id, count: frames.length });
+  logger.info('[CreativeAttention] frames ready', {
+    missionId: mission.id, count: frames.length, mediaType: frameMediaType,
+  });
 
   // 3. Analyze each frame with Claude vision
   const frameAnalyses = [];
   for (const frame of frames) {
-    const result = await analyzeFrame({ frame, mission });
+    const result = await analyzeFrame({ frame, mission, mediaType: frameMediaType });
     if (result) frameAnalyses.push(result);
 
     // Small delay to avoid rate limiting on long videos
