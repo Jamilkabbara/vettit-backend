@@ -219,14 +219,17 @@ function calculateMissionPrice({
   countries = [],
   promoCode = null,
   isScreeningActive = false,
+  // Pass 23 Bug 23.61 fix — named destructured params (replacing the
+  // `arguments[0]?.goalType` hack that broke callers who didn't know to
+  // pass them). Defaults preserve existing behaviour for non-CA missions.
+  goalType  = 'validate',
+  mediaType = null,
 } = {}) {
-  // 1. Base rate via goal-type-aware tier resolution (Pass 23 Bug 23.51).
+  // 1. Base rate via goal-type-aware tier resolution (Pass 23 Bug 23.51 + 23.61).
   // Validate / naming / marketing → respondent-count ladder (default).
   // Brand Lift → statistical-sample ladder (Pulse/Tracker/Wave/Enterprise).
   // Creative Attention → flat per-asset (Image/Video/Bundle/Series).
   const countryTier = resolveHighestTier(countries);
-  const goalType    = arguments[0]?.goalType || 'validate';
-  const mediaType   = arguments[0]?.mediaType || null;
   const tier        = resolveTier({ goalType, respondentCount, mediaType });
   const isCreative  = goalType === 'creative_attention';
   const ratePerResp = isCreative ? null : (tier?.ratePerResp || VOLUME_TIERS[0].ratePerResp);
@@ -321,12 +324,61 @@ function round2(val) {
   return Math.round(val * 100) / 100;
 }
 
+/**
+ * Pass 23 Bug 23.61 — fail-closed mission pricing validation.
+ *
+ * Returns { valid: true, tier } when the {goalType, mediaType,
+ * respondentCount} combo is internally consistent for charging.
+ * Returns { valid: false, error } with a user-friendly reason
+ * otherwise. The route layer calls this BEFORE calculateMissionPrice
+ * so we never accidentally charge a Sniff Test rate for a Creative
+ * Attention asset (the original 23.61 forensic).
+ *
+ * Validation rules:
+ *   - creative_attention REQUIRES mediaType in {image,video,bundle,series}.
+ *     respondentCount is ignored.
+ *   - brand_lift REQUIRES respondentCount >= 50 (the Pulse minimum).
+ *   - validate / naming_messaging / marketing accept any
+ *     respondentCount in [5, 5000].
+ *   - Other goal_types fall back to the default ladder (lenient).
+ */
+function validateMissionPricing({ goalType, respondentCount, mediaType }) {
+  if (goalType === 'creative_attention') {
+    const validMedia = new Set(['image', 'video', 'bundle', 'series']);
+    if (!mediaType || !validMedia.has(mediaType)) {
+      return {
+        valid: false,
+        error: 'creative_attention missions require media_type in {image, video, bundle, series}',
+      };
+    }
+    const tier = resolveTier({ goalType, mediaType });
+    return { valid: true, tier };
+  }
+  if (goalType === 'brand_lift') {
+    const c = Number(respondentCount) || 0;
+    if (c < 50) {
+      return {
+        valid: false,
+        error: 'brand_lift missions require at least 50 respondents (Pulse tier minimum)',
+      };
+    }
+    return { valid: true, tier: resolveTier({ goalType, respondentCount: c }) };
+  }
+  // Default ladder — accept any positive count.
+  const c = Number(respondentCount) || 0;
+  if (c < 1) {
+    return { valid: false, error: 'respondentCount must be >= 1' };
+  }
+  return { valid: true, tier: resolveTier({ goalType, respondentCount: c }) };
+}
+
 module.exports = {
   calculateMissionPrice,
   extractCountriesFromMission,
   // Goal-keyed tier ladders (Pass 23 Bug 23.51 — canonical)
   getPricingForGoalType,
   resolveTier,
+  validateMissionPricing,
   VOLUME_TIERS,
   BRAND_LIFT_TIERS,
   CREATIVE_ATTENTION_TIERS,
