@@ -252,7 +252,12 @@ Identify the 2 to 3 most informative segmentation axes from the persona profiles
     // Defensive defaults in case the model omits these optional fields.
     if (!Array.isArray(parsed.contradictions))     parsed.contradictions     = [];
     if (!Array.isArray(parsed.segment_breakdowns)) parsed.segment_breakdowns = [];
-    return parsed;
+    // Pass 23 — em-dash sanitizer (post-generation). Pre-prompt swap was
+    // insufficient: production audit found em-dashes on every page checked
+    // (Bali, General Research, Recommended Next Step, AI Insights). The
+    // sanitizer is the canonical defense — applied before persistence so
+    // every JSONB field stamped to missions.insights is clean.
+    return sanitizeAIOutputDeep(parsed);
   } catch (err) {
     logger.error('Insight synthesis parse failed', { missionId: mission.id, err: err.message });
     // Fallback minimum-viable insight object so the mission can still complete
@@ -268,4 +273,47 @@ Identify the 2 to 3 most informative segmentation axes from the persona profiles
   }
 }
 
-module.exports = { synthesizeInsights, aggregate, computeRatingStats };
+/**
+ * Pass 23 — recursive em-dash + en-dash sanitizer for AI output.
+ *
+ * Walks every string in any nested structure and applies:
+ *   U+2014 (em-dash) → ', '   (comma + space — flows naturally in prose)
+ *   U+2013 (en-dash) → '-'    (hyphen-minus — preserves intent in ranges)
+ *   '. , ' / ', ,'   → '. ' / ','   (cleanup of double-punctuation artifacts)
+ *
+ * Used by:
+ *   - synthesizeInsights (return path)
+ *   - creativeAttention synthesis (creative_analysis JSONB)
+ *
+ * Idempotent — safe to apply multiple times. Returns the same shape it
+ * received; mutates only string leaves.
+ */
+function sanitizeAIString(s) {
+  if (typeof s !== 'string') return s;
+  return s
+    .replace(/—/g, ', ')
+    .replace(/–/g, '-')
+    .replace(/\.\s*,\s*/g, '. ')
+    .replace(/,\s+,/g, ',')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+function sanitizeAIOutputDeep(value) {
+  if (value == null) return value;
+  if (typeof value === 'string') return sanitizeAIString(value);
+  if (Array.isArray(value)) return value.map(sanitizeAIOutputDeep);
+  if (typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = sanitizeAIOutputDeep(v);
+    return out;
+  }
+  return value;
+}
+
+module.exports = {
+  synthesizeInsights,
+  aggregate,
+  computeRatingStats,
+  sanitizeAIString,
+  sanitizeAIOutputDeep,
+};

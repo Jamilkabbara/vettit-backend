@@ -17,6 +17,10 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const supabase  = require('../../db/supabase');
 const { callClaude, extractJSON } = require('./anthropic');
+// Pass 23 — em-dash sanitizer shared with insights.js. Applied to every
+// creative_analysis JSONB write so CA reports have the same prose
+// hygiene as the survey insights.
+const { sanitizeAIOutputDeep } = require('./insights');
 const { WRITING_STYLE } = require('./writingStyle');
 const logger    = require('../../utils/logger');
 
@@ -157,7 +161,7 @@ All numeric scores: 0 to 100 integers. Scores must reflect what is actually visi
   try {
     const text    = response.content[0]?.text || '';
     const cleaned = text.replace(/```json\n?|```/g, '').trim();
-    return JSON.parse(cleaned);
+    return sanitizeAIOutputDeep(JSON.parse(cleaned));
   } catch (parseErr) {
     logger.warn('[CreativeAttention] frame parse error', { ts: frame.timestamp, err: parseErr.message });
     return null;
@@ -210,8 +214,32 @@ Return ONLY JSON:
     "Specific actionable recommendation 3"
   ],
   "vs_benchmark": "One sentence: how this creative compares to category benchmarks",
-  "best_platform_fit": ["Platform 1", "Platform 2"]
-}`;
+  "best_platform_fit": [
+    { "platform": "Platform/medium name", "rationale": "1-2 sentence rationale tied to this creative's specific strengths" }
+  ]
+}
+
+CRITICAL FOR best_platform_fit:
+Recommend 3-5 best platform/medium fits for THIS creative across the FULL
+media mix. Do NOT default to social-only ("Instagram, TikTok"). Consider:
+  PAID SOCIAL: Meta (Feed, Reels, Stories), TikTok, Snapchat, Pinterest, X
+  PROGRAMMATIC DISPLAY: Google Display, Taboola, Outbrain, native placements
+  SEARCH: Google Ads, Bing
+  VIDEO: YouTube pre-roll, CTV (Roku, Samsung TV+), traditional TV
+  OUT-OF-HOME: billboards, transit, mall displays, airports, digital screens
+  AUDIO: Spotify ads, podcast pre-roll, radio
+  RETAIL MEDIA: Amazon Ads, Noon Ads, regional retail networks
+  EMAIL/CRM: newsletters, lifecycle automation
+  INFLUENCER PARTNERSHIPS: creator content, branded posts
+  PRINT: magazines, luxury contexts
+  DIRECT MAIL: DTC brands, premium experiences
+For EACH recommendation, tie the rationale to THIS creative's specific
+strengths. Example:
+  "Out-of-home (billboards): the simplicity reads at speed and the bold
+   red anchor works at distance."
+  "Spotify audio: the voiceover-heavy structure adapts to audio-only
+   contexts where listeners can't see visuals."
+Diversify across paid social + at least 2 non-social channels.`;
 
   const result = await callClaude({
     callType:         'creative_attention_synthesis',
@@ -223,7 +251,7 @@ Return ONLY JSON:
     enablePromptCache: true,
   });
 
-  return extractJSON(result.text);
+  return sanitizeAIOutputDeep(extractJSON(result.text));
 }
 
 // ── Main entry point ────────────────────────────────────────────────────────

@@ -137,7 +137,15 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
       productName:        mission.title || 'Research Mission',
       productDescription: `${mission.respondent_count || 0} qualified respondents`,
       successUrl:         `${FRONTEND_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-      cancelUrl:          `${FRONTEND_URL}/payment-cancel?mission_id=${missionId}`,
+      // Pass 23 Bug 23.71 — flow-aware cancel URL. Was hardcoded to
+      // /payment-cancel which then bounced to a generic setup page; user
+      // lost their CA upload + form state. Cancel-URL now takes the user
+      // back to the right setup surface with retry=true so the page can
+      // hydrate the draft mission and show a "Payment cancelled — click
+      // pay to retry" banner.
+      cancelUrl:          (mission.goal_type === 'creative_attention'
+        ? `${FRONTEND_URL}/creative-attention/new?retry=true&mission_id=${missionId}`
+        : `${FRONTEND_URL}/setup?goal=${encodeURIComponent(mission.goal_type || 'validate')}&retry=true&mission_id=${missionId}`),
       metadata: {
         promoCode: promo?.code || '',
       },
