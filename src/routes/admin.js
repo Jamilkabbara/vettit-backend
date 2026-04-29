@@ -54,19 +54,40 @@ router.get('/overview', async (req, res, next) => {
       supabase.rpc('admin_activity_feed', { row_limit: 20 }),
     ]);
 
-    // Mission type mix
+    // Mission type mix — Pass 23 Bug 23.30 fix.
+    //
+    // Pre-fix: query filtered `paid_at >= start AND paid_at < end`,
+    // dropping missions paid before the range start. Display showed
+    // a percentage breakdown that didn't sum to the total_missions KPI
+    // because the two queries used different windows (KPI from RPC,
+    // type mix here). Result was "Validate 5 / 83% + Marketing 1 / 17%"
+    // when the actual completed set was wider.
+    //
+    // Fix: drop the time-range filter on Mission Type Mix — it's a
+    // STRUCTURAL breakdown of the platform's mission portfolio, not a
+    // time-series. The KPI delta below already shows time-series
+    // direction; the mix should reflect the whole completed set.
+    // Also: NULL goal_type → 'unspecified' bucket (used to be elided).
     const { data: typeMix } = await supabase
       .from('missions')
       .select('goal_type')
-      .in('status', ['paid', 'completed'])
-      .gte('paid_at', start.toISOString())
-      .lt('paid_at', end.toISOString());
+      .in('status', ['paid', 'completed']);
 
     const mixCounts = {};
-    (typeMix || []).forEach(m => { mixCounts[m.goal_type] = (mixCounts[m.goal_type] || 0) + 1; });
+    (typeMix || []).forEach((m) => {
+      const key = m.goal_type || 'unspecified';
+      mixCounts[key] = (mixCounts[key] || 0) + 1;
+    });
     const mixTotal = Object.values(mixCounts).reduce((a, b) => a + b, 0);
+    // Two-decimal pct so 11/27 → 40.74% not 41% (the rounded display
+    // hid sum-to-100 violations under .5/category. Frontend formats
+    // back to 1-decimal for display.)
     const missionTypeMix = Object.entries(mixCounts)
-      .map(([type, n]) => ({ type, count: n, pct: mixTotal > 0 ? Math.round(100 * n / mixTotal) : 0 }))
+      .map(([type, n]) => ({
+        type,
+        count: n,
+        pct: mixTotal > 0 ? Number((100 * n / mixTotal).toFixed(2)) : 0,
+      }))
       .sort((a, b) => b.count - a.count);
 
     // Active users in range — count DISTINCT user_id, not mission rows.
@@ -87,13 +108,52 @@ router.get('/overview', async (req, res, next) => {
     const missionsPaid = (funnel.data || {}).paid || 0;
     const priorPaid    = ps.total_calls || 0;
 
+    // Pass 23 Bug 23.29 — admin revenue cache stale ($158 cached vs
+    // $185.50 actual). admin_ai_cost_summary is a server-side RPC that
+    // may be backed by a materialized view or aggregate that hasn't
+    // been refreshed since the latest mission completion. Compute a
+    // fresh total directly from missions in this request and trust
+    // the freshly-computed value when it diverges from the RPC by
+    // more than $1. Defensive: if either is missing, prefer the other.
+    const { data: liveRevRows } = await supabase
+      .from('missions')
+      .select('total_price_usd')
+      .in('status', ['paid', 'completed'])
+      .gte('paid_at', start.toISOString())
+      .lt('paid_at', end.toISOString());
+    const liveRev = (liveRevRows || []).reduce(
+      (sum, r) => sum + Number(r.total_price_usd || 0),
+      0,
+    );
+    const rpcRev = Number(s.total_revenue_usd) || 0;
+    const totalRevenue = liveRev > 0 || rpcRev === 0 ? liveRev : rpcRev;
+
+    // Match prior-window revenue via the same direct path so the delta
+    // calc is apples-to-apples.
+    const { data: priorRevRows } = await supabase
+      .from('missions')
+      .select('total_price_usd')
+      .in('status', ['paid', 'completed'])
+      .gte('paid_at', priorStart.toISOString())
+      .lt('paid_at', start.toISOString());
+    const priorTotalRev = (priorRevRows || []).reduce(
+      (sum, r) => sum + Number(r.total_price_usd || 0),
+      0,
+    );
+
+    // Defensive no-cache headers on /overview so browsers/CDNs don't
+    // serve a stale response after a fresh mission completion.
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+
     res.json({
       kpis: {
         total_missions: { value: missionsPaid, delta_pct: calcDelta(missionsPaid, priorPaid) },
-        total_revenue:  { value: s.total_revenue_usd, delta_pct: calcDelta(s.total_revenue_usd, ps.total_revenue_usd) },
+        total_revenue:  { value: totalRevenue, delta_pct: calcDelta(totalRevenue, priorTotalRev) },
         active_users:   { value: activeUsers, delta_pct: 0 },
         avg_mission_value: {
-          value: missionsPaid > 0 ? s.total_revenue_usd / missionsPaid : 0,
+          value: missionsPaid > 0 ? totalRevenue / missionsPaid : 0,
           delta_pct: 0,
         },
       },

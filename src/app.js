@@ -17,7 +17,10 @@ const resultsRoutes = require('./routes/results');
 const uploadsRoutes = require('./routes/uploads');
 const profileRoutes = require('./routes/profile');
 const webhookRoutes = require('./routes/webhooks');
-const notificationRoutes = require('./routes/notifications');
+// Pass 23 A9 — notificationRoutes removed. Frontend reads + writes
+// notifications directly via supabase.from('notifications') with the
+// users_own_notif RLS policy (Pass 23 A2/Bug 23.11). The 4 endpoints
+// in routes/notifications.js were dead code post-A2.
 const adminRoutes = require('./routes/admin');
 const blogRoutes = require('./routes/blog');
 const chatRoutes = require('./routes/chat');
@@ -126,7 +129,8 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/results', resultsRoutes);
 app.use('/api/uploads', uploadsRoutes);
 app.use('/api/profile', profileRoutes);
-app.use('/api/notifications', notificationRoutes);
+// Pass 23 A9 — /api/notifications/* mount removed alongside the routes
+// file delete. Frontend reads via supabase-js + RLS now.
 app.use('/api/admin', adminRoutes);
 app.use('/api/blog', blogRoutes);
 app.use('/api/chat', chatRoutes);
