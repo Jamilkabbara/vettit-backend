@@ -49,6 +49,24 @@ const ALLOWED_EVENT_TYPES = new Set([
   'checkout_completed',
   'mission_paid',
   'mission_completed',
+  // Pass 23 Bug 23.0e v2 — Stripe Checkout cancel-flow emit. Was added
+  // to the frontend FunnelEvent type but never to this backend allowlist;
+  // every checkout_canceled emit silently HTTP 202'd with reason
+  // 'unknown_event_type' for ~7 days before the omission was caught
+  // during Bug 23.64 forensic.
+  'checkout_canceled',
+  // Pass 23 Bug 23.52 — PaymentSuccessPage diagnostic trail. Same
+  // omission as checkout_canceled — frontend emits never landed in
+  // funnel_events because the backend was silently dropping them, which
+  // is exactly why three speculative redirect fixes (23.0f, 23.52)
+  // appeared to fail despite the code being correct in production. Bug
+  // 23.64 forensic confirmed via `mission_paid` from PaymentSuccessPage
+  // firing fine while these never arrived.
+  'payment_success_page_loaded',
+  'payment_success_poll_attempt',
+  'payment_success_redirect',
+  'payment_success_session_expired',
+  'payment_success_timeout',
 ]);
 
 /**
