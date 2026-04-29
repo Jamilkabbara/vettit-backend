@@ -142,6 +142,22 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '1.0.0' });
 });
 
+// ─── Version endpoint — expose Railway's deployed git SHA so we can
+// verify which commit is actually running. Bug 23.79 regression
+// diagnostic: a "fix is in git" doesn't mean "fix is in prod" if the
+// platform's auto-deploy hook silently skipped the build. This lets
+// us prove what's running without dashboard access. Railway auto-sets
+// RAILWAY_GIT_COMMIT_SHA on every build.
+app.get('/version', (req, res) => {
+  res.json({
+    sha:       process.env.RAILWAY_GIT_COMMIT_SHA || 'unknown',
+    branch:    process.env.RAILWAY_GIT_BRANCH || 'unknown',
+    deployedAt: process.env.RAILWAY_DEPLOYMENT_CREATED_AT || 'unknown',
+    bug23_79:  'magic-byte detection',
+    bug23_80:  'auto-refund on pipeline failure',
+  });
+});
+
 // ─── 404 ─────────────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });
