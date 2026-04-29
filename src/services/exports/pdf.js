@@ -170,7 +170,15 @@ function buildPDF(pack, res) {
 
   // ── PER-QUESTION RESULTS ────────────────────────────────
   (mission.questions || []).forEach((q, qi) => {
-    if (doc.y > doc.page.height - 200) {
+    // Pass 23 Bug 23.62 — orphan-header guard. The previous threshold of
+    // 200 below page-bottom was tuned for short questions but produced
+    // headers stranded at the bottom of page N with the distribution
+    // rendering on page N+1 (orphan-header anti-pattern). Estimate the
+    // minimum content height: header (50pt) + question text (40pt) +
+    // first distribution row (24pt) = 114pt. We need >= 280pt of room
+    // so the section header + first 4-6 rows fit on one page; spill
+    // beyond row 6 falls cleanly via pdfkit's wrap.
+    if (doc.y > doc.page.height - 280) {
       doc.addPage(); fillPageBg(doc);
     }
     const qAgg = aggregatedByQuestion[q.id] || {};
