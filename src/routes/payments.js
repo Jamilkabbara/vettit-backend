@@ -164,20 +164,42 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
  * GET /api/payments/checkout-session/:id
  *
  * Returns minimal Checkout Session status for the /payment-success page
- * to poll. Frontend polls this every 2s until status='complete' (or until
- * mission status flips to 'processing'/'paid' in the parallel mission
- * fetch). Owner-scoped: the session's metadata.userId must match the
- * authenticated user.
+ * to poll. Frontend polls this every 2s until status='complete' or until
+ * the 90s timeout fires.
+ *
+ * Pass 23 Bug 23.52 — anon-friendly. The user's Supabase auth session can
+ * expire during a 60+ second Stripe Checkout flow (especially on Apple
+ * Pay biometric or 3D Secure interstitials). When the user lands back on
+ * /payment-success their cookie may be stale. The Checkout Session id
+ * (`cs_xxx_<32 random hex>`) is sufficiently random + secret to act as a
+ * capability token on its own — leaking it to a third party gives no
+ * material advantage (the response only carries status + missionId, no
+ * PII). Removing the auth requirement here means the polling loop works
+ * even before the user re-signs in, and the page can branch on auth
+ * separately to render either the spinner or a sign-in CTA.
+ *
+ * If a userId was authenticated AND it doesn't match session.metadata.userId,
+ * we still 403 — defends against guessing attacks if anyone ever brute-
+ * forces a Checkout id (mathematically near-impossible but cheap to
+ * defend).
  */
-router.get('/checkout-session/:id', authenticate, async (req, res, next) => {
+router.get('/checkout-session/:id', async (req, res, next) => {
   try {
     const session = await stripeService.retrieveCheckoutSession(req.params.id);
     if (!session) return res.status(404).json({ error: 'Session not found' });
 
-    // Ownership guard — the session metadata carries userId.
-    const sessionUserId = session.metadata?.userId;
-    if (sessionUserId && sessionUserId !== req.user.id) {
-      return res.status(403).json({ error: 'Forbidden' });
+    // Soft ownership guard — only enforced if request carried a Bearer.
+    // Without auth the response is still safe (no PII, polling-only data).
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.slice(7);
+        const { data: { user } } = await supabase.auth.getUser(token);
+        const sessionUserId = session.metadata?.userId;
+        if (user?.id && sessionUserId && sessionUserId !== user.id) {
+          return res.status(403).json({ error: 'Forbidden' });
+        }
+      } catch { /* token invalid → treat as anon, don't block */ }
     }
 
     res.json({
