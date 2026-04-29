@@ -372,23 +372,117 @@ async function runMission(missionId) {
   } catch (err) {
     logger.error('Mission run: fatal', { missionId, err: err.message, stack: err.stack });
     const failureReason = String(err && err.message ? err.message : 'Unknown error').slice(0, 500);
+
+    // Pass 23 Bug 23.80 — auto-refund on hard pipeline failure.
+    //
+    // A hard runMission failure (Anthropic API reject, storage download
+    // fail, persona-gen crash, synthesis parse fail, mission timeout)
+    // means the user paid and got NOTHING. Per the delivery contract,
+    // they're owed a full refund automatically — not "we'll look into
+    // it".
+    //
+    // Idempotency: Stripe's idempotency_key (`auto_refund:${missionId}`)
+    // ensures a runMission retry doesn't double-refund. partial_refund_id
+    // on the mission row also gates the call so we never even try a
+    // second time.
+    //
+    // The mission UPDATE writes status='failed' AND the refund forensic
+    // atomically so an observer can never see "failed but no refund yet"
+    // longer than the network round-trip to Stripe.
+    let refundResult = null;     // { id, amountCents }
+    let refundFailed = false;
+    const eligibleForAutoRefund =
+      mission.paid_at &&
+      !mission.partial_refund_id &&
+      mission.latest_payment_intent_id;
+
+    if (eligibleForAutoRefund) {
+      try {
+        const refund = await createRefund({
+          paymentIntentId: mission.latest_payment_intent_id,
+          // Omit amountCents → Stripe refunds the full PI amount.
+          idempotencyKey:  `auto_refund:${missionId}`,
+          reason:          'requested_by_customer',
+          metadata: {
+            missionId,
+            userId: mission.user_id || '',
+            reason_code: 'pipeline_failure',
+            failure_reason: failureReason.slice(0, 250),
+          },
+        });
+        refundResult = { id: refund.id, amountCents: refund.amount };
+        logger.info('Mission run: auto-refund issued for hard failure', {
+          missionId, refundId: refund.id, amountCents: refund.amount,
+        });
+      } catch (refundErr) {
+        refundFailed = true;
+        logger.error('Mission run: auto-refund failed', {
+          missionId, paymentIntentId: mission.latest_payment_intent_id,
+          err: refundErr.message,
+        });
+      }
+    } else if (!mission.paid_at) {
+      logger.warn('Mission run: failed but unpaid — no refund needed', { missionId });
+    } else {
+      logger.warn('Mission run: failed but already refunded — skipping auto-refund', {
+        missionId,
+        existing_refund_id: mission.partial_refund_id,
+      });
+    }
+
     await updateMission(supabase, missionId, {
       status: 'failed',
       failure_reason: failureReason,
       completed_at: new Date().toISOString(),
+      // Bug 23.80 — repurpose the partial_refund_* columns for the
+      // auto-refund forensic. (Future migration may rename to refund_id/
+      // refund_amount_cents — for now the column name is misleading but
+      // the schema works.)
+      partial_refund_id: refundResult?.id || null,
+      partial_refund_amount_cents: refundResult?.amountCents || null,
     }, { caller: 'runMission: fatal' });
 
-    // Pass 23 Bug 23.50 fix: same await + destructure pattern as the success
-    // path so a transient DB issue here doesn't compound to an exception.
+    // Admin alert so ops can see hard-failure missions without paging
+    // funnel_events. Dedup pattern matches missionRecovery::alertAdmin.
+    try {
+      await supabase.from('admin_alerts').insert({
+        alert_type: 'mission_pipeline_failure',
+        mission_id: missionId,
+        user_id:    mission.user_id,
+        payload: {
+          failure_reason: failureReason,
+          paid_amount_cents: mission.paid_amount_cents,
+          refund_id: refundResult?.id || null,
+          refund_amount_cents: refundResult?.amountCents || null,
+          refund_failed: refundFailed,
+          payment_intent_id: mission.latest_payment_intent_id,
+        },
+        resolved: false,
+      });
+    } catch (alertErr) {
+      logger.warn('Mission run: pipeline_failure alert insert failed (non-fatal)', {
+        missionId, err: alertErr.message,
+      });
+    }
+
+    // Notification — copy depends on whether refund landed cleanly.
+    const refundUsd = (refundResult?.amountCents || 0) / 100;
+    const notifBody = refundResult
+      ? `Your "${truncateTitle(mission.title)}" hit a snag. We've refunded $${refundUsd.toFixed(2)} automatically. It will land in 5-10 business days.`
+      : refundFailed
+        ? `Your "${truncateTitle(mission.title)}" hit a snag. Our team has been notified and will issue a refund within one business day.`
+        : `Your "${truncateTitle(mission.title)}" hit a snag. Our team has been notified.`;
     try {
       const { error: failNotifErr } = await supabase
         .from('notifications')
         .insert({
           user_id: mission.user_id,
           type:    'mission_failed',
-          title:   'Mission failed',
-          body:    `Your "${truncateTitle(mission.title)}" encountered an error and was refunded. Our team has been notified.`,
-          link:    `/dashboard/${missionId}`,
+          title:   refundResult ? 'Mission failed, refund issued' : 'Mission failed',
+          body:    notifBody,
+          link:    mission.goal_type === 'creative_attention'
+            ? `/creative-results/${missionId}`
+            : `/dashboard/${missionId}`,
         });
       if (failNotifErr) {
         logger.warn('Mission run: failure notification insert failed', {
@@ -396,7 +490,51 @@ async function runMission(missionId) {
         });
       }
     } catch { /* swallowed; logging-only */ }
+
+    // Bug 23.80 — email the user about the failure + refund.
+    try {
+      const { data: { user } } = await supabase.auth.admin.getUserById(mission.user_id);
+      if (user?.email) {
+        await emailService.sendMissionFailedRefundEmail?.({
+          to: user.email,
+          name: user.user_metadata?.name || user.email.split('@')[0],
+          missionTitle: mission.title || 'Your VETT mission',
+          missionId,
+          refundAmountUsd: refundResult ? refundUsd : (mission.paid_amount_cents || 0) / 100,
+          refundFailed,
+          // Sanitize the failure reason — strip stack-trace-ish content + cap length.
+          friendlyReason: friendlyFailureReason(failureReason),
+        });
+      }
+    } catch (mailErr) {
+      logger.warn('Mission run: failure-refund email send failed', { missionId, err: mailErr.message });
+    }
   }
+}
+
+/**
+ * Pass 23 Bug 23.80 — produce a user-safe one-line failure description
+ * from the runMission error message. Strips stack frames, file paths,
+ * Anthropic API noise, and caps at 180 chars. Categorises common failure
+ * modes into clearer language.
+ */
+function friendlyFailureReason(raw) {
+  const r = String(raw || '').slice(0, 400);
+  if (/image\/(?:webp|png|gif|jpeg)/i.test(r) && /Anthropic|Vision|messages\.0\.content/.test(r)) {
+    return 'The uploaded image format was not accepted by our analysis engine.';
+  }
+  if (/timeout|TIMEOUT/.test(r)) {
+    return 'The analysis took longer than allowed and was stopped.';
+  }
+  if (/Storage download|signed URL|getPublicUrl/.test(r)) {
+    return 'We could not retrieve the uploaded file from storage.';
+  }
+  if (/parse|JSON|extractJSON/.test(r)) {
+    return 'The AI response did not match the expected format.';
+  }
+  // Generic — first sentence only.
+  const firstSentence = r.split(/[.\n]/)[0] || r;
+  return firstSentence.slice(0, 180);
 }
 
 module.exports = { runMission };
