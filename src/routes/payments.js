@@ -21,7 +21,7 @@ const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const stripeService = require('../services/stripe');
 const supabase = require('../db/supabase');
-const { calculateMissionPrice, extractCountriesFromMission } = require('../utils/pricingEngine');
+const { calculateMissionPrice, extractCountriesFromMission, validateMissionPricing } = require('../utils/pricingEngine');
 const { runMission } = require('../jobs/runMission');
 const { updateMission } = require('../db/missionSchema');
 const { logPaymentError, shapeStripeError } = require('../services/paymentErrors');
@@ -84,7 +84,32 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
       }
     }
 
+    // Pass 23 Bug 23.61 — fail-closed pricing validation. Reject
+    // mismatched {goal_type, tier, media_type} BEFORE computing price
+    // so a Creative Attention mission can't accidentally checkout at
+    // a Sniff Test rate ($1.80) — the forensic that surfaced this bug
+    // (mission a24d3776 paid $1.80 for an Image-tier creative analysis
+    // that should have been $19).
+    const validation = validateMissionPricing({
+      goalType:        mission.goal_type,
+      respondentCount: mission.respondent_count,
+      mediaType:       mission.media_type,
+    });
+    if (!validation.valid) {
+      logger.warn('Payments create-checkout-session: pricing validation failed', {
+        missionId, goal_type: mission.goal_type, media_type: mission.media_type,
+        respondent_count: mission.respondent_count, error: validation.error,
+      });
+      return res.status(400).json({
+        error: 'Mission pricing is not valid for checkout',
+        reason: validation.error,
+      });
+    }
+
     // Recalculate price server-side — single source of truth.
+    // Pass 23 Bug 23.61 fix — pass goalType + mediaType so the engine
+    // routes to the right ladder (Creative Attention flat-per-asset
+    // vs Brand Lift statistical-sample vs default volume).
     const countries = extractCountriesFromMission(mission);
     pricing = calculateMissionPrice({
       respondentCount: mission.respondent_count,
@@ -92,6 +117,8 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
       questionCount:   (mission.questions || []).length,
       countries,
       promoCode:       promo,
+      goalType:        mission.goal_type,
+      mediaType:       mission.media_type,
     });
 
     if (pricing.totalCents < 50) {
@@ -119,6 +146,12 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
     // Snapshot pricing + the new checkout_session_id (Pass 23 Bug 23.0e
     // v2) AND latest_payment_intent_id (the PI Stripe creates synchronously
     // when the Session is created). Both whitelisted in missionSchema.
+    //
+    // Pass 23 Bug 23.61 — also stamp `tier` and `media_type` so the
+    // audit trail on every paid mission carries the resolved tier id.
+    // The frontend should send these on mission INSERT, but we re-stamp
+    // here as belt-and-suspenders since validation passed.
+    const resolvedTierId = validation.tier?.id || null;
     await updateMission(supabase, missionId, {
       base_cost_usd:             pricing.baseCost,
       targeting_surcharge_usd:   pricing.targetingSurcharge,
@@ -129,6 +162,8 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
       status:                    'pending_payment',
       checkout_session_id:       session.id,
       latest_payment_intent_id:  session.paymentIntentId,
+      tier:                      resolvedTierId,
+      media_type:                mission.media_type || null,
     }, { caller: 'POST /payments/create-checkout-session' });
 
     logger.info('Checkout Session created', {
