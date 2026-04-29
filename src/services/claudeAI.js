@@ -84,7 +84,41 @@ Rules:
   100-200 when the brief explicitly requires multi-segment statistical
   comparison, multi-country roll-ups, or pricing-quartile analysis. Cap at
   500. Most users want to TRY the platform — defaulting to 200 was burning
-  $135+ per first mission for users who only needed directional signal.`;
+  $135+ per first mission for users who only needed directional signal.
+
+═══ Pass 23 Bug 23.56 — Brand Lift category framework ════════════════════════
+When goal is "brand_lift", generate 8-12 questions covering the
+industry-standard brand-lift framework (Happydemics / Kantar / Nielsen).
+Each question MUST carry a "category" field tagging which frame it covers:
+
+  brand_recall_unaided    "Without seeing any brand list, name brands in
+                          [category] you can recall." (text)
+  brand_recall_aided      "Have you heard of [Brand]?" (single yes/no)
+  brand_attribution       "Which of these descriptions fits [Brand] best?"
+                          (single, options=brand traits)
+  brand_awareness         "How would you describe [Brand] in your own words?"
+                          (text or rating of familiarity 1-5)
+  message_association     "Which of these messages do you associate most
+                          with [Brand]?" (multi)
+  brand_favorability      "Overall, how favourable is your view of [Brand]?"
+                          (rating 1-5)
+  purchase_intent         "How likely are you to consider [Brand] next time
+                          you buy in this category?" (rating 1-5 or single)
+  recommendation_intent   "How likely are you to recommend [Brand] to a
+                          colleague or friend?" (rating 0-10 / NPS)
+  ad_recall               "Have you seen any ads for [Brand] in the last
+                          [period]?" (single yes/no/maybe) — only when the
+                          brief mentions a specific campaign
+
+Coverage: emit at LEAST one question from each of {brand_recall_unaided,
+brand_recall_aided, brand_attribution, purchase_intent, recommendation_intent}
+on every brand_lift mission. Add the rest as the brief warrants.
+Question schema additions for brand_lift:
+  - "category": one of the strings above (REQUIRED)
+  - "isScreening": only the FIRST question (target-segment qualifier);
+    the framework questions are non-screening.
+
+For non-brand_lift missions: "category" field MUST be omitted.`;
 
 const TARGETING_SUGGEST_SYSTEM = `You are a senior market research targeting specialist. Your job is to suggest the optimal audience targeting configuration for a given research mission.
 
