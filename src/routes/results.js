@@ -16,6 +16,13 @@ const { buildPDF }  = require('../services/exports/pdf');
 const { buildPPTX } = require('../services/exports/pptx');
 const { buildXLSX } = require('../services/exports/xlsx');
 
+// Pass 23 Bug 23.74 — Creative Attention exporters (PPTX + XLSX).
+// PDF/CSV/JSON for CA missions are generated client-side and don't need
+// backend routes. Survey-shape exports above are unchanged.
+const { loadCreativeAttentionForExport } = require('../services/exports/ca/shared');
+const { buildCAPPTX } = require('../services/exports/ca/pptx');
+const { buildCAXLSX } = require('../services/exports/ca/xlsx');
+
 // ─── GET /api/results/:missionId ─────────────────────────────
 // Bug 7 (Pass 20): this endpoint now serves three response shapes,
 // keyed off mission.status so the SPA can render the right UI without
@@ -170,6 +177,32 @@ router.get('/:missionId/export/xlsx', authenticate, async (req, res, next) => {
 
     await buildXLSX(pack, res);
     logger.info('XLSX exported', { missionId: req.params.missionId, userId: req.user.id });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /api/results/:missionId/export/ca/pptx ──────────────
+// Pass 23 Bug 23.74 — Creative Attention PPTX (one section per slide).
+router.get('/:missionId/export/ca/pptx', authenticate, async (req, res, next) => {
+  try {
+    const pack = await loadCreativeAttentionForExport(req.params.missionId, req.user.id);
+    if (!pack)      return res.status(404).json({ error: 'Mission not found' });
+    if (pack.error) return res.status(400).json({ error: pack.error });
+
+    await buildCAPPTX(pack, res);
+    logger.info('CA PPTX exported', { missionId: req.params.missionId, userId: req.user.id });
+  } catch (err) { next(err); }
+});
+
+// ─── GET /api/results/:missionId/export/ca/xlsx ──────────────
+// Pass 23 Bug 23.74 — Creative Attention XLSX (multi-sheet workbook).
+router.get('/:missionId/export/ca/xlsx', authenticate, async (req, res, next) => {
+  try {
+    const pack = await loadCreativeAttentionForExport(req.params.missionId, req.user.id);
+    if (!pack)      return res.status(404).json({ error: 'Mission not found' });
+    if (pack.error) return res.status(400).json({ error: pack.error });
+
+    await buildCAXLSX(pack, res);
+    logger.info('CA XLSX exported', { missionId: req.params.missionId, userId: req.user.id });
   } catch (err) { next(err); }
 });
 
