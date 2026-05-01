@@ -133,6 +133,9 @@ async function extractVideoFrames(buffer, { intervalSec = 1, maxFrames = 30 } = 
 // ── Per-frame vision analysis ───────────────────────────────────────────────
 
 async function analyzeFrame({ frame, mission, mediaType = 'image/jpeg' }) {
+  // Pass 24 Bug 24.01 — 24-emotion taxonomy (Plutchik 8 + 16 nuanced
+  // DAIVID-style). Old missions had 8 emotions; v2 expands the model's
+  // expressive range without changing the call shape.
   const prompt = `You are analyzing frame at ${frame.timestamp}s of a marketing creative.
 
 Brand: ${mission.brand_name || 'unknown'}
@@ -144,8 +147,12 @@ Analyze this frame and return ONLY JSON:
 {
   "timestamp": ${frame.timestamp},
   "emotions": {
-    "joy": 0, "trust": 0, "surprise": 0, "anticipation": 0,
-    "fear": 0, "sadness": 0, "disgust": 0, "anger": 0
+    "joy": 0, "trust": 0, "fear": 0, "surprise": 0,
+    "sadness": 0, "disgust": 0, "anger": 0, "anticipation": 0,
+    "amusement": 0, "awe": 0, "contentment": 0, "pride": 0,
+    "curiosity": 0, "nostalgia": 0, "romance": 0, "hope": 0,
+    "calm": 0, "confusion": 0, "boredom": 0, "disappointment": 0,
+    "contempt": 0, "embarrassment": 0, "guilt": 0, "irritation": 0
   },
   "attention_hotspots": ["where eyes naturally focus, be specific"],
   "message_clarity": 0,
@@ -154,7 +161,7 @@ Analyze this frame and return ONLY JSON:
   "brief_description": "One sentence of what is happening in this frame"
 }
 
-All numeric scores: 0 to 100 integers. Scores must reflect what is actually visible. Do not guess.`;
+All numeric scores: 0 to 100 integers. Score every emotion (most will be 0-20; only score >50 when the emotion is a clear primary read). Scores must reflect what is actually visible. Do not guess.`;
 
   const start = Date.now();
 
@@ -223,6 +230,17 @@ async function synthesizeCreativeInsights({ frameAnalyses, mission }) {
       desc: f.brief_description,
     }));
 
+  // Pass 24 Bug 24.01 — synthesis now includes attention prediction,
+  // cross-channel benchmarks, and Creative Effectiveness Score in
+  // addition to the v1 summary fields. Channel norms are baked into
+  // the prompt as published reference points (DAIVID/Amplified) so the
+  // model isn't inventing benchmarks. Composite score is post-
+  // processed deterministically (see computeEffectivenessScore below).
+  const isVideoMission = framesSummary.length > 1;
+  const durationHint = isVideoMission
+    ? `Video duration ≈ ${Math.max(...framesSummary.map((f) => f.t || 0))}s`
+    : 'Static image (single frame)';
+
   const prompt = `Synthesize these frame-by-frame analyses of a marketing creative.
 
 Brand: ${mission.brand_name || 'unknown'}
@@ -230,20 +248,33 @@ Target audience: ${mission.target_audience || 'general'}
 Desired emotions: ${(mission.desired_emotions || []).join(', ') || 'not specified'}
 Key message: ${mission.key_message || 'not specified'}
 Total frames analyzed: ${framesSummary.length}
+${durationHint}
 
 Frame data:
 ${JSON.stringify(framesSummary, null, 2).slice(0, 8000)}
 
-Return ONLY JSON:
+PUBLISHED CHANNEL ATTENTION NORMS (DAIVID/Amplified — use these as the
+ground truth for category_avg_attention_seconds in channel_benchmarks
+AND for platform_norm_active_attention_seconds in best_platform_fit):
+  Instagram Feed:        1.2s active attention
+  TikTok Feed:           1.4s
+  YouTube Pre-roll:      1.8s
+  Pinterest:             1.5s
+  Snapchat:              0.9s
+  Meta Reels / Stories:  1.0s
+  Programmatic Display:  0.4s
+  OOH (digital billboard): 0.8s active, 4-6s passive
+  CTV (15s):             4.5s
+  CTV (30s):             8.0s
+  TV (30s spot):         12.0s
+  Print (luxury magazine): 2.5s
+  Audio (Spotify/podcast): N/A (no visual attention)
+
+Return ONLY JSON (no prose, no markdown fences):
 {
   "overall_engagement_score": 0,
   "emotion_peaks": [
-    {
-      "emotion": "joy",
-      "peak_timestamp": 0,
-      "peak_value": 0,
-      "interpretation": "What drove the peak"
-    }
+    { "emotion": "joy", "peak_timestamp": 0, "peak_value": 0, "interpretation": "What drove the peak" }
   ],
   "attention_arc": "2 sentences describing how attention and emotion shift across the creative",
   "strengths": ["Strength 1", "Strength 2", "Strength 3"],
@@ -255,9 +286,102 @@ Return ONLY JSON:
   ],
   "vs_benchmark": "One sentence: how this creative compares to category benchmarks",
   "best_platform_fit": [
-    { "platform": "Platform/medium name", "rationale": "1-2 sentence rationale tied to this creative's specific strengths" }
-  ]
+    {
+      "platform": "Platform/medium name",
+      "rationale": "1-2 sentence rationale tied to this creative's specific strengths",
+      "platform_norm_active_attention_seconds": 1.2,
+      "predicted_creative_attention_seconds": 1.6,
+      "delta_vs_norm_pct": 33,
+      "fit_score": 87
+    }
+  ],
+  "attention": {
+    "predicted_active_attention_seconds": 0.0,
+    "predicted_passive_attention_seconds": 0.0,
+    "active_attention_pct": 0,
+    "passive_attention_pct": 0,
+    "non_attention_pct": 0,
+    "distinctive_brand_asset_score": 0,
+    "dba_read_seconds": 0.0,
+    "attention_decay_curve": [
+      { "second": 0, "active_pct": 0 }
+    ]
+  },
+  "channel_benchmarks": [
+    {
+      "channel": "TV (30s spot)",
+      "category_avg_attention_seconds": 12.0,
+      "predicted_for_this_creative": null,
+      "fit_assessment": "Static image — TV requires motion. For a 30s adaptation, the [specific element] would suit second-screen capable contexts."
+    },
+    {
+      "channel": "Social Feed (paid)",
+      "category_avg_attention_seconds": 1.2,
+      "predicted_for_this_creative": 1.6,
+      "fit_assessment": "Strong fit. +33% vs norm because [specific reason]."
+    },
+    {
+      "channel": "OOH (billboard)",
+      "category_avg_attention_seconds": 0.8,
+      "predicted_for_this_creative": 0.9,
+      "fit_assessment": "Adequate. Brand identifiable at distance. [Caveat about fidelity]."
+    },
+    {
+      "channel": "CTV (15s)",
+      "category_avg_attention_seconds": 4.5,
+      "predicted_for_this_creative": null,
+      "fit_assessment": "Static image — CTV requires motion. Recommend developing 15s motion extension."
+    },
+    {
+      "channel": "Programmatic Display",
+      "category_avg_attention_seconds": 0.4,
+      "predicted_for_this_creative": 0.6,
+      "fit_assessment": "Above category norm. [Specific reason]."
+    }
+  ],
+  "creative_effectiveness": {
+    "components": {
+      "attention": 0,
+      "emotion_intensity": 0,
+      "brand_clarity": 0,
+      "audience_resonance": 0,
+      "platform_fit": 0
+    },
+    "band_explanation": "1-2 sentence narrative anchored in the strongest and weakest sub-component."
+  }
 }
+
+CRITICAL — attention block:
+- Predict active vs passive attention based on visual hierarchy, brand
+  prominence, motion, contrast, and production craft. For static images,
+  base the prediction on the 3-second first-contact window. For video,
+  predict the per-second decay over the duration.
+- active_attention_pct + passive_attention_pct + non_attention_pct must
+  sum to 100.
+- distinctive_brand_asset_score: 0-100 read of how immediately the brand
+  is identifiable (the "1.5 second rule"). dba_read_seconds is the
+  estimated seconds to brand identification (0.5-3.0 typical range).
+- attention_decay_curve:
+    Static image: ONE entry at second=0 (the first-contact value).
+    Video: bucketed every 1s up to mission duration (cap 30 entries).
+
+CRITICAL — channel_benchmarks:
+- Always include all 5 channels above. Use the published norms verbatim
+  for category_avg_attention_seconds.
+- predicted_for_this_creative: null when the creative format doesn't fit
+  the channel (e.g. static image for TV/CTV — those require motion).
+  Otherwise predict a number that is plausible relative to the norm.
+- fit_assessment: 1-2 sentences, specific to THIS creative's strengths
+  and limitations.
+
+CRITICAL — creative_effectiveness.components:
+- All five 0-100. attention reflects the dwell-time prediction quality;
+  emotion_intensity is the strongest emotion peak; brand_clarity tracks
+  message_clarity; audience_resonance from frame averages; platform_fit
+  from the average fit_score across best_platform_fit.
+- Do NOT compute the composite score yourself — backend post-processes
+  using fixed weights (attention 0.25, emotion 0.25, clarity 0.20,
+  resonance 0.15, platform 0.15) for determinism.
 
 CRITICAL FOR best_platform_fit:
 Recommend 3-5 best platform/medium fits for THIS creative across the FULL
@@ -273,12 +397,12 @@ media mix. Do NOT default to social-only ("Instagram, TikTok"). Consider:
   INFLUENCER PARTNERSHIPS: creator content, branded posts
   PRINT: magazines, luxury contexts
   DIRECT MAIL: DTC brands, premium experiences
-For EACH recommendation, tie the rationale to THIS creative's specific
-strengths. Example:
-  "Out-of-home (billboards): the simplicity reads at speed and the bold
-   red anchor works at distance."
-  "Spotify audio: the voiceover-heavy structure adapts to audio-only
-   contexts where listeners can't see visuals."
+For EACH recommendation:
+  - Tie the rationale to THIS creative's specific strengths.
+  - platform_norm_active_attention_seconds: pull from the norms above.
+  - predicted_creative_attention_seconds: realistic prediction.
+  - delta_vs_norm_pct: ((predicted / norm) - 1) * 100, integer.
+  - fit_score: 0-100, how well this creative fits the platform.
 Diversify across paid social + at least 2 non-social channels.`;
 
   const result = await callClaude({
@@ -287,11 +411,64 @@ Diversify across paid social + at least 2 non-social channels.`;
     messages:         [{ role: 'user', content: prompt }],
     missionId:        mission.id,
     userId:           mission.user_id,
-    maxTokens:        2000,
+    maxTokens:        4000,  // Bug 24.01 — output is ~2x larger now
     enablePromptCache: true,
   });
 
-  return sanitizeAIOutputDeep(extractJSON(result.text));
+  const parsed = sanitizeAIOutputDeep(extractJSON(result.text));
+  return computeEffectivenessScore(parsed);
+}
+
+// ── Composite Effectiveness Score (deterministic post-processing) ───────────
+
+const EFFECTIVENESS_WEIGHTS = {
+  attention:         0.25,
+  emotion_intensity: 0.25,
+  brand_clarity:     0.20,
+  audience_resonance: 0.15,
+  platform_fit:      0.15,
+};
+
+/**
+ * Pass 24 Bug 24.01 B3 — recompute composite from the AI-supplied
+ * components using fixed weights. The model can drift on its own
+ * composite (we've seen ±15% variance run-to-run); the components
+ * themselves are the AI's read, but the math is deterministic.
+ *
+ * Mutates `summary.creative_effectiveness` to add `score`, `weights`,
+ * and `band` fields. Falls back gracefully if components are missing
+ * (legacy parse path or model omission).
+ */
+function computeEffectivenessScore(summary) {
+  if (!summary || typeof summary !== 'object') return summary;
+  const eff = summary.creative_effectiveness;
+  if (!eff || typeof eff !== 'object' || !eff.components) return summary;
+
+  const c = eff.components;
+  const clamp = (v) => Math.max(0, Math.min(100, Number(v) || 0));
+  const w = EFFECTIVENESS_WEIGHTS;
+  const composite =
+    clamp(c.attention)         * w.attention +
+    clamp(c.emotion_intensity) * w.emotion_intensity +
+    clamp(c.brand_clarity)     * w.brand_clarity +
+    clamp(c.audience_resonance) * w.audience_resonance +
+    clamp(c.platform_fit)      * w.platform_fit;
+  const score = Math.round(composite);
+
+  let band;
+  if (score >= 85)      band = 'elite';
+  else if (score >= 70) band = 'strong';
+  else if (score >= 50) band = 'average';
+  else if (score >= 30) band = 'weak';
+  else                  band = 'poor';
+
+  summary.creative_effectiveness = {
+    ...eff,
+    score,
+    weights: w,
+    band,
+  };
+  return summary;
 }
 
 // ── Main entry point ────────────────────────────────────────────────────────
@@ -364,14 +541,29 @@ async function analyzeCreative({ mission }) {
   const summary = await synthesizeCreativeInsights({ frameAnalyses, mission });
 
   // 5. Persist to mission
+  // Pass 24 Bug 24.01 — lift v2 fields (attention, channel_benchmarks,
+  // creative_effectiveness) to TOP-LEVEL on the creative_analysis JSONB
+  // so the frontend types map cleanly. The synthesis prompt returns
+  // them inside `summary` for prompt-template clarity; we promote them
+  // here. Old fields stay on `summary` for backwards-compat.
+  const { attention, channel_benchmarks, creative_effectiveness, ...summaryRest } = summary || {};
+
+  const creative_analysis_v2 = {
+    schema_version: 'v2',
+    frame_analyses: frameAnalyses,
+    summary:        summaryRest,
+    total_frames:   frames.length,
+    is_video:       isVideo,
+    generated_at:   new Date().toISOString(),
+    // V2 additions — only included when the AI returned them. Frontend
+    // tolerates absence (Bug 24.01 backwards-compat fallback).
+    ...(attention            ? { attention }            : {}),
+    ...(channel_benchmarks   ? { channel_benchmarks }   : {}),
+    ...(creative_effectiveness ? { creative_effectiveness } : {}),
+  };
+
   const { error: saveErr } = await supabase.from('missions').update({
-    creative_analysis: {
-      frame_analyses: frameAnalyses,
-      summary,
-      total_frames: frames.length,
-      is_video:     isVideo,
-      generated_at: new Date().toISOString(),
-    },
+    creative_analysis: creative_analysis_v2,
     status:       'completed',
     completed_at: new Date().toISOString(),
   }).eq('id', mission.id);
