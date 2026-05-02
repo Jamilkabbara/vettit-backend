@@ -12,7 +12,12 @@ const supabase = require('../db/supabase');
 const logger   = require('../utils/logger');
 
 const { loadMissionForExport } = require('../services/exports/shared');
-const { buildPDF }  = require('../services/exports/pdf');
+// Pass 25 Phase 0: PDF rebuilt on Puppeteer + Handlebars (was pdfkit).
+// See docs/PDF_EXPORT_AUDIT.md. Old pdfkit module retained for one deploy
+// behind PDF_LEGACY=1 in case rollback is needed; deleted next merge.
+const { buildPDF: buildPDFv2 } = require('../services/exports/pdf-v2');
+const { buildPDF: buildPDFLegacy } = require('../services/exports/pdf');
+const buildPDF = process.env.PDF_LEGACY === '1' ? buildPDFLegacy : buildPDFv2;
 const { buildPPTX } = require('../services/exports/pptx');
 const { buildXLSX } = require('../services/exports/xlsx');
 
@@ -144,7 +149,7 @@ router.get('/:missionId/export/pdf', authenticate, async (req, res, next) => {
     if (!pack)        return res.status(404).json({ error: 'Mission not found' });
     if (pack.error)   return res.status(400).json({ error: pack.error });
 
-    buildPDF(pack, res);
+    await buildPDF(pack, res);
     logger.info('PDF exported', { missionId: req.params.missionId, userId: req.user.id });
   } catch (err) { next(err); }
 });
