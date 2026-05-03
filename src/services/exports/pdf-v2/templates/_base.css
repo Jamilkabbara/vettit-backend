@@ -1,0 +1,404 @@
+/* ============================================================================
+ * VETT — PDF Base Stylesheet
+ * Pass 25 Phase 0: replaces pdfkit's manual coordinate positioning with
+ * declarative CSS layout + page-break rules. The architectural fix.
+ *
+ * Font @font-face rules are *injected by the engine* with data: URIs at
+ * runtime — keeps this file portable and lets us swap font weights without
+ * shipping new CSS. The engine prepends the @font-face block before <link>.
+ *
+ * IMPORTANT — every "logical unit" gets page-break-inside: avoid. That is
+ * the rule that eliminates blank-page bleed and split bars / split insights.
+ * ============================================================================ */
+
+/* ─── Brand variables ─────────────────────────────────────────────────────── */
+:root {
+  --bg:        #0B0C15;
+  --bg2:       #111827;
+  --bg3:       #1a2233;
+  --border:    #1f2937;
+  --text1:     #e5e7eb;
+  --text2:     #9ca3af;
+  --text3:     #6b7280;
+  --lime:      #BEF264;
+  --lime-soft: #84cc16;
+  --green:     #4ade80;
+  --red:       #f87171;
+  --orange:    #fb923c;
+  --purple:    #a78bfa;
+  --blue:      #60a5fa;
+}
+
+/* ─── Page reset ──────────────────────────────────────────────────────────── */
+@page {
+  size: A4;
+  margin: 0;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text1);
+  font-family: 'Manrope', system-ui, sans-serif;
+  font-size: 11pt;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── Page wrapper — every section paints its own dark BG ─────────────────── */
+.page {
+  width: 100%;
+  min-height: 297mm;
+  padding: 20mm 16mm 28mm 16mm;
+  background: var(--bg);
+  page-break-after: always;
+  page-break-inside: auto;
+  position: relative;
+}
+.page:last-child {
+  page-break-after: auto;
+}
+
+/* ─── Cover page ──────────────────────────────────────────────────────────── */
+.cover {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 297mm;
+}
+.cover-glow {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 6pt;
+  background: var(--lime);
+}
+.cover-header {
+  margin-top: 24pt;
+}
+.wordmark {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 900;
+  font-size: 56pt;
+  color: var(--lime);
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+.cover-tagline {
+  margin-top: 12pt;
+  font-size: 9pt;
+  color: var(--text2);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.cover-title-block {
+  margin: auto 0;
+}
+.cover-title {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 800;
+  font-size: 32pt;
+  color: #ffffff;
+  line-height: 1.1;
+  margin: 0 0 16pt 0;
+}
+.cover-brief {
+  font-size: 12pt;
+  color: var(--text2);
+  line-height: 1.6;
+  max-width: 140mm;
+}
+
+.cover-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6pt 16pt;
+  font-size: 9pt;
+  color: var(--text3);
+  margin-top: 12pt;
+}
+.cover-meta-key { color: var(--text3); text-transform: uppercase; letter-spacing: 0.12em; }
+.cover-meta-val { color: var(--text2); }
+
+.cover-footer {
+  font-size: 8pt;
+  color: var(--text3);
+  text-align: center;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* ─── Section header (e.g. "01 · EXECUTIVE SUMMARY") ──────────────────────── */
+.section-eyebrow {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 9pt;
+  color: var(--lime);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  margin-bottom: 8pt;
+}
+.section-divider {
+  height: 2pt;
+  background: var(--lime);
+  margin-bottom: 18pt;
+  width: 100%;
+}
+
+/* ─── Headings ────────────────────────────────────────────────────────────── */
+h1, h2, h3, h4 {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 800;
+  color: #ffffff;
+  margin: 0;
+  page-break-after: avoid;  /* never orphan a heading */
+}
+h1 { font-size: 22pt; line-height: 1.2; }
+h2 { font-size: 16pt; line-height: 1.25; }
+h3 { font-size: 13pt; line-height: 1.3; }
+h4 { font-size: 11pt; line-height: 1.35; }
+
+/* ─── Body text ───────────────────────────────────────────────────────────── */
+p, li {
+  font-size: 11pt;
+  line-height: 1.6;
+  color: var(--text1);
+  margin: 0 0 8pt 0;
+}
+.lede {
+  font-size: 12pt;
+  color: var(--text1);
+  line-height: 1.65;
+}
+
+/* ─── KPI cards ───────────────────────────────────────────────────────────── */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10pt;
+  margin: 14pt 0 22pt 0;
+}
+.kpi-card {
+  background: var(--bg2);
+  border-radius: 10pt;
+  padding: 14pt;
+  page-break-inside: avoid;  /* a KPI never splits across pages */
+  border: 0.5pt solid var(--border);
+}
+.kpi-label {
+  font-size: 8pt;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  margin-bottom: 8pt;
+}
+.kpi-value {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 800;
+  font-size: 22pt;
+  color: var(--lime);
+  line-height: 1;
+}
+.kpi-value--neutral { color: var(--text1); }
+.kpi-value--negative { color: var(--red); }
+
+/* ─── Per-question section ────────────────────────────────────────────────── */
+.question {
+  page-break-inside: avoid;  /* keep the whole question together when it fits */
+  page-break-before: auto;
+  margin-bottom: 22pt;
+}
+.question-text {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 14pt;
+  color: #ffffff;
+  margin: 0 0 14pt 0;
+  line-height: 1.35;
+  page-break-after: avoid;
+}
+.question-screener-note {
+  font-size: 9pt;
+  color: var(--text3);
+  font-style: italic;
+  margin-bottom: 10pt;
+}
+.question-rating-summary {
+  font-size: 11pt;
+  color: var(--lime);
+  font-weight: 700;
+  margin-bottom: 12pt;
+}
+
+/* ─── Bar rows ────────────────────────────────────────────────────────────── */
+.bar-row {
+  display: grid;
+  grid-template-columns: 16pt 1fr 60pt;
+  gap: 10pt;
+  align-items: center;
+  margin-bottom: 8pt;
+  page-break-inside: avoid;  /* each bar stays whole — no split bars */
+}
+.bar-row--rating {
+  grid-template-columns: 14pt 18pt 1fr 60pt;
+}
+.bar-row-label {
+  font-size: 10pt;
+  color: var(--text1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bar-row-rating-num {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 10pt;
+  color: var(--text1);
+  text-align: center;
+}
+.bar-track {
+  position: relative;
+  height: 10pt;
+  background: var(--bg3);
+  border-radius: 5pt;
+  overflow: hidden;
+}
+.bar-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: var(--lime);
+  border-radius: 5pt;
+}
+.bar-row-meta {
+  font-size: 10pt;
+  color: var(--text2);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── Star rendering — using emoji + color override ───────────────────────── */
+.bar-row-star {
+  font-size: 12pt;
+  color: var(--lime);
+  line-height: 1;
+  text-align: center;
+}
+.bar-row-star::before {
+  content: "★";
+}
+
+/* ─── Verbatim block ──────────────────────────────────────────────────────── */
+.verbatim-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.verbatim {
+  background: var(--bg2);
+  border-left: 2.5pt solid var(--lime);
+  padding: 10pt 14pt;
+  margin-bottom: 8pt;
+  font-style: italic;
+  color: var(--text2);
+  font-size: 10.5pt;
+  line-height: 1.55;
+  page-break-inside: avoid;  /* a quote stays in one piece */
+  border-radius: 0 4pt 4pt 0;
+}
+
+/* ─── Insight callout (per question) ──────────────────────────────────────── */
+.insight-callout {
+  background: var(--bg2);
+  border-radius: 8pt;
+  padding: 14pt 16pt;
+  margin-top: 14pt;
+  border-left: 3pt solid var(--lime);
+  page-break-inside: avoid;  /* callout never splits */
+  page-break-before: avoid;  /* callout stays with its question */
+}
+.insight-eyebrow {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 8pt;
+  color: var(--lime);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  margin-bottom: 6pt;
+}
+.insight-headline {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 11pt;
+  color: #ffffff;
+  margin-bottom: 4pt;
+  line-height: 1.4;
+}
+.insight-body {
+  font-size: 10pt;
+  color: var(--text2);
+  line-height: 1.55;
+}
+
+/* ─── Recommendations ─────────────────────────────────────────────────────── */
+.rec-list {
+  list-style: none;
+  counter-reset: rec;
+  padding: 0;
+  margin: 0;
+}
+.rec-item {
+  counter-increment: rec;
+  display: grid;
+  grid-template-columns: 32pt 1fr;
+  gap: 10pt;
+  margin-bottom: 14pt;
+  page-break-inside: avoid;
+}
+.rec-item::before {
+  content: counter(rec, decimal-leading-zero) ".";
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 13pt;
+  color: var(--lime);
+  line-height: 1.4;
+}
+.rec-text {
+  font-size: 11pt;
+  color: var(--text1);
+  line-height: 1.55;
+}
+
+/* ─── Follow-ups ──────────────────────────────────────────────────────────── */
+.followup {
+  margin-bottom: 16pt;
+  page-break-inside: avoid;
+}
+.followup-title {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 12pt;
+  color: #ffffff;
+  margin: 0 0 4pt 0;
+}
+.followup-rationale {
+  font-size: 10pt;
+  color: var(--text2);
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* ─── Empty state ─────────────────────────────────────────────────────────── */
+.empty {
+  font-size: 10pt;
+  color: var(--text3);
+  font-style: italic;
+}

@@ -1,0 +1,129 @@
+{{!-- ─── EXECUTIVE SUMMARY ─────────────────────────────────────── --}}
+<section class="page">
+  <div class="section-eyebrow">01 · Executive Summary</div>
+  <div class="section-divider"></div>
+
+  {{#if insights.executive_summary}}
+  <p class="lede">{{insights.executive_summary}}</p>
+  {{else}}
+  <p class="empty">Executive summary unavailable.</p>
+  {{/if}}
+
+  {{#if hasKpis}}
+  <div class="kpi-grid">
+    {{#each kpis}}
+    <div class="kpi-card">
+      <div class="kpi-label">{{this.label}}</div>
+      <div class="kpi-value {{kpiClass this.trend}}">{{this.value}}</div>
+    </div>
+    {{/each}}
+  </div>
+  {{/if}}
+</section>
+
+{{!-- ─── PER-QUESTION RESULTS ──────────────────────────────────── --}}
+{{#each questions}}
+<section class="page">
+  <div class="section-eyebrow">{{questionEyebrow @index}}</div>
+  <div class="section-divider"></div>
+
+  <div class="question">
+    <h2 class="question-text">{{this.text}}</h2>
+
+    {{#if this.aggregation.is_screening}}
+    <div class="question-screener-note">
+      Screening question — all {{this.aggregation.n_total}} respondents shown (including screened-out)
+    </div>
+    {{/if}}
+
+    {{#ifEq this.type "rating"}}
+      <div class="question-rating-summary">
+        Average: {{this.aggregation.average}} / 5  ·  n={{this.aggregation.n}}
+      </div>
+      {{#each this.ratingRows}}
+      <div class="bar-row bar-row--rating">
+        <div class="bar-row-star"></div>
+        <div class="bar-row-rating-num">{{this.rating}}</div>
+        <div class="bar-track"><div class="bar-fill" style="width: {{this.pct}}%"></div></div>
+        <div class="bar-row-meta">{{this.count}} · {{this.pct}}%</div>
+      </div>
+      {{/each}}
+    {{/ifEq}}
+
+    {{#ifEq this.type "text"}}
+      <p style="color: var(--text3); font-size: 10pt; margin-bottom: 10pt;">Sample verbatims:</p>
+      {{#if this.verbatims.length}}
+      <ul class="verbatim-list">
+        {{#each this.verbatims}}
+        <li class="verbatim">"{{this}}"</li>
+        {{/each}}
+      </ul>
+      {{else}}
+      <p class="empty">No verbatims available.</p>
+      {{/if}}
+    {{/ifEq}}
+
+    {{#ifEq this.type "multi"}}
+      <div class="question-screener-note">
+        n={{this.aggregation.n_respondents}} respondents (multi-select — totals may exceed 100%)
+      </div>
+      {{#each this.distRows}}
+      <div class="bar-row">
+        <div></div>
+        <div class="bar-row-label">{{this.label}}</div>
+        <div class="bar-track"><div class="bar-fill" style="width: {{this.pct}}%"></div></div>
+        <div class="bar-row-meta">{{this.count}} · {{this.pct}}%</div>
+      </div>
+      {{/each}}
+    {{/ifEq}}
+
+    {{#ifSingle this.type}}
+      {{#each this.distRows}}
+      <div class="bar-row">
+        <div></div>
+        <div class="bar-row-label">{{this.label}}</div>
+        <div class="bar-track"><div class="bar-fill" style="width: {{this.pct}}%"></div></div>
+        <div class="bar-row-meta">{{this.count}} · {{this.pct}}%</div>
+      </div>
+      {{/each}}
+    {{/ifSingle}}
+
+    {{#if this.insight}}
+    <div class="insight-callout">
+      <div class="insight-eyebrow">Insight</div>
+      <div class="insight-headline">{{this.insight.headline}}</div>
+      {{#if this.insight.body}}
+      <div class="insight-body">{{this.insight.body}}</div>
+      {{/if}}
+    </div>
+    {{/if}}
+  </div>
+</section>
+{{/each}}
+
+{{!-- ─── RECOMMENDATIONS ───────────────────────────────────────── --}}
+{{#if hasRecommendations}}
+<section class="page">
+  <div class="section-eyebrow">· Recommendations</div>
+  <div class="section-divider"></div>
+  <ol class="rec-list">
+    {{#each insights.recommendations}}
+    <li class="rec-item"><div class="rec-text">{{this}}</div></li>
+    {{/each}}
+  </ol>
+</section>
+{{/if}}
+
+{{!-- ─── FOLLOW-UPS ────────────────────────────────────────────── --}}
+{{#if hasFollowUps}}
+<section class="page">
+  <div class="section-eyebrow">· Recommended Follow-Ups</div>
+  <div class="section-divider"></div>
+  {{#each insights.follow_ups}}
+  <div class="followup">
+    <h3 class="followup-title">{{this.title}}</h3>
+    <p class="followup-rationale">{{this.rationale}}</p>
+  </div>
+  {{/each}}
+</section>
+{{/if}}
