@@ -25,14 +25,14 @@ Populated after fixes shipped:
 |---|---|---|---|
 | Bug I — Targeting Brief silently drops countries | YES (5 vs. 22) | 9207c34 | ✅ Fixed |
 | Bug B — Screener insights tautological | YES (Q1 of `a520d873…`) | 219be18 | ✅ Fixed |
-| Bug H read-time — schema drift surfaced | YES (Q4 of `a520d873…`) | TBD | TBD |
+| Bug H read-time — schema drift surfaced | YES (Q4 of `a520d873…`) | dc290e2 | ✅ Fixed |
 | Bug H write-time — PATCH guard | New (no current guard) | TBD | TBD |
 | Minor 1 — Date confusion | YES (PDF cover, XLSX cover) | TBD | TBD |
 | Bug F — CSV multi-select percentages | UNCONFIRMED — see findings | DEFERRED | needs running app |
 | Bug G — CSV count column wrong | UNCONFIRMED — see findings | DEFERRED | needs running app |
-| Bug A — Semantic option overlap | YES (Q4 has overlap) | TBD if mechanical | TBD |
-| Minor 2 — XLSX "Top 10" misleading | YES (always rendered) | TBD if mechanical | TBD |
-| Minor 3 — XLSX header mismatch | YES (always says "& Key Findings") | TBD if mechanical | TBD |
+| Bug A — Semantic option overlap | YES (Q4 has overlap) | dc290e2 | ✅ Fixed (folded into integrity util) |
+| Minor 2 — XLSX "Top 10" misleading | YES (always rendered) | dc290e2 | ✅ Fixed |
+| Minor 3 — XLSX header mismatch | YES (always says "& Key Findings") | dc290e2 | ✅ Fixed |
 | Minor 4 — PPTX KPI hardcoded to 3 | YES | DEFERRED — current data only emits 3 | OK |
 
 ---
