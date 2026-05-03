@@ -24,7 +24,7 @@ Populated after fixes shipped:
 | Bug | Confirmed | Fixed in | Status |
 |---|---|---|---|
 | Bug I — Targeting Brief silently drops countries | YES (5 vs. 22) | 9207c34 | ✅ Fixed |
-| Bug B — Screener insights tautological | YES (Q1 of `a520d873…`) | TBD | TBD |
+| Bug B — Screener insights tautological | YES (Q1 of `a520d873…`) | 219be18 | ✅ Fixed |
 | Bug H read-time — schema drift surfaced | YES (Q4 of `a520d873…`) | TBD | TBD |
 | Bug H write-time — PATCH guard | New (no current guard) | TBD | TBD |
 | Minor 1 — Date confusion | YES (PDF cover, XLSX cover) | TBD | TBD |
