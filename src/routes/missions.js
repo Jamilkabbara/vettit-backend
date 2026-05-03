@@ -291,6 +291,26 @@ router.patch('/:id', authenticate, async (req, res, next) => {
   try {
     const updates = req.body;
 
+    // Pass 25 Phase 0.1 Bug H part 2 — write-time guard. Once responses exist
+    // for a mission, its schema (questions / targeting / respondent_count) is
+    // locked. Edits would silently make the persisted aggregator output drift
+    // from what the simulator actually saw. Reject with 409 and surface a
+    // human-readable next step.
+    const schemaLockingFields = ['questions', 'targeting', 'targetingConfig', 'respondentCount'];
+    const touchesSchema = schemaLockingFields.some(k => updates[k] !== undefined);
+    if (touchesSchema) {
+      const { count: responsesCount } = await supabase
+        .from('mission_responses')
+        .select('persona_id', { count: 'exact', head: true })
+        .eq('mission_id', req.params.id);
+      if ((responsesCount || 0) > 0) {
+        return res.status(409).json({
+          error: 'schema_locked_after_responses',
+          message: 'Cannot edit questions after responses generated; re-run mission to regenerate.',
+        });
+      }
+    }
+
     // If pricing-impacting fields change, recompute cost columns server-side.
     if (updates.respondentCount || updates.questions || updates.targeting || updates.targetingConfig) {
       const { data: existing } = await supabase
