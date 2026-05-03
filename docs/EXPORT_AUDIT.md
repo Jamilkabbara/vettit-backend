@@ -27,9 +27,9 @@ Populated after fixes shipped:
 | Bug B — Screener insights tautological | YES (Q1 of `a520d873…`) | 219be18 | ✅ Fixed |
 | Bug H read-time — schema drift surfaced | YES (Q4 of `a520d873…`) | dc290e2 | ✅ Fixed |
 | Bug H write-time — PATCH guard | New (no current guard) | 72658f1 | ✅ Fixed |
-| Minor 1 — Date confusion | YES (PDF cover, XLSX cover) | TBD | TBD |
-| Bug F — CSV multi-select percentages | UNCONFIRMED — see findings | DEFERRED | needs running app |
-| Bug G — CSV count column wrong | UNCONFIRMED — see findings | DEFERRED | needs running app |
+| Minor 1 — Date confusion | YES (PDF cover, XLSX cover) | de5e413 | ✅ Fixed |
+| Bug F — CSV multi-select percentages | Static analysis on origin/main | f6bd1d3 (frontend) | ✅ Fixed (denominator = n_respondents) |
+| Bug G — CSV count column wrong | YES (single_choice value/count conflated) | f6bd1d3 (frontend) | ✅ Fixed (separate count field) |
 | Bug A — Semantic option overlap | YES (Q4 has overlap) | dc290e2 | ✅ Fixed (folded into integrity util) |
 | Minor 2 — XLSX "Top 10" misleading | YES (always rendered) | dc290e2 | ✅ Fixed |
 | Minor 3 — XLSX header mismatch | YES (always says "& Key Findings") | dc290e2 | ✅ Fixed |
