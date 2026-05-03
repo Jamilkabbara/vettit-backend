@@ -16,6 +16,7 @@ const path = require('path');
 const Handlebars = require('handlebars');
 const logger = require('../../../utils/logger');
 const { renderPdfFromHtml, getFontFaceCss } = require('./engine');
+const { resolveQuestionInsight } = require('../screenerInsights');
 
 /* ─── Template + CSS loading (once per process) ─────────────────────────── */
 
@@ -139,8 +140,16 @@ function buildViewModel(pack) {
     }
 
     // Per-question insight pullquote
+    // Pass 25 Phase 0.1 Bug B — screener questions where 100% qualified get a
+    // sample-composition note instead of the (often tautological) AI insight.
     const piList = insights?.per_question_insights || [];
-    const insight = piList.find(pi => pi.question_id === q.id) || null;
+    const rawInsight = piList.find(pi => pi.question_id === q.id) || null;
+    const resolvedInsight = resolveQuestionInsight(
+      q,
+      agg,
+      rawInsight ? { headline: rawInsight.headline, body: rawInsight.body || '' } : null,
+      pack.sampleMetrics,
+    );
 
     return {
       id:           q.id,
@@ -150,9 +159,9 @@ function buildViewModel(pack) {
       ratingRows,
       distRows,
       verbatims,
-      insight: insight ? {
-        headline: insight.headline,
-        body:     insight.body || '',
+      insight: resolvedInsight ? {
+        headline: resolvedInsight.headline,
+        body:     resolvedInsight.body || '',
       } : null,
     };
   });

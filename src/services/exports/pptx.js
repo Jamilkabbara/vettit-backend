@@ -22,6 +22,7 @@
 
 const PptxGenJS = require('pptxgenjs');
 const { BRAND } = require('./shared');
+const { resolveQuestionInsight } = require('./screenerInsights');
 
 // pptxgenjs uses hex codes without the leading '#'
 const hex = (c) => (c || '').replace('#', '');
@@ -159,7 +160,9 @@ function buildPPTX(pack, res) {
     addSectionHeader(slide, `${String(qi + 3).padStart(2, '0')} · QUESTION ${qi + 1}`, q.text);
 
     const qAgg = aggregatedByQuestion[q.id] || {};
-    const qInsight = (insights.per_question_insights || []).find(pi => pi.question_id === q.id);
+    // Pass 25 Phase 0.1 Bug B — replace screener tautology with sample-composition note
+    const rawInsight = (insights.per_question_insights || []).find(pi => pi.question_id === q.id);
+    const qInsight = resolveQuestionInsight(q, qAgg, rawInsight, pack.sampleMetrics);
 
     if (q.type === 'rating') {
       const dist = qAgg.distribution || {};

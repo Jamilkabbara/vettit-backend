@@ -186,6 +186,20 @@ router.get('/:missionId/export/raw', authenticate, async (req, res, next) => {
     if (!pack)      return res.status(404).json({ error: 'Mission not found' });
     if (pack.error) return res.status(400).json({ error: pack.error });
 
+    // Pass 25 Phase 0.1 Bug B — tag screener per-question insights so JSON
+    // consumers can distinguish them from substantive content insights. Keeps
+    // raw payload intact (no replacement); only adds is_screener_insight: true.
+    const { isScreener } = require('../services/exports/screenerInsights');
+    const taggedInsights = pack.insights ? { ...pack.insights } : {};
+    if (Array.isArray(taggedInsights.per_question_insights)) {
+      const qById = {};
+      for (const q of (pack.mission.questions || [])) qById[q.id] = q;
+      taggedInsights.per_question_insights = taggedInsights.per_question_insights.map(pi => {
+        const q = qById[pi?.question_id];
+        return q && isScreener(q) ? { ...pi, is_screener_insight: true } : pi;
+      });
+    }
+
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition',
       `attachment; filename="vett-raw-${req.params.missionId}.json"`);
@@ -200,7 +214,7 @@ router.get('/:missionId/export/raw', authenticate, async (req, res, next) => {
         questions:        pack.mission.questions,
         completed_at:     pack.mission.completed_at,
       },
-      insights:            pack.insights,
+      insights:            taggedInsights,
       aggregatedByQuestion: pack.aggregatedByQuestion,
       responses:           pack.responses,
       exportedAt:          new Date().toISOString(),
