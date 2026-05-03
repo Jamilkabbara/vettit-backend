@@ -17,6 +17,7 @@ const Handlebars = require('handlebars');
 const logger = require('../../../utils/logger');
 const { renderPdfFromHtml, getFontFaceCss } = require('./engine');
 const { resolveQuestionInsight } = require('../screenerInsights');
+const { buildIntegrityWarnings } = require('../integrity');
 
 /* ─── Template + CSS loading (once per process) ─────────────────────────── */
 
@@ -166,6 +167,9 @@ function buildViewModel(pack) {
     };
   });
 
+  // Pass 25 Phase 0.1 Bug H + A — integrity warnings rendered as appendix page
+  const integrityWarnings = buildIntegrityWarnings(mission, aggregatedByQuestion);
+
   return {
     mission: {
       id:                mission.id,
@@ -179,6 +183,8 @@ function buildViewModel(pack) {
     questions,
     hasRecommendations: Array.isArray(insights?.recommendations) && insights.recommendations.length > 0,
     hasFollowUps:       Array.isArray(insights?.follow_ups)      && insights.follow_ups.length > 0,
+    integrityWarnings,
+    hasIntegrityWarnings: integrityWarnings.length > 0,
     generatedDate:      new Date().toLocaleDateString('en-US', {
                           year: 'numeric', month: 'long', day: 'numeric',
                         }),

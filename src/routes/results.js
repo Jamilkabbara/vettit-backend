@@ -200,6 +200,11 @@ router.get('/:missionId/export/raw', authenticate, async (req, res, next) => {
       });
     }
 
+    // Pass 25 Phase 0.1 Bug H + A — surface schema drift and option overlap as
+    // top-level _integrity_warnings (never blocks the export).
+    const { buildIntegrityWarnings } = require('../services/exports/integrity');
+    const integrityWarnings = buildIntegrityWarnings(pack.mission, pack.aggregatedByQuestion);
+
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition',
       `attachment; filename="vett-raw-${req.params.missionId}.json"`);
@@ -217,6 +222,7 @@ router.get('/:missionId/export/raw', authenticate, async (req, res, next) => {
       insights:            taggedInsights,
       aggregatedByQuestion: pack.aggregatedByQuestion,
       responses:           pack.responses,
+      _integrity_warnings: integrityWarnings,
       exportedAt:          new Date().toISOString(),
     });
   } catch (err) { next(err); }

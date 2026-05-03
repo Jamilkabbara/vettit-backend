@@ -23,6 +23,7 @@
 const PptxGenJS = require('pptxgenjs');
 const { BRAND } = require('./shared');
 const { resolveQuestionInsight } = require('./screenerInsights');
+const { buildIntegrityWarnings } = require('./integrity');
 
 // pptxgenjs uses hex codes without the leading '#'
 const hex = (c) => (c || '').replace('#', '');
@@ -322,6 +323,39 @@ function buildPPTX(pack, res) {
       });
     });
     slide.addText(items, { x: 0.5, y: 1.6, w: 12.3, h: 4.5, fontFace: 'Calibri', valign: 'top' });
+  }
+
+  // ── DATA INTEGRITY NOTES (Pass 25 Phase 0.1 Bug H + A) ─────
+  const integrityWarnings = buildIntegrityWarnings(mission, aggregatedByQuestion);
+  if (integrityWarnings.length > 0) {
+    const slide = pptx.addSlide();
+    addDarkBackground(slide);
+    addSectionHeader(slide, '· DATA INTEGRITY NOTES', 'Items flagged for follow-up');
+    const items = [];
+    items.push({
+      text: 'These items were flagged automatically. They do not block the export; the report above reflects the data as recorded.',
+      options: { fontSize: 11, color: hex(BRAND.text2), italic: true, paraSpaceAfter: 14 },
+    });
+    items.push({ text: '', options: { breakLine: true } });
+    integrityWarnings.forEach((w, i) => {
+      if (i > 0) items.push({ text: '', options: { breakLine: true } });
+      const title = w.type === 'unknown_distribution_key'
+        ? `Schema drift on ${w.question_id}`
+        : `Option overlap on ${w.question_id}`;
+      const body = w.type === 'unknown_distribution_key'
+        ? `Response keys not in options[]: ${w.drifted_keys.map(k => `"${k}"`).join(', ')}.`
+        : `Options overlap (ratio ${w.overlap_ratio}): "${w.option_a}" vs "${w.option_b}".`;
+      items.push({
+        text: title,
+        options: { fontSize: 14, bold: true, color: hex(BRAND.lime), paraSpaceBefore: 6 },
+      });
+      items.push({ text: '', options: { breakLine: true } });
+      items.push({
+        text: body,
+        options: { fontSize: 11, color: hex(BRAND.text2), paraSpaceAfter: 10 },
+      });
+    });
+    slide.addText(items, { x: 0.5, y: 1.6, w: 12.3, h: 5, fontFace: 'Calibri', valign: 'top' });
   }
 
   // ── Stream to response ────────────────────────────────────
