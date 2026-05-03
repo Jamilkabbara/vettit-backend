@@ -24,6 +24,7 @@ const PptxGenJS = require('pptxgenjs');
 const { BRAND } = require('./shared');
 const { resolveQuestionInsight } = require('./screenerInsights');
 const { buildIntegrityWarnings } = require('./integrity');
+const { getReportMetadata } = require('./reportMetadata');
 
 // pptxgenjs uses hex codes without the leading '#'
 const hex = (c) => (c || '').replace('#', '');
@@ -108,13 +109,16 @@ function buildPPTX(pack, res) {
     x: 0.7, y: 4.2, w: 12, h: 1.4,
     fontSize: 14, color: hex(BRAND.text2), fontFace: 'Calibri',
   });
-  const now = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  // Pass 25 Phase 0.1 Minor 1 — distinct mission_completed vs report_generated
+  const reportMeta = getReportMetadata(mission);
   cover.addText(
     [
       { text: 'Respondents: ', options: { color: hex(BRAND.text3) } },
       { text: `${mission.respondent_count || '—'}    `, options: { color: 'FFFFFF', bold: true } },
-      { text: 'Date: ', options: { color: hex(BRAND.text3) } },
-      { text: `${now}    `, options: { color: 'FFFFFF', bold: true } },
+      { text: 'Mission completed: ', options: { color: hex(BRAND.text3) } },
+      { text: `${reportMeta.mission_completed_label}    `, options: { color: 'FFFFFF', bold: true } },
+      { text: 'Report generated: ', options: { color: hex(BRAND.text3) } },
+      { text: `${reportMeta.report_generated_label}    `, options: { color: 'FFFFFF', bold: true } },
       { text: 'Mission: ', options: { color: hex(BRAND.text3) } },
       { text: String(mission.id || '').slice(0, 8), options: { color: 'FFFFFF', bold: true } },
     ],

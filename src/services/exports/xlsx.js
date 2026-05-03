@@ -14,6 +14,7 @@
 const ExcelJS = require('exceljs');
 const { BRAND } = require('./shared');
 const { buildIntegrityWarnings } = require('./integrity');
+const { getReportMetadata } = require('./reportMetadata');
 
 // exceljs uses ARGB with leading alpha FF
 const argb = (c) => 'FF' + (c || '').replace('#', '').toUpperCase();
@@ -74,12 +75,12 @@ function buildXLSX(pack, res) {
   briefCell.font = { name: 'Calibri', size: 11, color: { argb: argb(BRAND.text3) } };
   briefCell.alignment = { vertical: 'top', wrapText: true };
 
-  // Meta strip
-  const now = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  // Meta strip — Pass 25 Phase 0.1 Minor 1 uses shared getReportMetadata util
+  const reportMeta = getReportMetadata(mission);
   const meta = [
     ['Respondents', String(mission.respondent_count || '—')],
-    ['Completed at', mission.completed_at ? new Date(mission.completed_at).toLocaleString() : '—'],
-    ['Report date', now],
+    ['Mission completed', reportMeta.mission_completed_label],
+    ['Report generated', reportMeta.report_generated_label],
     ['Mission ID', String(mission.id || '—')],
     ['Goal', mission.goal_type || '—'],
   ];

@@ -205,6 +205,10 @@ router.get('/:missionId/export/raw', authenticate, async (req, res, next) => {
     const { buildIntegrityWarnings } = require('../services/exports/integrity');
     const integrityWarnings = buildIntegrityWarnings(pack.mission, pack.aggregatedByQuestion);
 
+    // Pass 25 Phase 0.1 Minor 1 — distinct mission_completed vs report_generated
+    const { getReportMetadata } = require('../services/exports/reportMetadata');
+    const reportMeta = getReportMetadata(pack.mission);
+
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition',
       `attachment; filename="vett-raw-${req.params.missionId}.json"`);
@@ -223,6 +227,8 @@ router.get('/:missionId/export/raw', authenticate, async (req, res, next) => {
       aggregatedByQuestion: pack.aggregatedByQuestion,
       responses:           pack.responses,
       _integrity_warnings: integrityWarnings,
+      mission_completed_at: reportMeta.mission_completed_at,
+      report_generated_at:  reportMeta.report_generated_at,
       exportedAt:          new Date().toISOString(),
     });
   } catch (err) { next(err); }

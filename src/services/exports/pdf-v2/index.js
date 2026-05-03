@@ -18,6 +18,7 @@ const logger = require('../../../utils/logger');
 const { renderPdfFromHtml, getFontFaceCss } = require('./engine');
 const { resolveQuestionInsight } = require('../screenerInsights');
 const { buildIntegrityWarnings } = require('../integrity');
+const { getReportMetadata } = require('../reportMetadata');
 
 /* ─── Template + CSS loading (once per process) ─────────────────────────── */
 
@@ -170,6 +171,9 @@ function buildViewModel(pack) {
   // Pass 25 Phase 0.1 Bug H + A — integrity warnings rendered as appendix page
   const integrityWarnings = buildIntegrityWarnings(mission, aggregatedByQuestion);
 
+  // Pass 25 Phase 0.1 Minor 1 — distinct mission_completed vs report_generated
+  const meta = getReportMetadata(mission);
+
   return {
     mission: {
       id:                mission.id,
@@ -185,9 +189,9 @@ function buildViewModel(pack) {
     hasFollowUps:       Array.isArray(insights?.follow_ups)      && insights.follow_ups.length > 0,
     integrityWarnings,
     hasIntegrityWarnings: integrityWarnings.length > 0,
-    generatedDate:      new Date().toLocaleDateString('en-US', {
-                          year: 'numeric', month: 'long', day: 'numeric',
-                        }),
+    missionCompletedLabel: meta.mission_completed_label,
+    reportGeneratedLabel:  meta.report_generated_label,
+    generatedDate:      meta.report_generated_label,
     fontFaceCss:        getFontFaceCss(),
     baseCss:            loadBaseCss(),
   };
