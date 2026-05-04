@@ -46,10 +46,15 @@ function addDarkBackground(slide) {
 }
 
 function addSectionHeader(slide, eyebrow, title) {
+  // Pass 26 Bug K — pptxgenjs renders charSpacing as spc = charSpacing*100 in
+  // 1/100 pt (ECMA-376). Prior values (80/120/200) yielded spc="8000"/"12000"/
+  // "20000" = 80–200 pt of tracking, which broke wrap in LibreOffice and
+  // overflowed text frames in PowerPoint. Target 1–2 pt tracking on uppercase
+  // labels: charSpacing 1 → spc=100 (1 pt), charSpacing 2 → spc=200 (2 pt).
   slide.addText(eyebrow, {
     x: 0.5, y: 0.35, w: 9, h: 0.3,
     fontSize: 10, bold: true, color: hex(BRAND.lime),
-    fontFace: 'Calibri', charSpacing: 80,
+    fontFace: 'Calibri', charSpacing: 2,
   });
   slide.addText(title, {
     x: 0.5, y: 0.65, w: 9, h: 0.6,
@@ -69,7 +74,7 @@ function statCard(slide, x, y, w, h, label, value, trendColor = BRAND.lime) {
   });
   slide.addText(String(label || '').toUpperCase(), {
     x: x + 0.15, y: y + 0.1, w: w - 0.3, h: 0.3,
-    fontSize: 9, color: hex(BRAND.text3), fontFace: 'Calibri', charSpacing: 60,
+    fontSize: 9, color: hex(BRAND.text3), fontFace: 'Calibri', charSpacing: 1,
   });
   slide.addText(String(value || '—'), {
     x: x + 0.15, y: y + 0.4, w: w - 0.3, h: h - 0.5,
@@ -99,7 +104,7 @@ function buildPPTX(pack, res) {
   });
   cover.addText('AI-POWERED MARKET RESEARCH', {
     x: 0.7, y: 1.8, w: 10, h: 0.4,
-    fontSize: 12, color: hex(BRAND.text2), fontFace: 'Calibri', charSpacing: 200,
+    fontSize: 12, color: hex(BRAND.text2), fontFace: 'Calibri', charSpacing: 2,
   });
   cover.addText(mission.title || 'Research Report', {
     x: 0.7, y: 2.8, w: 12, h: 1.2,
@@ -272,7 +277,7 @@ function buildPPTX(pack, res) {
       });
       slide.addText('INSIGHT', {
         x: 8.9, y: 1.65, w: 4, h: 0.3,
-        fontSize: 9, bold: true, color: hex(BRAND.lime), fontFace: 'Calibri', charSpacing: 120,
+        fontSize: 9, bold: true, color: hex(BRAND.lime), fontFace: 'Calibri', charSpacing: 2,
       });
       slide.addText(qInsight.headline, {
         x: 8.9, y: 2.0, w: 4, h: 1.3,
