@@ -127,3 +127,21 @@
   {{/each}}
 </section>
 {{/if}}
+
+{{!-- ─── DATA INTEGRITY NOTES (Bug H + A) ──────────────────────── --}}
+{{#if hasIntegrityWarnings}}
+<section class="page">
+  <div class="section-eyebrow">· Data Integrity Notes</div>
+  <div class="section-divider"></div>
+  <p class="lede" style="margin-bottom: 14pt;">The following items were flagged automatically and may warrant follow-up. They do not block the export; the report above reflects the data as recorded.</p>
+  {{#each integrityWarnings}}
+  <div class="followup">
+    <h3 class="followup-title">{{#ifEq this.type "unknown_distribution_key"}}Schema drift on {{this.question_id}}{{/ifEq}}{{#ifEq this.type "semantic_option_overlap"}}Option overlap on {{this.question_id}}{{/ifEq}}</h3>
+    <p class="followup-rationale">
+      {{#ifEq this.type "unknown_distribution_key"}}Response keys not present in question.options[]: {{#each this.drifted_keys}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}.{{/ifEq}}
+      {{#ifEq this.type "semantic_option_overlap"}}Options overlap (ratio {{this.overlap_ratio}}): "{{this.option_a}}" vs "{{this.option_b}}".{{/ifEq}}
+    </p>
+  </div>
+  {{/each}}
+</section>
+{{/if}}

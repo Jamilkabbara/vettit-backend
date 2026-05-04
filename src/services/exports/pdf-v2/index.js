@@ -16,6 +16,9 @@ const path = require('path');
 const Handlebars = require('handlebars');
 const logger = require('../../../utils/logger');
 const { renderPdfFromHtml, getFontFaceCss } = require('./engine');
+const { resolveQuestionInsight } = require('../screenerInsights');
+const { buildIntegrityWarnings } = require('../integrity');
+const { getReportMetadata } = require('../reportMetadata');
 
 /* ─── Template + CSS loading (once per process) ─────────────────────────── */
 
@@ -139,8 +142,16 @@ function buildViewModel(pack) {
     }
 
     // Per-question insight pullquote
+    // Pass 25 Phase 0.1 Bug B — screener questions where 100% qualified get a
+    // sample-composition note instead of the (often tautological) AI insight.
     const piList = insights?.per_question_insights || [];
-    const insight = piList.find(pi => pi.question_id === q.id) || null;
+    const rawInsight = piList.find(pi => pi.question_id === q.id) || null;
+    const resolvedInsight = resolveQuestionInsight(
+      q,
+      agg,
+      rawInsight ? { headline: rawInsight.headline, body: rawInsight.body || '' } : null,
+      pack.sampleMetrics,
+    );
 
     return {
       id:           q.id,
@@ -150,12 +161,18 @@ function buildViewModel(pack) {
       ratingRows,
       distRows,
       verbatims,
-      insight: insight ? {
-        headline: insight.headline,
-        body:     insight.body || '',
+      insight: resolvedInsight ? {
+        headline: resolvedInsight.headline,
+        body:     resolvedInsight.body || '',
       } : null,
     };
   });
+
+  // Pass 25 Phase 0.1 Bug H + A — integrity warnings rendered as appendix page
+  const integrityWarnings = buildIntegrityWarnings(mission, aggregatedByQuestion);
+
+  // Pass 25 Phase 0.1 Minor 1 — distinct mission_completed vs report_generated
+  const meta = getReportMetadata(mission);
 
   return {
     mission: {
@@ -170,9 +187,11 @@ function buildViewModel(pack) {
     questions,
     hasRecommendations: Array.isArray(insights?.recommendations) && insights.recommendations.length > 0,
     hasFollowUps:       Array.isArray(insights?.follow_ups)      && insights.follow_ups.length > 0,
-    generatedDate:      new Date().toLocaleDateString('en-US', {
-                          year: 'numeric', month: 'long', day: 'numeric',
-                        }),
+    integrityWarnings,
+    hasIntegrityWarnings: integrityWarnings.length > 0,
+    missionCompletedLabel: meta.mission_completed_label,
+    reportGeneratedLabel:  meta.report_generated_label,
+    generatedDate:      meta.report_generated_label,
     fontFaceCss:        getFontFaceCss(),
     baseCss:            loadBaseCss(),
   };

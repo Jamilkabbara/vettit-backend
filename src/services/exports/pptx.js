@@ -22,6 +22,9 @@
 
 const PptxGenJS = require('pptxgenjs');
 const { BRAND } = require('./shared');
+const { resolveQuestionInsight } = require('./screenerInsights');
+const { buildIntegrityWarnings } = require('./integrity');
+const { getReportMetadata } = require('./reportMetadata');
 
 // pptxgenjs uses hex codes without the leading '#'
 const hex = (c) => (c || '').replace('#', '');
@@ -106,13 +109,16 @@ function buildPPTX(pack, res) {
     x: 0.7, y: 4.2, w: 12, h: 1.4,
     fontSize: 14, color: hex(BRAND.text2), fontFace: 'Calibri',
   });
-  const now = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  // Pass 25 Phase 0.1 Minor 1 — distinct mission_completed vs report_generated
+  const reportMeta = getReportMetadata(mission);
   cover.addText(
     [
       { text: 'Respondents: ', options: { color: hex(BRAND.text3) } },
       { text: `${mission.respondent_count || '—'}    `, options: { color: 'FFFFFF', bold: true } },
-      { text: 'Date: ', options: { color: hex(BRAND.text3) } },
-      { text: `${now}    `, options: { color: 'FFFFFF', bold: true } },
+      { text: 'Mission completed: ', options: { color: hex(BRAND.text3) } },
+      { text: `${reportMeta.mission_completed_label}    `, options: { color: 'FFFFFF', bold: true } },
+      { text: 'Report generated: ', options: { color: hex(BRAND.text3) } },
+      { text: `${reportMeta.report_generated_label}    `, options: { color: 'FFFFFF', bold: true } },
       { text: 'Mission: ', options: { color: hex(BRAND.text3) } },
       { text: String(mission.id || '').slice(0, 8), options: { color: 'FFFFFF', bold: true } },
     ],
@@ -159,7 +165,9 @@ function buildPPTX(pack, res) {
     addSectionHeader(slide, `${String(qi + 3).padStart(2, '0')} · QUESTION ${qi + 1}`, q.text);
 
     const qAgg = aggregatedByQuestion[q.id] || {};
-    const qInsight = (insights.per_question_insights || []).find(pi => pi.question_id === q.id);
+    // Pass 25 Phase 0.1 Bug B — replace screener tautology with sample-composition note
+    const rawInsight = (insights.per_question_insights || []).find(pi => pi.question_id === q.id);
+    const qInsight = resolveQuestionInsight(q, qAgg, rawInsight, pack.sampleMetrics);
 
     if (q.type === 'rating') {
       const dist = qAgg.distribution || {};
@@ -319,6 +327,39 @@ function buildPPTX(pack, res) {
       });
     });
     slide.addText(items, { x: 0.5, y: 1.6, w: 12.3, h: 4.5, fontFace: 'Calibri', valign: 'top' });
+  }
+
+  // ── DATA INTEGRITY NOTES (Pass 25 Phase 0.1 Bug H + A) ─────
+  const integrityWarnings = buildIntegrityWarnings(mission, aggregatedByQuestion);
+  if (integrityWarnings.length > 0) {
+    const slide = pptx.addSlide();
+    addDarkBackground(slide);
+    addSectionHeader(slide, '· DATA INTEGRITY NOTES', 'Items flagged for follow-up');
+    const items = [];
+    items.push({
+      text: 'These items were flagged automatically. They do not block the export; the report above reflects the data as recorded.',
+      options: { fontSize: 11, color: hex(BRAND.text2), italic: true, paraSpaceAfter: 14 },
+    });
+    items.push({ text: '', options: { breakLine: true } });
+    integrityWarnings.forEach((w, i) => {
+      if (i > 0) items.push({ text: '', options: { breakLine: true } });
+      const title = w.type === 'unknown_distribution_key'
+        ? `Schema drift on ${w.question_id}`
+        : `Option overlap on ${w.question_id}`;
+      const body = w.type === 'unknown_distribution_key'
+        ? `Response keys not in options[]: ${w.drifted_keys.map(k => `"${k}"`).join(', ')}.`
+        : `Options overlap (ratio ${w.overlap_ratio}): "${w.option_a}" vs "${w.option_b}".`;
+      items.push({
+        text: title,
+        options: { fontSize: 14, bold: true, color: hex(BRAND.lime), paraSpaceBefore: 6 },
+      });
+      items.push({ text: '', options: { breakLine: true } });
+      items.push({
+        text: body,
+        options: { fontSize: 11, color: hex(BRAND.text2), paraSpaceAfter: 10 },
+      });
+    });
+    slide.addText(items, { x: 0.5, y: 1.6, w: 12.3, h: 5, fontFace: 'Calibri', valign: 'top' });
   }
 
   // ── Stream to response ────────────────────────────────────

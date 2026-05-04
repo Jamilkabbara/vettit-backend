@@ -13,6 +13,8 @@
 
 const ExcelJS = require('exceljs');
 const { BRAND } = require('./shared');
+const { buildIntegrityWarnings } = require('./integrity');
+const { getReportMetadata } = require('./reportMetadata');
 
 // exceljs uses ARGB with leading alpha FF
 const argb = (c) => 'FF' + (c || '').replace('#', '').toUpperCase();
@@ -73,12 +75,12 @@ function buildXLSX(pack, res) {
   briefCell.font = { name: 'Calibri', size: 11, color: { argb: argb(BRAND.text3) } };
   briefCell.alignment = { vertical: 'top', wrapText: true };
 
-  // Meta strip
-  const now = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  // Meta strip — Pass 25 Phase 0.1 Minor 1 uses shared getReportMetadata util
+  const reportMeta = getReportMetadata(mission);
   const meta = [
     ['Respondents', String(mission.respondent_count || '—')],
-    ['Completed at', mission.completed_at ? new Date(mission.completed_at).toLocaleString() : '—'],
-    ['Report date', now],
+    ['Mission completed', reportMeta.mission_completed_label],
+    ['Report generated', reportMeta.report_generated_label],
     ['Mission ID', String(mission.id || '—')],
     ['Goal', mission.goal_type || '—'],
   ];
@@ -227,7 +229,10 @@ function buildXLSX(pack, res) {
   // Title row
   insightsSheet.mergeCells('A1:D1');
   const insTitle = insightsSheet.getCell('A1');
-  insTitle.value = 'Executive Summary & Key Findings';
+  // Pass 25 Phase 0.1 Minor 3 — title only mentions Key Findings if we have any
+  insTitle.value = (Array.isArray(insights?.key_findings) && insights.key_findings.length)
+    ? 'Executive Summary & Key Findings'
+    : 'Executive Summary';
   insTitle.font  = { name: 'Calibri', size: 16, bold: true, color: { argb: argb(BRAND.lime) } };
   insTitle.fill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: argb(BRAND.bg) } };
   insTitle.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
@@ -367,8 +372,40 @@ function buildXLSX(pack, res) {
     Object.entries(countryDist).sort((a, b) => b[1] - a[1]));
   dr = addDemoTable(demoSheet, dr, 'Gender Distribution',
     Object.entries(genderDist).sort((a, b) => b[1] - a[1]));
-  addDemoTable(demoSheet, dr, 'Top 10 Occupations',
-    Object.entries(occupDist).sort((a, b) => b[1] - a[1]).slice(0, 10));
+  // Pass 25 Phase 0.1 Minor 2 — drop the "Top 10" framing for small samples
+  // where every value is unique; ranking is meaningless. Keep "Top 10" only
+  // when n >= 10 AND there's actual ranking signal (more rows than slots).
+  const occEntries = Object.entries(occupDist).sort((a, b) => b[1] - a[1]);
+  const totalOccCount = occEntries.reduce((s, [, v]) => s + v, 0);
+  const occLabel = (totalOccCount >= 10 && occEntries.length > 10)
+    ? 'Top 10 Occupations'
+    : `Occupation distribution (n=${totalOccCount})`;
+  addDemoTable(demoSheet, dr, occLabel, occEntries.slice(0, 10));
+
+  // ── SHEET 6: DATA INTEGRITY (Pass 25 Phase 0.1 Bug H + A) ─
+  // Hidden sheet — surfaces schema drift and option overlap warnings without
+  // cluttering the primary tab strip. Users find via "View hidden sheets".
+  const integrityWarnings = buildIntegrityWarnings(mission, aggregatedByQuestion);
+  if (integrityWarnings.length > 0) {
+    const intSheet = wb.addWorksheet('Data integrity', {
+      state: 'hidden',
+      properties: { tabColor: { argb: argb(BRAND.orange || '#fb923c') } },
+    });
+    intSheet.columns = [
+      { header: 'Type', width: 32 },
+      { header: 'Question', width: 16 },
+      { header: 'Detail A', width: 60 },
+      { header: 'Detail B', width: 60 },
+    ];
+    const headerRow = intSheet.getRow(1);
+    headerRow.eachCell((c) => styleHeader(c));
+    integrityWarnings.forEach((w) => {
+      const row = w.type === 'unknown_distribution_key'
+        ? [w.type, w.question_id, `drifted keys: ${w.drifted_keys.join(' | ')}`, `schema options: ${w.schema_options.join(' | ')}`]
+        : [w.type, w.question_id, `option A: ${w.option_a}`, `option B: ${w.option_b} (ratio ${w.overlap_ratio})`];
+      intSheet.addRow(row);
+    });
+  }
 
   // Stream to response
   const fname = `vett-report-${(mission.title || mission.id).toString().slice(0, 40).replace(/[^a-z0-9]+/gi, '-')}.xlsx`;
