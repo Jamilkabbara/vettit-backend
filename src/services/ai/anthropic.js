@@ -35,6 +35,7 @@ const MODEL_ROUTING = {
   targeting_brief:              'claude-sonnet-4-6',
   creative_attention_frame:    'claude-sonnet-4-6',  // vision: per-frame emotion analysis
   creative_attention_synthesis: 'claude-sonnet-4-6', // text: aggregate + recommendations
+  brand_lift_benchmarks:        'claude-sonnet-4-6', // Pass 25 Phase 1F: AI benchmarks for the brand-lift KPI templates
 };
 
 /**

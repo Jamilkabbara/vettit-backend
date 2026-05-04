@@ -178,6 +178,38 @@ router.get('/:missionId/export/xlsx', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ─── GET /api/results/:missionId/brand-lift-benchmarks ────────
+// Pass 25 Phase 1F — AI benchmark service. Cached per (industry, region,
+// channel mix hash, audience segment, kpi template) for 30 days.
+router.get('/:missionId/brand-lift-benchmarks', authenticate, async (req, res, next) => {
+  try {
+    const { data: mission, error } = await supabase
+      .from('missions')
+      .select('id, user_id, goal_type, targeting, campaign_channels, brand_lift_template')
+      .eq('id', req.params.missionId)
+      .eq('user_id', req.user.id)
+      .single();
+    if (error || !mission) return res.status(404).json({ error: 'Mission not found' });
+    if (mission.goal_type !== 'brand_lift') {
+      return res.status(400).json({ error: 'not_a_brand_lift_mission' });
+    }
+    const { getBenchmarks } = require('../services/brandLiftBenchmarks');
+    const channels = Array.isArray(mission.campaign_channels)
+      ? mission.campaign_channels.map(c => (typeof c === 'string' ? c : c?.id)).filter(Boolean)
+      : [];
+    const result = await getBenchmarks({
+      industry: req.query.industry || 'general',
+      region: mission.targeting?.geography || { countries: [], cities: [] },
+      channels,
+      audience: req.query.audience || null,
+      kpi_template: mission.brand_lift_template || 'funnel_overview',
+      missionId: mission.id,
+      userId: req.user.id,
+    });
+    res.json(result);
+  } catch (err) { next(err); }
+});
+
 // ─── GET /api/results/:missionId/export/raw ──────────────────
 // JSON dump of everything — useful for data-science use cases.
 router.get('/:missionId/export/raw', authenticate, async (req, res, next) => {

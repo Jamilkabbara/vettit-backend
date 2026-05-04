@@ -97,12 +97,24 @@ const BRAND_LIFT_TIERS = [
   { id: 'enterprise', name: 'Enterprise', anchorCount: 2000, maxCount: Infinity, ratePerResp: 0.75, packagePrice: 1499, minRespondents: 50 },
 ];
 
-/** Creative Attention — flat per-asset charges, not per-respondent. */
+/**
+ * Pass 25 Phase 0.3 — Creative Attention is now a respondent ladder.
+ * 1-respondent missions yield no statistical signal; floor is 10. Per-
+ * respondent rate is slightly higher than the validate ladder because
+ * CA runs frame-by-frame Claude Vision per respondent (more compute).
+ *   Sniff Test  10  $19   $1.90/resp
+ *   Validate    25  $39   $1.56/resp
+ *   Confidence  50  $69   $1.38/resp
+ *   Deep Dive   100 $129  $1.29/resp
+ *   Deep Dive XL 250 $299 $1.20/resp
+ */
+const CA_MIN_RESPONDENTS = 10;
 const CREATIVE_ATTENTION_TIERS = [
-  { id: 'image',  name: 'Image',  assetCount: 1,  packagePrice: 19,  mediaType: 'image'  },
-  { id: 'video',  name: 'Video',  assetCount: 1,  packagePrice: 39,  mediaType: 'video'  },
-  { id: 'bundle', name: 'Bundle', assetCount: 5,  packagePrice: 79,  mediaType: 'bundle' },
-  { id: 'series', name: 'Series', assetCount: 20, packagePrice: 249, mediaType: 'series' },
+  { id: 'sniff_test',   name: 'Sniff Test',   anchorCount: 10,  maxCount: 10,  ratePerResp: 1.90, packagePrice: 19,  minRespondents: CA_MIN_RESPONDENTS },
+  { id: 'validate',     name: 'Validate',     anchorCount: 25,  maxCount: 25,  ratePerResp: 1.56, packagePrice: 39,  minRespondents: CA_MIN_RESPONDENTS },
+  { id: 'confidence',   name: 'Confidence',   anchorCount: 50,  maxCount: 50,  ratePerResp: 1.38, packagePrice: 69,  minRespondents: CA_MIN_RESPONDENTS },
+  { id: 'deep_dive',    name: 'Deep Dive',    anchorCount: 100, maxCount: 100, ratePerResp: 1.29, packagePrice: 129, minRespondents: CA_MIN_RESPONDENTS },
+  { id: 'deep_dive_xl', name: 'Deep Dive XL', anchorCount: 250, maxCount: Infinity, ratePerResp: 1.20, packagePrice: 299, minRespondents: CA_MIN_RESPONDENTS },
 ];
 
 /**
@@ -128,11 +140,16 @@ function getPricingForGoalType(goalType) {
  * surface the null as a 400 with a friendly message.
  */
 function resolveTier({ goalType, respondentCount, mediaType }) {
+  // Pass 25 Phase 0.3 — CA is now respondent-based like validate/brand_lift.
+  // mediaType still tracked for the analysis pipeline but doesn't pick the
+  // pricing tier any more.
   if (goalType === 'creative_attention') {
-    const desiredId = mediaType || 'image';
-    const tier = CREATIVE_ATTENTION_TIERS.find(t => t.id === desiredId)
-              || CREATIVE_ATTENTION_TIERS.find(t => t.mediaType === desiredId);
-    return tier || CREATIVE_ATTENTION_TIERS[0]; // fallback: image
+    const c = Math.max(0, Number(respondentCount) || 0);
+    if (c < CA_MIN_RESPONDENTS) {
+      return null; // signal: CA requires >= 10
+    }
+    return CREATIVE_ATTENTION_TIERS.find(t => c <= t.maxCount)
+        || CREATIVE_ATTENTION_TIERS[CREATIVE_ATTENTION_TIERS.length - 1];
   }
   const ladder = getPricingForGoalType(goalType);
   const c = Math.max(0, Number(respondentCount) || 0);
@@ -382,6 +399,7 @@ module.exports = {
   VOLUME_TIERS,
   BRAND_LIFT_TIERS,
   CREATIVE_ATTENTION_TIERS,
+  CA_MIN_RESPONDENTS,
   // Default-ladder helper kept for backwards compat
   getVolumeTier,
   // Country-tier (legacy, no longer affects price; retained for analytics)

@@ -78,6 +78,18 @@ router.post('/', authenticate, async (req, res, next) => {
     const respCount   = respondentCount || 50;
     const finalTarget = targeting || targetingConfig || {};
     const finalQs     = questions || [];
+    const resolvedGoal = goalType || goal || 'general_research';
+
+    // Pass 25 Phase 0.3 — CA missions need >= 10 respondents. Reject early
+    // with 400 so the UI can surface the message rather than silently
+    // creating a broken draft.
+    const { CA_MIN_RESPONDENTS } = require('../utils/pricingEngine');
+    if (resolvedGoal === 'creative_attention' && respCount < CA_MIN_RESPONDENTS) {
+      return res.status(400).json({
+        error: 'min_respondents',
+        message: `Creative Attention requires at least ${CA_MIN_RESPONDENTS} respondents.`,
+      });
+    }
 
     const filters = deriveFilters(finalTarget);
     const pricing = calculateMissionPrice(respCount, filters, finalQs.length);
@@ -88,7 +100,7 @@ router.post('/', authenticate, async (req, res, next) => {
     const { patch: insertRow, rejected } = sanitizeMissionPatch({
       user_id:                 req.user.id,
       title:                   title || brief?.slice(0, 60) || missionStatement?.slice(0, 60) || 'Untitled mission',
-      goal_type:               goalType || goal || 'general_research',
+      goal_type:               resolvedGoal,
       brief:                   brief || missionStatement || '',
       questions:               finalQs,
       targeting:               finalTarget,
