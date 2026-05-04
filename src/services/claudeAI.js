@@ -88,8 +88,8 @@ Rules:
 
 ═══ Pass 23 Bug 23.56 — Brand Lift category framework ════════════════════════
 When goal is "brand_lift", generate 8-12 questions covering the
-industry-standard brand-lift framework (Happydemics / Kantar / Nielsen).
-Each question MUST carry a "category" field tagging which frame it covers:
+industry-standard brand-lift framework. Each question MUST carry a
+"category" field tagging which frame it covers:
 
   brand_recall_unaided    "Without seeing any brand list, name brands in
                           [category] you can recall." (text)
@@ -118,7 +118,38 @@ Question schema additions for brand_lift:
   - "isScreening": only the FIRST question (target-segment qualifier);
     the framework questions are non-screening.
 
-For non-brand_lift missions: "category" field MUST be omitted.`;
+═══ Pass 25 Phase 1D — Brand Lift v2 question metadata ══════════════════════
+For brand_lift missions, every question carries additional metadata fields
+that downstream surfaces (results page, exports, benchmarks) read:
+
+  - "funnel_stage": one of {screening, unaided_ad_recall, aided_ad_recall,
+    unaided_brand_awareness, aided_brand_awareness, brand_familiarity,
+    brand_favorability, brand_consideration, purchase_intent, nps,
+    message_association, channel_specific_recall} — REQUIRED on every Q.
+  - "kpi_category": coarser bucket {awareness, ad_recall, consideration,
+    intent, advocacy, perception} — REQUIRED.
+  - "is_lift_question": boolean — TRUE for every framework Q, FALSE for
+    the screener.
+  - "channel_id": optional — set when the question is channel-specific
+    (channel_specific_recall stage). Value matches an id in the
+    campaign_channels list passed to the prompt.
+
+Context consumed from the mission record:
+  - mission.creative_metadata: pass the creative URL to the model so it
+    can ground "message_association" options in the actual creative.
+  - mission.campaign_channels: list of selected channel ids (e.g.
+    ["mbc_1","anghami_audio","snapchat_stories"]) — emit channel-specific
+    recall questions referencing the top 3 by display_order.
+  - mission.competitor_brands: array of competitor names — used in the
+    aided awareness, recall, and consideration multi-select option lists.
+  - mission.brand_lift_template: KPI template id (funnel_overview,
+    brand_awareness_builder, ad_recall_optimizer, brand_perception_shift,
+    consideration_driver, purchase_intent_generator, creative_effectiveness,
+    multi_market_comparison) — adjusts which categories get emphasis. The
+    funnel_overview template is the default.
+
+For non-brand_lift missions: "category", "funnel_stage", "kpi_category",
+"is_lift_question", and "channel_id" MUST all be omitted.`;
 
 const TARGETING_SUGGEST_SYSTEM = `You are a senior market research targeting specialist. Your job is to suggest the optimal audience targeting configuration for a given research mission.
 
