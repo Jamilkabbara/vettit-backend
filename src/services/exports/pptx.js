@@ -215,11 +215,13 @@ function buildPPTX(pack, res) {
       }
       slide.addText(separated, { x: 0.5, y: 1.6, w: 12.3, h: 4.4, fontFace: 'Calibri', valign: 'top' });
     } else if (q.type === 'multi') {
-      // Bug 3: use n_respondents denominator for multi-select percentages
+      // Bug 3: use n_respondents denominator for multi-select percentages.
+      // Pass 26 Bug O: PowerPoint horizontal bar charts place the first data
+      // entry at the BOTTOM of the chart. To render descending top-to-bottom
+      // (highest value first), sort ASCENDING here.
       const dist = qAgg.distribution || {};
       const nRespondents = qAgg.n_respondents || qAgg.n || 1;
-      const entries = Object.entries(dist).sort((a, b) => b[1] - a[1]).slice(0, 8);
-      // Bug 7: no .slice(0, 28) on labels
+      const entries = Object.entries(dist).sort((a, b) => a[1] - b[1]).slice(-8);
       const chartData = [{
         name: 'Responses',
         labels: entries.map(([k]) => String(k)),
@@ -235,11 +237,13 @@ function buildPPTX(pack, res) {
         catAxisLabelColor: hex(BRAND.text2), valAxisLabelColor: hex(BRAND.text2),
         plotArea: { fill: { color: hex(BRAND.bg) } },
         showLegend: false,
+        // Pass 26 Bug L: percentages cap at 100, never let auto-scale show 120
+        valAxisMinVal: 0, valAxisMaxVal: 100,
       });
     } else {
-      // single / opinion — Bug 7: no .slice(0, 28) on labels
+      // single / opinion — same Bug O sort flip as multi
       const dist = qAgg.distribution || {};
-      const entries = Object.entries(dist).sort((a, b) => b[1] - a[1]).slice(0, 8);
+      const entries = Object.entries(dist).sort((a, b) => a[1] - b[1]).slice(-8);
       const total = entries.reduce((s, [, v]) => s + v, 0) || 1;
       const chartData = [{
         name: 'Responses',
@@ -250,6 +254,8 @@ function buildPPTX(pack, res) {
         x: 0.5, y: 1.5, w: 8, h: 4.5,
         chartColors: [hex(BRAND.lime)],
         barDir: 'bar',
+        // Pass 26 Bug L: percentages cap at 100
+        valAxisMinVal: 0, valAxisMaxVal: 100,
         catAxisLabelColor: hex(BRAND.text2), valAxisLabelColor: hex(BRAND.text2),
         plotArea: { fill: { color: hex(BRAND.bg) } },
         showLegend: false,
