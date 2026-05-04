@@ -101,9 +101,16 @@
 </section>
 {{/each}}
 
-{{!-- ─── RECOMMENDATIONS ───────────────────────────────────────── --}}
-{{#if hasRecommendations}}
+{{!-- ─── TRAILING SECTIONS — combined onto one page ────────────────
+     Recommendations, Follow-Ups, and Data Integrity Notes share a single
+     <section class="page"> so they don't each consume a full A4. Each
+     subsection keeps its own eyebrow + divider; if total content exceeds
+     one page, the section flows naturally to a 2nd page (the smaller
+     atoms keep their own page-break-inside: avoid rules).
+--}}
+{{#if hasTrailingContent}}
 <section class="page">
+  {{#if hasRecommendations}}
   <div class="section-eyebrow">· Recommendations</div>
   <div class="section-divider"></div>
   <ol class="rec-list">
@@ -111,13 +118,10 @@
     <li class="rec-item"><div class="rec-text">{{this}}</div></li>
     {{/each}}
   </ol>
-</section>
-{{/if}}
+  {{/if}}
 
-{{!-- ─── FOLLOW-UPS ────────────────────────────────────────────── --}}
-{{#if hasFollowUps}}
-<section class="page">
-  <div class="section-eyebrow">· Recommended Follow-Ups</div>
+  {{#if hasFollowUps}}
+  <div class="section-eyebrow trailing-block">· Recommended Follow-Ups</div>
   <div class="section-divider"></div>
   {{#each insights.follow_ups}}
   <div class="followup">
@@ -125,23 +129,21 @@
     <p class="followup-rationale">{{this.rationale}}</p>
   </div>
   {{/each}}
-</section>
-{{/if}}
+  {{/if}}
 
-{{!-- ─── DATA INTEGRITY NOTES (Bug H + A) ──────────────────────── --}}
-{{#if hasIntegrityWarnings}}
-<section class="page">
-  <div class="section-eyebrow">· Data Integrity Notes</div>
+  {{#if hasIntegrityWarnings}}
+  <div class="section-eyebrow trailing-block">· Data Quality Notes</div>
   <div class="section-divider"></div>
-  <p class="lede" style="margin-bottom: 14pt;">The following items were flagged automatically and may warrant follow-up. They do not block the export; the report above reflects the data as recorded.</p>
+  <p class="lede" style="margin-bottom: 10pt; font-size: 10pt;">A few items in this report may warrant follow-up. The findings above still reflect the data as recorded.</p>
   {{#each integrityWarnings}}
   <div class="followup">
-    <h3 class="followup-title">{{#ifEq this.type "unknown_distribution_key"}}Schema drift on {{this.question_id}}{{/ifEq}}{{#ifEq this.type "semantic_option_overlap"}}Option overlap on {{this.question_id}}{{/ifEq}}</h3>
+    <h3 class="followup-title">{{#ifEq this.type "unknown_distribution_key"}}Question {{this.question_label}}: answer choice not in saved option list{{/ifEq}}{{#ifEq this.type "semantic_option_overlap"}}Question {{this.question_label}}: two answer choices overlap{{/ifEq}}</h3>
     <p class="followup-rationale">
-      {{#ifEq this.type "unknown_distribution_key"}}Response keys not present in question.options[]: {{#each this.drifted_keys}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}.{{/ifEq}}
-      {{#ifEq this.type "semantic_option_overlap"}}Options overlap (ratio {{this.overlap_ratio}}): "{{this.option_a}}" vs "{{this.option_b}}".{{/ifEq}}
+      {{#ifEq this.type "unknown_distribution_key"}}One or more answers were selected by respondents but aren't currently in the question's saved option list ({{#each this.drifted_keys}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}). This usually happens when a question is edited after responses are generated.{{/ifEq}}
+      {{#ifEq this.type "semantic_option_overlap"}}Two answer choices read very similarly ("{{this.option_a}}" vs "{{this.option_b}}"), which can confuse respondents. Consider rewording in your next mission.{{/ifEq}}
     </p>
   </div>
   {{/each}}
+  {{/if}}
 </section>
 {{/if}}

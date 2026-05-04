@@ -145,6 +145,11 @@ html, body {
   text-transform: uppercase;
   margin-bottom: 8pt;
 }
+/* Pass 26 spot-fix — eyebrows for non-first subsections on the trailing
+ * combined page get top spacing so they don't crash into the previous block. */
+.section-eyebrow.trailing-block {
+  margin-top: 22pt;
+}
 .section-divider {
   height: 2pt;
   background: var(--lime);
@@ -211,7 +216,12 @@ p, li {
 
 /* ─── Per-question section ────────────────────────────────────────────────── */
 .question {
-  page-break-inside: avoid;  /* keep the whole question together when it fits */
+  /* Pass 26 Bug C — page-break-inside: avoid here was forcing the whole
+   * question block to a new page when it didn't fit, stranding the
+   * .section-eyebrow and .section-divider on the prior page. The smaller
+   * atoms below (.bar-row, .verbatim, .insight-callout, .kpi-card) keep
+   * their own avoid rules, so a long question now flows across pages
+   * cleanly without orphaning its header. */
   page-break-before: auto;
   margin-bottom: 22pt;
 }
@@ -223,6 +233,14 @@ p, li {
   margin: 0 0 14pt 0;
   line-height: 1.35;
   page-break-after: avoid;
+}
+/* Pass 26 Bug C — eyebrow + divider must never break away from their
+ * question. They sit immediately above .question inside the same .page
+ * section; a stray break here is what stranded "06 · QUESTION 5" alone. */
+.section-eyebrow,
+.section-divider {
+  page-break-after: avoid;
+  page-break-inside: avoid;
 }
 .question-screener-note {
   font-size: 9pt;
@@ -238,13 +256,19 @@ p, li {
 }
 
 /* ─── Bar rows ────────────────────────────────────────────────────────────── */
+/* Pass 26 Bug J — single/multi templates emit 4 children (empty / label /
+ * track / meta) but .bar-row used a 3-column grid, so the meta cell wrapped
+ * to its own row visually clustering with the next bar's label. Grid is
+ * now 4 cols matching the template: [empty 8pt] [label] [track 1fr] [meta].
+ * Label gets a min/max range so long labels wrap rather than ellipsis-ing,
+ * and align-items: center keeps the bar centered on multi-line labels. */
 .bar-row {
   display: grid;
-  grid-template-columns: 16pt 1fr 60pt;
+  grid-template-columns: 8pt minmax(140pt, 240pt) 1fr 60pt;
   gap: 10pt;
   align-items: center;
-  margin-bottom: 8pt;
-  page-break-inside: avoid;  /* each bar stays whole — no split bars */
+  margin-bottom: 14pt;
+  page-break-inside: avoid;
 }
 .bar-row--rating {
   grid-template-columns: 14pt 18pt 1fr 60pt;
@@ -252,9 +276,9 @@ p, li {
 .bar-row-label {
   font-size: 10pt;
   color: var(--text1);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.35;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .bar-row-rating-num {
   font-family: 'Inter', system-ui, sans-serif;
@@ -297,6 +321,11 @@ p, li {
 }
 
 /* ─── Verbatim block ──────────────────────────────────────────────────────── */
+/* Pass 26 spot-fix — Q5 had 5 verbatims overflowing onto a 2nd page. Tightened
+ * padding (10/14 → 7/12), margin (8 → 5), line-height (1.55 → 1.45), and
+ * font-size (10.5 → 10) to fit all 5 within a single page on typical text-Q
+ * verbatim sets. Verbatim still keeps page-break-inside: avoid so a single
+ * quote never splits mid-sentence. */
 .verbatim-list {
   list-style: none;
   padding: 0;
@@ -305,13 +334,13 @@ p, li {
 .verbatim {
   background: var(--bg2);
   border-left: 2.5pt solid var(--lime);
-  padding: 10pt 14pt;
-  margin-bottom: 8pt;
+  padding: 5pt 10pt;
+  margin-bottom: 4pt;
   font-style: italic;
   color: var(--text2);
-  font-size: 10.5pt;
-  line-height: 1.55;
-  page-break-inside: avoid;  /* a quote stays in one piece */
+  font-size: 9.5pt;
+  line-height: 1.4;
+  page-break-inside: avoid;
   border-radius: 0 4pt 4pt 0;
 }
 

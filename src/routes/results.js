@@ -186,17 +186,31 @@ router.get('/:missionId/export/raw', authenticate, async (req, res, next) => {
     if (!pack)      return res.status(404).json({ error: 'Mission not found' });
     if (pack.error) return res.status(400).json({ error: pack.error });
 
-    // Pass 25 Phase 0.1 Bug B — tag screener per-question insights so JSON
-    // consumers can distinguish them from substantive content insights. Keeps
-    // raw payload intact (no replacement); only adds is_screener_insight: true.
-    const { isScreener } = require('../services/exports/screenerInsights');
+    // Pass 25 Phase 0.1 Bug B + Pass 26 dead-content cleanup — tag screener
+    // per-question insights with is_screener_insight: true AND, when the AI
+    // returned tautological prose for a 100%-qualified screener, replace
+    // headline/body with the sample-composition note used by PDF/PPTX. Keeps
+    // every consumer aligned on the same content for screener questions.
+    const { isScreener, getSampleCompositionNote } = require('../services/exports/screenerInsights');
     const taggedInsights = pack.insights ? { ...pack.insights } : {};
     if (Array.isArray(taggedInsights.per_question_insights)) {
       const qById = {};
       for (const q of (pack.mission.questions || [])) qById[q.id] = q;
+      const sm = pack.sampleMetrics || {};
+      const fullyQualified = (Number(sm.completed) || 0) === (Number(sm.total_respondents) || 0)
+        && (Number(sm.total_respondents) || 0) > 0;
       taggedInsights.per_question_insights = taggedInsights.per_question_insights.map(pi => {
         const q = qById[pi?.question_id];
-        return q && isScreener(q) ? { ...pi, is_screener_insight: true } : pi;
+        if (!q || !isScreener(q)) return pi;
+        if (!fullyQualified) return { ...pi, is_screener_insight: true };
+        const note = getSampleCompositionNote(q, pack.aggregatedByQuestion?.[q.id], sm);
+        return {
+          question_id: pi.question_id,
+          headline: note.headline,
+          body: note.body,
+          significance: pi.significance || 'low',
+          is_screener_insight: true,
+        };
       });
     }
 

@@ -130,15 +130,33 @@ function buildViewModel(pack) {
       verbatims = (agg.verbatims || []).slice(0, 5).map(v => String(v));
     } else {
       // single / opinion / fallback
+      // Pass 26 Minor 5 — for screener questions, render every schema option
+      // (including ones at 0 count) so the reader sees the screener's full
+      // option set, not just the qualifying choice. For non-screener single-
+      // choice questions, keep the prior behaviour (only show options that
+      // received at least one response, sorted descending).
       const dist = agg.distribution || {};
       const total = Object.values(dist).reduce((s, v) => s + v, 0) || 1;
-      distRows = Object.entries(dist)
-        .sort((a, b) => b[1] - a[1])
-        .map(([opt, count]) => ({
-          label: String(opt),
-          count,
-          pct: Math.round((count / total) * 100),
-        }));
+      const isScreener = q.isScreening === true || q.type === 'screening';
+      if (isScreener && Array.isArray(q.options) && q.options.length > 0) {
+        const qualifying = q.qualifyingAnswer;
+        distRows = q.options.map(opt => {
+          const c = Number(dist[opt] || 0);
+          return {
+            label: String(opt) + (qualifying === opt ? '  (qualifying)' : ''),
+            count: c,
+            pct: Math.round((c / total) * 100),
+          };
+        });
+      } else {
+        distRows = Object.entries(dist)
+          .sort((a, b) => b[1] - a[1])
+          .map(([opt, count]) => ({
+            label: String(opt),
+            count,
+            pct: Math.round((count / total) * 100),
+          }));
+      }
     }
 
     // Per-question insight pullquote
@@ -189,6 +207,9 @@ function buildViewModel(pack) {
     hasFollowUps:       Array.isArray(insights?.follow_ups)      && insights.follow_ups.length > 0,
     integrityWarnings,
     hasIntegrityWarnings: integrityWarnings.length > 0,
+    hasTrailingContent: (Array.isArray(insights?.recommendations) && insights.recommendations.length > 0)
+                        || (Array.isArray(insights?.follow_ups) && insights.follow_ups.length > 0)
+                        || integrityWarnings.length > 0,
     missionCompletedLabel: meta.mission_completed_label,
     reportGeneratedLabel:  meta.report_generated_label,
     generatedDate:      meta.report_generated_label,

@@ -46,19 +46,92 @@ function addDarkBackground(slide) {
 }
 
 function addSectionHeader(slide, eyebrow, title) {
+  // Pass 26 Bug K — pptxgenjs renders charSpacing as spc = charSpacing*100 in
+  // 1/100 pt (ECMA-376). Prior values (80/120/200) yielded spc="8000"/"12000"/
+  // "20000" = 80–200 pt of tracking, which broke wrap in LibreOffice and
+  // overflowed text frames in PowerPoint. Target 1–2 pt tracking on uppercase
+  // labels: charSpacing 1 → spc=100 (1 pt), charSpacing 2 → spc=200 (2 pt).
   slide.addText(eyebrow, {
     x: 0.5, y: 0.35, w: 9, h: 0.3,
     fontSize: 10, bold: true, color: hex(BRAND.lime),
-    fontFace: 'Calibri', charSpacing: 80,
+    fontFace: 'Calibri', charSpacing: 2,
   });
+  // Pass 26 Bug N — title h was 0.6 (bottom at y=1.25) and divider was also
+  // at y=1.25, leaving zero gap. Long Q-titles crashed into the lime band.
+  // Title height bumped to 0.7 and divider pushed to y=1.40 to give 9pt of
+  // breathing room between the title baseline and the band.
   slide.addText(title, {
-    x: 0.5, y: 0.65, w: 9, h: 0.6,
+    x: 0.5, y: 0.65, w: 9, h: 0.7,
     fontSize: 24, bold: true, color: 'FFFFFF', fontFace: 'Calibri',
   });
-  // Lime divider
   slide.addShape('rect', {
-    x: 0.5, y: 1.25, w: 9, h: 0.03,
+    x: 0.5, y: 1.40, w: 9, h: 0.03,
     fill: { color: hex(BRAND.lime) }, line: { color: hex(BRAND.lime) },
+  });
+}
+
+// Pass 26 chart-rendering fix — replace pptxgenjs's addChart() with manually
+// drawn shapes. Keynote (and several Google Slides versions) silently fail
+// to render the OOXML <c:barChart> emitted by pptxgenjs; the chart frame
+// renders as empty plot area. Drawing rect shapes + text frames is universally
+// supported. Same visual layout as the PDF bar rows.
+//
+// items: array of { label: string, value: number /* 0-100 */, count?: number }
+// opts:  { x, y, w, h, title, subtitle, showCount }
+function drawBars(slide, items, opts) {
+  const { x, y, w, h, title, subtitle, showCount } = opts;
+  let cursorY = y;
+
+  if (title) {
+    slide.addText(title, {
+      x, y: cursorY, w, h: 0.3,
+      fontSize: 12, color: hex(BRAND.text1), fontFace: 'Calibri', bold: true,
+    });
+    cursorY += 0.32;
+  }
+  if (subtitle) {
+    slide.addText(subtitle, {
+      x, y: cursorY, w, h: 0.25,
+      fontSize: 10, color: hex(BRAND.text2), fontFace: 'Calibri',
+    });
+    cursorY += 0.28;
+  }
+
+  const remaining = h - (cursorY - y);
+  const rowGap = 0.08;
+  const rowH = Math.min(0.45, (remaining - rowGap * (items.length - 1)) / items.length);
+  const labelW = Math.min(2.7, w * 0.4);
+  const trackX = x + labelW + 0.15;
+  const metaW = 0.85;
+  const trackW = w - labelW - 0.15 - metaW - 0.1;
+  const barTrackH = Math.min(0.18, rowH * 0.45);
+
+  items.forEach((it, i) => {
+    const rowY = cursorY + i * (rowH + rowGap);
+    const barCenterY = rowY + (rowH - barTrackH) / 2;
+    const pct = Math.max(0, Math.min(100, Number(it.value) || 0));
+    slide.addText(String(it.label || ''), {
+      x, y: rowY, w: labelW, h: rowH,
+      fontSize: 10, color: hex(BRAND.text1), fontFace: 'Calibri', valign: 'middle',
+      shrinkText: true, autoFit: true,
+    });
+    slide.addShape('rect', {
+      x: trackX, y: barCenterY, w: trackW, h: barTrackH,
+      fill: { color: hex(BRAND.bg3) },
+      line: { type: 'none' },
+    });
+    if (pct > 0) {
+      slide.addShape('rect', {
+        x: trackX, y: barCenterY, w: trackW * (pct / 100), h: barTrackH,
+        fill: { color: hex(BRAND.lime) },
+        line: { type: 'none' },
+      });
+    }
+    const meta = showCount && it.count != null ? `${it.count} · ${pct}%` : `${pct}%`;
+    slide.addText(meta, {
+      x: trackX + trackW + 0.05, y: rowY, w: metaW, h: rowH,
+      fontSize: 10, color: hex(BRAND.text2), fontFace: 'Calibri', valign: 'middle', align: 'left',
+    });
   });
 }
 
@@ -69,7 +142,7 @@ function statCard(slide, x, y, w, h, label, value, trendColor = BRAND.lime) {
   });
   slide.addText(String(label || '').toUpperCase(), {
     x: x + 0.15, y: y + 0.1, w: w - 0.3, h: 0.3,
-    fontSize: 9, color: hex(BRAND.text3), fontFace: 'Calibri', charSpacing: 60,
+    fontSize: 9, color: hex(BRAND.text3), fontFace: 'Calibri', charSpacing: 1,
   });
   slide.addText(String(value || '—'), {
     x: x + 0.15, y: y + 0.4, w: w - 0.3, h: h - 0.5,
@@ -99,7 +172,7 @@ function buildPPTX(pack, res) {
   });
   cover.addText('AI-POWERED MARKET RESEARCH', {
     x: 0.7, y: 1.8, w: 10, h: 0.4,
-    fontSize: 12, color: hex(BRAND.text2), fontFace: 'Calibri', charSpacing: 200,
+    fontSize: 12, color: hex(BRAND.text2), fontFace: 'Calibri', charSpacing: 2,
   });
   cover.addText(mission.title || 'Research Report', {
     x: 0.7, y: 2.8, w: 12, h: 1.2,
@@ -129,10 +202,14 @@ function buildPPTX(pack, res) {
   const summary = pptx.addSlide();
   addDarkBackground(summary);
   addSectionHeader(summary, '01 · EXECUTIVE SUMMARY', 'What the research says');
-  // Bug 11 fix: autoFit so long summaries never clip at the frame edge
+  // Pass 26 Bug P — frame h was 4.5 (bottom y=6.1), too short for long
+  // summaries; autoFit shrinkage alone didn't recover. Frame extended to
+  // h=5.3 (bottom y=6.95, well clear of the y=7.15 footer), font dropped
+  // from 16 to 14 to give more text capacity at full size. autoFit kept
+  // so unusually long summaries still shrink rather than overflow.
   summary.addText(insights.executive_summary || 'Executive summary unavailable.', {
-    x: 0.5, y: 1.6, w: 12.3, h: 4.5,
-    fontSize: 16, color: hex(BRAND.text1), fontFace: 'Calibri',
+    x: 0.5, y: 1.65, w: 12.3, h: 5.3,
+    fontSize: 14, color: hex(BRAND.text1), fontFace: 'Calibri',
     paraSpaceAfter: 8, valign: 'top',
     autoFit: true,
   });
@@ -172,20 +249,19 @@ function buildPPTX(pack, res) {
     if (q.type === 'rating') {
       const dist = qAgg.distribution || {};
       const total = Object.values(dist).reduce((s, v) => s + v, 0) || 1;
-      const chartData = [{
-        name: 'Responses',
-        labels: ['1 Star', '2 Stars', '3 Stars', '4 Stars', '5 Stars'],
-        values: [1,2,3,4,5].map(r => Math.round(((dist[r] || 0) / total) * 100)),
-      }];
-      slide.addChart(pptx.ChartType.bar, chartData, {
-        x: 0.5, y: 1.5, w: 8, h: 4.5,
-        chartColors: [hex(BRAND.lime)],
-        barDir: 'bar',
-        showTitle: true, title: `Average: ${qAgg.average || 0} / 5  ·  n=${qAgg.n || 0}`,
-        titleColor: hex(BRAND.text1), titleFontSize: 12,
-        catAxisLabelColor: hex(BRAND.text2), valAxisLabelColor: hex(BRAND.text2),
-        plotArea: { fill: { color: hex(BRAND.bg) } },
-        showLegend: false,
+      // Order: 5★ at top, 1★ at bottom (descending so highest rating reads first)
+      const items = [5,4,3,2,1].map(r => {
+        const c = dist[r] || 0;
+        return {
+          label: `${r} ★`.padEnd(3,'') ,
+          count: c,
+          value: Math.round((c / total) * 100),
+        };
+      });
+      drawBars(slide, items, {
+        x: 0.5, y: 1.65, w: 8, h: 4.5,
+        title: `Average: ${qAgg.average || 0} / 5  ·  n=${qAgg.n || 0}`,
+        showCount: true,
       });
     } else if (q.type === 'text') {
       // Bug 7: no .slice(0, 220) — render full verbatims
@@ -208,46 +284,57 @@ function buildPPTX(pack, res) {
       if (separated.length === 0) {
         separated.push({ text: 'No text responses yet.', options: { color: hex(BRAND.text3), fontSize: 13 } });
       }
-      slide.addText(separated, { x: 0.5, y: 1.6, w: 12.3, h: 4.4, fontFace: 'Calibri', valign: 'top' });
+      // Pass 26 Bug M — verbatims frame previously took full slide width
+      // (w:12.3) and the right edge collided with the INSIGHT panel at x=8.7,
+      // clipping every line mid-word. Width capped at 8.0 (matches the chart
+      // frame) so verbatims wrap cleanly inside their own column.
+      slide.addText(separated, { x: 0.5, y: 1.65, w: 8.0, h: 4.4, fontFace: 'Calibri', valign: 'top' });
     } else if (q.type === 'multi') {
-      // Bug 3: use n_respondents denominator for multi-select percentages
       const dist = qAgg.distribution || {};
       const nRespondents = qAgg.n_respondents || qAgg.n || 1;
+      // Highest count first (top of slide)
       const entries = Object.entries(dist).sort((a, b) => b[1] - a[1]).slice(0, 8);
-      // Bug 7: no .slice(0, 28) on labels
-      const chartData = [{
-        name: 'Responses',
-        labels: entries.map(([k]) => String(k)),
-        values: entries.map(([, v]) => Math.round((v / nRespondents) * 100)),
-      }];
-      slide.addChart(pptx.ChartType.bar, chartData, {
-        x: 0.5, y: 1.5, w: 8, h: 4.5,
-        chartColors: [hex(BRAND.lime)],
-        barDir: 'bar',
-        showTitle: true,
-        title: `n=${nRespondents} respondents (multi-select, totals may exceed 100%)`,
-        titleColor: hex(BRAND.text2), titleFontSize: 10,
-        catAxisLabelColor: hex(BRAND.text2), valAxisLabelColor: hex(BRAND.text2),
-        plotArea: { fill: { color: hex(BRAND.bg) } },
-        showLegend: false,
+      const items = entries.map(([k, v]) => ({
+        label: String(k),
+        count: Number(v) || 0,
+        value: Math.round((Number(v) / nRespondents) * 100),
+      }));
+      drawBars(slide, items, {
+        x: 0.5, y: 1.65, w: 8, h: 4.5,
+        title: `n=${nRespondents} respondents`,
+        subtitle: 'multi-select — totals may exceed 100%',
+        showCount: true,
       });
     } else {
-      // single / opinion — Bug 7: no .slice(0, 28) on labels
+      // single / opinion
       const dist = qAgg.distribution || {};
-      const entries = Object.entries(dist).sort((a, b) => b[1] - a[1]).slice(0, 8);
-      const total = entries.reduce((s, [, v]) => s + v, 0) || 1;
-      const chartData = [{
-        name: 'Responses',
-        labels: entries.map(([k]) => String(k)),
-        values: entries.map(([, v]) => Math.round((v / total) * 100)),
-      }];
-      slide.addChart(pptx.ChartType.bar, chartData, {
-        x: 0.5, y: 1.5, w: 8, h: 4.5,
-        chartColors: [hex(BRAND.lime)],
-        barDir: 'bar',
-        catAxisLabelColor: hex(BRAND.text2), valAxisLabelColor: hex(BRAND.text2),
-        plotArea: { fill: { color: hex(BRAND.bg) } },
-        showLegend: false,
+      const total = Object.values(dist).reduce((s, v) => s + v, 0) || 1;
+      // Pass 26 Minor 5 — render all schema options on screener questions
+      // so the reader sees the full filter design, not just the qualifying
+      // choice. Non-screener single-choice keeps the prior top-N behaviour.
+      const isScreener = q.isScreening === true || q.type === 'screening';
+      let items;
+      if (isScreener && Array.isArray(q.options) && q.options.length > 0) {
+        const qualifying = q.qualifyingAnswer;
+        items = q.options.map(opt => {
+          const c = Number(dist[opt] || 0);
+          return {
+            label: String(opt) + (qualifying === opt ? '  (qualifying)' : ''),
+            count: c,
+            value: Math.round((c / total) * 100),
+          };
+        });
+      } else {
+        const entries = Object.entries(dist).sort((a, b) => b[1] - a[1]).slice(0, 8);
+        items = entries.map(([k, v]) => ({
+          label: String(k),
+          count: Number(v) || 0,
+          value: Math.round((Number(v) / total) * 100),
+        }));
+      }
+      drawBars(slide, items, {
+        x: 0.5, y: 1.65, w: 8, h: 4.5,
+        showCount: true,
       });
     }
 
@@ -263,16 +350,16 @@ function buildPPTX(pack, res) {
     // Insight pullquote on the right
     if (qInsight?.headline) {
       slide.addShape('roundRect', {
-        x: 8.7, y: 1.5, w: 4.3, h: 4.5, rectRadius: 0.08,
+        x: 8.7, y: 1.65, w: 4.3, h: 4.5, rectRadius: 0.08,
         fill: { color: hex(BRAND.bg2) }, line: { color: hex(BRAND.border) },
       });
       slide.addShape('rect', {
-        x: 8.7, y: 1.5, w: 0.06, h: 4.5,
+        x: 8.7, y: 1.65, w: 0.06, h: 4.5,
         fill: { color: hex(BRAND.lime) }, line: { color: hex(BRAND.lime) },
       });
       slide.addText('INSIGHT', {
         x: 8.9, y: 1.65, w: 4, h: 0.3,
-        fontSize: 9, bold: true, color: hex(BRAND.lime), fontFace: 'Calibri', charSpacing: 120,
+        fontSize: 9, bold: true, color: hex(BRAND.lime), fontFace: 'Calibri', charSpacing: 2,
       });
       slide.addText(qInsight.headline, {
         x: 8.9, y: 2.0, w: 4, h: 1.3,
@@ -329,26 +416,27 @@ function buildPPTX(pack, res) {
     slide.addText(items, { x: 0.5, y: 1.6, w: 12.3, h: 4.5, fontFace: 'Calibri', valign: 'top' });
   }
 
-  // ── DATA INTEGRITY NOTES (Pass 25 Phase 0.1 Bug H + A) ─────
+  // ── DATA QUALITY NOTES (Pass 26 Minor 4 — user-friendly copy) ──
   const integrityWarnings = buildIntegrityWarnings(mission, aggregatedByQuestion);
   if (integrityWarnings.length > 0) {
     const slide = pptx.addSlide();
     addDarkBackground(slide);
-    addSectionHeader(slide, '· DATA INTEGRITY NOTES', 'Items flagged for follow-up');
+    addSectionHeader(slide, '· DATA QUALITY NOTES', 'Items worth a follow-up review');
     const items = [];
     items.push({
-      text: 'These items were flagged automatically. They do not block the export; the report above reflects the data as recorded.',
+      text: 'A few items in this report may warrant follow-up. The findings on the slides above still reflect the data as recorded.',
       options: { fontSize: 11, color: hex(BRAND.text2), italic: true, paraSpaceAfter: 14 },
     });
     items.push({ text: '', options: { breakLine: true } });
     integrityWarnings.forEach((w, i) => {
       if (i > 0) items.push({ text: '', options: { breakLine: true } });
+      const qLabel = w.question_label || w.question_id;
       const title = w.type === 'unknown_distribution_key'
-        ? `Schema drift on ${w.question_id}`
-        : `Option overlap on ${w.question_id}`;
+        ? `Question ${qLabel}: answer choice not in saved option list`
+        : `Question ${qLabel}: two answer choices overlap`;
       const body = w.type === 'unknown_distribution_key'
-        ? `Response keys not in options[]: ${w.drifted_keys.map(k => `"${k}"`).join(', ')}.`
-        : `Options overlap (ratio ${w.overlap_ratio}): "${w.option_a}" vs "${w.option_b}".`;
+        ? `One or more answers were selected by respondents but aren't currently in the question's saved option list (${w.drifted_keys.map(k => `"${k}"`).join(', ')}). This usually happens when a question is edited after responses are generated.`
+        : `Two answer choices read very similarly ("${w.option_a}" vs "${w.option_b}"), which can confuse respondents. Consider rewording in your next mission.`;
       items.push({
         text: title,
         options: { fontSize: 14, bold: true, color: hex(BRAND.lime), paraSpaceBefore: 6 },

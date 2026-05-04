@@ -35,6 +35,13 @@ SCREENER DESIGN RULE: If screened_out > 30% of total_respondents, assess whether
 captured the intended segment. Do not praise its effectiveness. State plainly whether the screened-out
 group represents a valuable or irrelevant segment based on the question data.
 
+SCREENER INSIGHT RULE (Pass 26 Bug B): For per_question_insights on a screener question,
+when 100% of respondents qualified (no funnel signal), the data has no information beyond the
+filter itself. Set headline and body to the empty string for that question_id; the export
+renderers replace it with a sample-composition note. Never write "All N respondents are X,
+making the sample directly qualified" or similar tautological prose — that text is dead content
+for any downstream consumer.
+
 KPI RULE: Return EXACTLY 3 KPIs, the three most decision-relevant metrics for this mission.
 No more, no fewer.
 

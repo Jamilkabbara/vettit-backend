@@ -5,7 +5,8 @@
 function detectSchemaDrift(mission, aggregatedByQuestion) {
   const warnings = [];
   const questions = mission?.questions || [];
-  for (const q of questions) {
+  for (let idx = 0; idx < questions.length; idx++) {
+    const q = questions[idx];
     if (!q || !q.id) continue;
     if (q.type !== 'single' && q.type !== 'multi' && q.type !== 'opinion') continue;
     const schemaOpts = Array.isArray(q.options) ? q.options.map(String) : [];
@@ -17,6 +18,7 @@ function detectSchemaDrift(mission, aggregatedByQuestion) {
       warnings.push({
         type: 'unknown_distribution_key',
         question_id: q.id,
+        question_label: `${idx + 1}`,
         question_text: q.text,
         drifted_keys: drifted,
         schema_options: schemaOpts,
@@ -44,7 +46,8 @@ function substringOverlap(a, b) {
 function detectOptionOverlap(mission, threshold = 0.6) {
   const warnings = [];
   const questions = mission?.questions || [];
-  for (const q of questions) {
+  for (let idx = 0; idx < questions.length; idx++) {
+    const q = questions[idx];
     if (!q || !Array.isArray(q.options) || q.options.length < 2) continue;
     const opts = q.options.map(String);
     for (let i = 0; i < opts.length; i++) {
@@ -54,6 +57,7 @@ function detectOptionOverlap(mission, threshold = 0.6) {
           warnings.push({
             type: 'semantic_option_overlap',
             question_id: q.id,
+            question_label: `${idx + 1}`,
             question_text: q.text,
             option_a: opts[i],
             option_b: opts[j],
