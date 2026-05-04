@@ -56,13 +56,16 @@ function addSectionHeader(slide, eyebrow, title) {
     fontSize: 10, bold: true, color: hex(BRAND.lime),
     fontFace: 'Calibri', charSpacing: 2,
   });
+  // Pass 26 Bug N — title h was 0.6 (bottom at y=1.25) and divider was also
+  // at y=1.25, leaving zero gap. Long Q-titles crashed into the lime band.
+  // Title height bumped to 0.7 and divider pushed to y=1.40 to give 9pt of
+  // breathing room between the title baseline and the band.
   slide.addText(title, {
-    x: 0.5, y: 0.65, w: 9, h: 0.6,
+    x: 0.5, y: 0.65, w: 9, h: 0.7,
     fontSize: 24, bold: true, color: 'FFFFFF', fontFace: 'Calibri',
   });
-  // Lime divider
   slide.addShape('rect', {
-    x: 0.5, y: 1.25, w: 9, h: 0.03,
+    x: 0.5, y: 1.40, w: 9, h: 0.03,
     fill: { color: hex(BRAND.lime) }, line: { color: hex(BRAND.lime) },
   });
 }
@@ -183,7 +186,7 @@ function buildPPTX(pack, res) {
         values: [1,2,3,4,5].map(r => Math.round(((dist[r] || 0) / total) * 100)),
       }];
       slide.addChart(pptx.ChartType.bar, chartData, {
-        x: 0.5, y: 1.5, w: 8, h: 4.5,
+        x: 0.5, y: 1.65, w: 8, h: 4.5,
         chartColors: [hex(BRAND.lime)],
         barDir: 'bar',
         showTitle: true, title: `Average: ${qAgg.average || 0} / 5  ·  n=${qAgg.n || 0}`,
@@ -213,7 +216,11 @@ function buildPPTX(pack, res) {
       if (separated.length === 0) {
         separated.push({ text: 'No text responses yet.', options: { color: hex(BRAND.text3), fontSize: 13 } });
       }
-      slide.addText(separated, { x: 0.5, y: 1.6, w: 12.3, h: 4.4, fontFace: 'Calibri', valign: 'top' });
+      // Pass 26 Bug M — verbatims frame previously took full slide width
+      // (w:12.3) and the right edge collided with the INSIGHT panel at x=8.7,
+      // clipping every line mid-word. Width capped at 8.0 (matches the chart
+      // frame) so verbatims wrap cleanly inside their own column.
+      slide.addText(separated, { x: 0.5, y: 1.65, w: 8.0, h: 4.4, fontFace: 'Calibri', valign: 'top' });
     } else if (q.type === 'multi') {
       // Bug 3: use n_respondents denominator for multi-select percentages.
       // Pass 26 Bug O: PowerPoint horizontal bar charts place the first data
@@ -228,7 +235,7 @@ function buildPPTX(pack, res) {
         values: entries.map(([, v]) => Math.round((v / nRespondents) * 100)),
       }];
       slide.addChart(pptx.ChartType.bar, chartData, {
-        x: 0.5, y: 1.5, w: 8, h: 4.5,
+        x: 0.5, y: 1.65, w: 8, h: 4.5,
         chartColors: [hex(BRAND.lime)],
         barDir: 'bar',
         showTitle: true,
@@ -251,7 +258,7 @@ function buildPPTX(pack, res) {
         values: entries.map(([, v]) => Math.round((v / total) * 100)),
       }];
       slide.addChart(pptx.ChartType.bar, chartData, {
-        x: 0.5, y: 1.5, w: 8, h: 4.5,
+        x: 0.5, y: 1.65, w: 8, h: 4.5,
         chartColors: [hex(BRAND.lime)],
         barDir: 'bar',
         // Pass 26 Bug L: percentages cap at 100
@@ -274,11 +281,11 @@ function buildPPTX(pack, res) {
     // Insight pullquote on the right
     if (qInsight?.headline) {
       slide.addShape('roundRect', {
-        x: 8.7, y: 1.5, w: 4.3, h: 4.5, rectRadius: 0.08,
+        x: 8.7, y: 1.65, w: 4.3, h: 4.5, rectRadius: 0.08,
         fill: { color: hex(BRAND.bg2) }, line: { color: hex(BRAND.border) },
       });
       slide.addShape('rect', {
-        x: 8.7, y: 1.5, w: 0.06, h: 4.5,
+        x: 8.7, y: 1.65, w: 0.06, h: 4.5,
         fill: { color: hex(BRAND.lime) }, line: { color: hex(BRAND.lime) },
       });
       slide.addText('INSIGHT', {
