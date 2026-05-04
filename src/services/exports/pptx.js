@@ -70,6 +70,71 @@ function addSectionHeader(slide, eyebrow, title) {
   });
 }
 
+// Pass 26 chart-rendering fix — replace pptxgenjs's addChart() with manually
+// drawn shapes. Keynote (and several Google Slides versions) silently fail
+// to render the OOXML <c:barChart> emitted by pptxgenjs; the chart frame
+// renders as empty plot area. Drawing rect shapes + text frames is universally
+// supported. Same visual layout as the PDF bar rows.
+//
+// items: array of { label: string, value: number /* 0-100 */, count?: number }
+// opts:  { x, y, w, h, title, subtitle, showCount }
+function drawBars(slide, items, opts) {
+  const { x, y, w, h, title, subtitle, showCount } = opts;
+  let cursorY = y;
+
+  if (title) {
+    slide.addText(title, {
+      x, y: cursorY, w, h: 0.3,
+      fontSize: 12, color: hex(BRAND.text1), fontFace: 'Calibri', bold: true,
+    });
+    cursorY += 0.32;
+  }
+  if (subtitle) {
+    slide.addText(subtitle, {
+      x, y: cursorY, w, h: 0.25,
+      fontSize: 10, color: hex(BRAND.text2), fontFace: 'Calibri',
+    });
+    cursorY += 0.28;
+  }
+
+  const remaining = h - (cursorY - y);
+  const rowGap = 0.08;
+  const rowH = Math.min(0.45, (remaining - rowGap * (items.length - 1)) / items.length);
+  const labelW = Math.min(2.7, w * 0.4);
+  const trackX = x + labelW + 0.15;
+  const metaW = 0.85;
+  const trackW = w - labelW - 0.15 - metaW - 0.1;
+  const barTrackH = Math.min(0.18, rowH * 0.45);
+
+  items.forEach((it, i) => {
+    const rowY = cursorY + i * (rowH + rowGap);
+    const barCenterY = rowY + (rowH - barTrackH) / 2;
+    const pct = Math.max(0, Math.min(100, Number(it.value) || 0));
+    slide.addText(String(it.label || ''), {
+      x, y: rowY, w: labelW, h: rowH,
+      fontSize: 10, color: hex(BRAND.text1), fontFace: 'Calibri', valign: 'middle',
+      shrinkText: true, autoFit: true,
+    });
+    slide.addShape('rect', {
+      x: trackX, y: barCenterY, w: trackW, h: barTrackH,
+      fill: { color: hex(BRAND.bg3) },
+      line: { type: 'none' },
+    });
+    if (pct > 0) {
+      slide.addShape('rect', {
+        x: trackX, y: barCenterY, w: trackW * (pct / 100), h: barTrackH,
+        fill: { color: hex(BRAND.lime) },
+        line: { type: 'none' },
+      });
+    }
+    const meta = showCount && it.count != null ? `${it.count} · ${pct}%` : `${pct}%`;
+    slide.addText(meta, {
+      x: trackX + trackW + 0.05, y: rowY, w: metaW, h: rowH,
+      fontSize: 10, color: hex(BRAND.text2), fontFace: 'Calibri', valign: 'middle', align: 'left',
+    });
+  });
+}
+
 function statCard(slide, x, y, w, h, label, value, trendColor = BRAND.lime) {
   slide.addShape('roundRect', {
     x, y, w, h, rectRadius: 0.1,
@@ -184,20 +249,19 @@ function buildPPTX(pack, res) {
     if (q.type === 'rating') {
       const dist = qAgg.distribution || {};
       const total = Object.values(dist).reduce((s, v) => s + v, 0) || 1;
-      const chartData = [{
-        name: 'Responses',
-        labels: ['1 Star', '2 Stars', '3 Stars', '4 Stars', '5 Stars'],
-        values: [1,2,3,4,5].map(r => Math.round(((dist[r] || 0) / total) * 100)),
-      }];
-      slide.addChart(pptx.ChartType.bar, chartData, {
+      // Order: 5★ at top, 1★ at bottom (descending so highest rating reads first)
+      const items = [5,4,3,2,1].map(r => {
+        const c = dist[r] || 0;
+        return {
+          label: `${r} ★`.padEnd(3,'') ,
+          count: c,
+          value: Math.round((c / total) * 100),
+        };
+      });
+      drawBars(slide, items, {
         x: 0.5, y: 1.65, w: 8, h: 4.5,
-        chartColors: [hex(BRAND.lime)],
-        barDir: 'bar',
-        showTitle: true, title: `Average: ${qAgg.average || 0} / 5  ·  n=${qAgg.n || 0}`,
-        titleColor: hex(BRAND.text1), titleFontSize: 12,
-        catAxisLabelColor: hex(BRAND.text2), valAxisLabelColor: hex(BRAND.text2),
-        plotArea: { fill: { color: hex(BRAND.bg) } },
-        showLegend: false,
+        title: `Average: ${qAgg.average || 0} / 5  ·  n=${qAgg.n || 0}`,
+        showCount: true,
       });
     } else if (q.type === 'text') {
       // Bug 7: no .slice(0, 220) — render full verbatims
@@ -226,50 +290,34 @@ function buildPPTX(pack, res) {
       // frame) so verbatims wrap cleanly inside their own column.
       slide.addText(separated, { x: 0.5, y: 1.65, w: 8.0, h: 4.4, fontFace: 'Calibri', valign: 'top' });
     } else if (q.type === 'multi') {
-      // Bug 3: use n_respondents denominator for multi-select percentages.
-      // Pass 26 Bug O: PowerPoint horizontal bar charts place the first data
-      // entry at the BOTTOM of the chart. To render descending top-to-bottom
-      // (highest value first), sort ASCENDING here.
       const dist = qAgg.distribution || {};
       const nRespondents = qAgg.n_respondents || qAgg.n || 1;
-      const entries = Object.entries(dist).sort((a, b) => a[1] - b[1]).slice(-8);
-      const chartData = [{
-        name: 'Responses',
-        labels: entries.map(([k]) => String(k)),
-        values: entries.map(([, v]) => Math.round((v / nRespondents) * 100)),
-      }];
-      slide.addChart(pptx.ChartType.bar, chartData, {
+      // Highest count first (top of slide)
+      const entries = Object.entries(dist).sort((a, b) => b[1] - a[1]).slice(0, 8);
+      const items = entries.map(([k, v]) => ({
+        label: String(k),
+        count: Number(v) || 0,
+        value: Math.round((Number(v) / nRespondents) * 100),
+      }));
+      drawBars(slide, items, {
         x: 0.5, y: 1.65, w: 8, h: 4.5,
-        chartColors: [hex(BRAND.lime)],
-        barDir: 'bar',
-        showTitle: true,
-        title: `n=${nRespondents} respondents (multi-select, totals may exceed 100%)`,
-        titleColor: hex(BRAND.text2), titleFontSize: 10,
-        catAxisLabelColor: hex(BRAND.text2), valAxisLabelColor: hex(BRAND.text2),
-        plotArea: { fill: { color: hex(BRAND.bg) } },
-        showLegend: false,
-        // Pass 26 Bug L: percentages cap at 100, never let auto-scale show 120
-        valAxisMinVal: 0, valAxisMaxVal: 100,
+        title: `n=${nRespondents} respondents`,
+        subtitle: 'multi-select — totals may exceed 100%',
+        showCount: true,
       });
     } else {
-      // single / opinion — same Bug O sort flip as multi
+      // single / opinion
       const dist = qAgg.distribution || {};
-      const entries = Object.entries(dist).sort((a, b) => a[1] - b[1]).slice(-8);
+      const entries = Object.entries(dist).sort((a, b) => b[1] - a[1]).slice(0, 8);
       const total = entries.reduce((s, [, v]) => s + v, 0) || 1;
-      const chartData = [{
-        name: 'Responses',
-        labels: entries.map(([k]) => String(k)),
-        values: entries.map(([, v]) => Math.round((v / total) * 100)),
-      }];
-      slide.addChart(pptx.ChartType.bar, chartData, {
+      const items = entries.map(([k, v]) => ({
+        label: String(k),
+        count: Number(v) || 0,
+        value: Math.round((Number(v) / total) * 100),
+      }));
+      drawBars(slide, items, {
         x: 0.5, y: 1.65, w: 8, h: 4.5,
-        chartColors: [hex(BRAND.lime)],
-        barDir: 'bar',
-        // Pass 26 Bug L: percentages cap at 100
-        valAxisMinVal: 0, valAxisMaxVal: 100,
-        catAxisLabelColor: hex(BRAND.text2), valAxisLabelColor: hex(BRAND.text2),
-        plotArea: { fill: { color: hex(BRAND.bg) } },
-        showLegend: false,
+        showCount: true,
       });
     }
 
