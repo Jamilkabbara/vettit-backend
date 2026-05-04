@@ -308,13 +308,30 @@ function buildPPTX(pack, res) {
     } else {
       // single / opinion
       const dist = qAgg.distribution || {};
-      const entries = Object.entries(dist).sort((a, b) => b[1] - a[1]).slice(0, 8);
-      const total = entries.reduce((s, [, v]) => s + v, 0) || 1;
-      const items = entries.map(([k, v]) => ({
-        label: String(k),
-        count: Number(v) || 0,
-        value: Math.round((Number(v) / total) * 100),
-      }));
+      const total = Object.values(dist).reduce((s, v) => s + v, 0) || 1;
+      // Pass 26 Minor 5 — render all schema options on screener questions
+      // so the reader sees the full filter design, not just the qualifying
+      // choice. Non-screener single-choice keeps the prior top-N behaviour.
+      const isScreener = q.isScreening === true || q.type === 'screening';
+      let items;
+      if (isScreener && Array.isArray(q.options) && q.options.length > 0) {
+        const qualifying = q.qualifyingAnswer;
+        items = q.options.map(opt => {
+          const c = Number(dist[opt] || 0);
+          return {
+            label: String(opt) + (qualifying === opt ? '  (qualifying)' : ''),
+            count: c,
+            value: Math.round((c / total) * 100),
+          };
+        });
+      } else {
+        const entries = Object.entries(dist).sort((a, b) => b[1] - a[1]).slice(0, 8);
+        items = entries.map(([k, v]) => ({
+          label: String(k),
+          count: Number(v) || 0,
+          value: Math.round((Number(v) / total) * 100),
+        }));
+      }
       drawBars(slide, items, {
         x: 0.5, y: 1.65, w: 8, h: 4.5,
         showCount: true,
@@ -399,26 +416,27 @@ function buildPPTX(pack, res) {
     slide.addText(items, { x: 0.5, y: 1.6, w: 12.3, h: 4.5, fontFace: 'Calibri', valign: 'top' });
   }
 
-  // ── DATA INTEGRITY NOTES (Pass 25 Phase 0.1 Bug H + A) ─────
+  // ── DATA QUALITY NOTES (Pass 26 Minor 4 — user-friendly copy) ──
   const integrityWarnings = buildIntegrityWarnings(mission, aggregatedByQuestion);
   if (integrityWarnings.length > 0) {
     const slide = pptx.addSlide();
     addDarkBackground(slide);
-    addSectionHeader(slide, '· DATA INTEGRITY NOTES', 'Items flagged for follow-up');
+    addSectionHeader(slide, '· DATA QUALITY NOTES', 'Items worth a follow-up review');
     const items = [];
     items.push({
-      text: 'These items were flagged automatically. They do not block the export; the report above reflects the data as recorded.',
+      text: 'A few items in this report may warrant follow-up. The findings on the slides above still reflect the data as recorded.',
       options: { fontSize: 11, color: hex(BRAND.text2), italic: true, paraSpaceAfter: 14 },
     });
     items.push({ text: '', options: { breakLine: true } });
     integrityWarnings.forEach((w, i) => {
       if (i > 0) items.push({ text: '', options: { breakLine: true } });
+      const qLabel = w.question_label || w.question_id;
       const title = w.type === 'unknown_distribution_key'
-        ? `Schema drift on ${w.question_id}`
-        : `Option overlap on ${w.question_id}`;
+        ? `Question ${qLabel}: answer choice not in saved option list`
+        : `Question ${qLabel}: two answer choices overlap`;
       const body = w.type === 'unknown_distribution_key'
-        ? `Response keys not in options[]: ${w.drifted_keys.map(k => `"${k}"`).join(', ')}.`
-        : `Options overlap (ratio ${w.overlap_ratio}): "${w.option_a}" vs "${w.option_b}".`;
+        ? `One or more answers were selected by respondents but aren't currently in the question's saved option list (${w.drifted_keys.map(k => `"${k}"`).join(', ')}). This usually happens when a question is edited after responses are generated.`
+        : `Two answer choices read very similarly ("${w.option_a}" vs "${w.option_b}"), which can confuse respondents. Consider rewording in your next mission.`;
       items.push({
         text: title,
         options: { fontSize: 14, bold: true, color: hex(BRAND.lime), paraSpaceBefore: 6 },
