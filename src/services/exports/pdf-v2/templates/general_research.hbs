@@ -101,9 +101,16 @@
 </section>
 {{/each}}
 
-{{!-- ─── RECOMMENDATIONS ───────────────────────────────────────── --}}
-{{#if hasRecommendations}}
+{{!-- ─── TRAILING SECTIONS — combined onto one page ────────────────
+     Recommendations, Follow-Ups, and Data Integrity Notes share a single
+     <section class="page"> so they don't each consume a full A4. Each
+     subsection keeps its own eyebrow + divider; if total content exceeds
+     one page, the section flows naturally to a 2nd page (the smaller
+     atoms keep their own page-break-inside: avoid rules).
+--}}
+{{#if hasTrailingContent}}
 <section class="page">
+  {{#if hasRecommendations}}
   <div class="section-eyebrow">· Recommendations</div>
   <div class="section-divider"></div>
   <ol class="rec-list">
@@ -111,13 +118,10 @@
     <li class="rec-item"><div class="rec-text">{{this}}</div></li>
     {{/each}}
   </ol>
-</section>
-{{/if}}
+  {{/if}}
 
-{{!-- ─── FOLLOW-UPS ────────────────────────────────────────────── --}}
-{{#if hasFollowUps}}
-<section class="page">
-  <div class="section-eyebrow">· Recommended Follow-Ups</div>
+  {{#if hasFollowUps}}
+  <div class="section-eyebrow trailing-block">· Recommended Follow-Ups</div>
   <div class="section-divider"></div>
   {{#each insights.follow_ups}}
   <div class="followup">
@@ -125,15 +129,12 @@
     <p class="followup-rationale">{{this.rationale}}</p>
   </div>
   {{/each}}
-</section>
-{{/if}}
+  {{/if}}
 
-{{!-- ─── DATA INTEGRITY NOTES (Bug H + A) ──────────────────────── --}}
-{{#if hasIntegrityWarnings}}
-<section class="page">
-  <div class="section-eyebrow">· Data Integrity Notes</div>
+  {{#if hasIntegrityWarnings}}
+  <div class="section-eyebrow trailing-block">· Data Integrity Notes</div>
   <div class="section-divider"></div>
-  <p class="lede" style="margin-bottom: 14pt;">The following items were flagged automatically and may warrant follow-up. They do not block the export; the report above reflects the data as recorded.</p>
+  <p class="lede" style="margin-bottom: 10pt; font-size: 10pt;">Items flagged automatically. Do not block the export; the report above reflects the data as recorded.</p>
   {{#each integrityWarnings}}
   <div class="followup">
     <h3 class="followup-title">{{#ifEq this.type "unknown_distribution_key"}}Schema drift on {{this.question_id}}{{/ifEq}}{{#ifEq this.type "semantic_option_overlap"}}Option overlap on {{this.question_id}}{{/ifEq}}</h3>
@@ -143,5 +144,6 @@
     </p>
   </div>
   {{/each}}
+  {{/if}}
 </section>
 {{/if}}

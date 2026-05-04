@@ -145,6 +145,11 @@ html, body {
   text-transform: uppercase;
   margin-bottom: 8pt;
 }
+/* Pass 26 spot-fix — eyebrows for non-first subsections on the trailing
+ * combined page get top spacing so they don't crash into the previous block. */
+.section-eyebrow.trailing-block {
+  margin-top: 22pt;
+}
 .section-divider {
   height: 2pt;
   background: var(--lime);
@@ -316,6 +321,11 @@ p, li {
 }
 
 /* ─── Verbatim block ──────────────────────────────────────────────────────── */
+/* Pass 26 spot-fix — Q5 had 5 verbatims overflowing onto a 2nd page. Tightened
+ * padding (10/14 → 7/12), margin (8 → 5), line-height (1.55 → 1.45), and
+ * font-size (10.5 → 10) to fit all 5 within a single page on typical text-Q
+ * verbatim sets. Verbatim still keeps page-break-inside: avoid so a single
+ * quote never splits mid-sentence. */
 .verbatim-list {
   list-style: none;
   padding: 0;
@@ -324,13 +334,13 @@ p, li {
 .verbatim {
   background: var(--bg2);
   border-left: 2.5pt solid var(--lime);
-  padding: 10pt 14pt;
-  margin-bottom: 8pt;
+  padding: 5pt 10pt;
+  margin-bottom: 4pt;
   font-style: italic;
   color: var(--text2);
-  font-size: 10.5pt;
-  line-height: 1.55;
-  page-break-inside: avoid;  /* a quote stays in one piece */
+  font-size: 9.5pt;
+  line-height: 1.4;
+  page-break-inside: avoid;
   border-radius: 0 4pt 4pt 0;
 }
 

@@ -189,6 +189,9 @@ function buildViewModel(pack) {
     hasFollowUps:       Array.isArray(insights?.follow_ups)      && insights.follow_ups.length > 0,
     integrityWarnings,
     hasIntegrityWarnings: integrityWarnings.length > 0,
+    hasTrailingContent: (Array.isArray(insights?.recommendations) && insights.recommendations.length > 0)
+                        || (Array.isArray(insights?.follow_ups) && insights.follow_ups.length > 0)
+                        || integrityWarnings.length > 0,
     missionCompletedLabel: meta.mission_completed_label,
     reportGeneratedLabel:  meta.report_generated_label,
     generatedDate:      meta.report_generated_label,
