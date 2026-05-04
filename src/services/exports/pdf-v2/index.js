@@ -213,6 +213,10 @@ function buildViewModel(pack) {
     missionCompletedLabel: meta.mission_completed_label,
     reportGeneratedLabel:  meta.report_generated_label,
     generatedDate:      meta.report_generated_label,
+    // Pass 25 Phase 1G — surface the pre-aggregated brand-lift payload
+    // (score / funnel / channels / geography / competitors / waves /
+    // recommendations) so the brand_lift_study.hbs body can render it.
+    blr: mission?.brand_lift_results || null,
     fontFaceCss:        getFontFaceCss(),
     baseCss:            loadBaseCss(),
   };
@@ -220,7 +224,12 @@ function buildViewModel(pack) {
 
 /* ─── Mission-type → body-template selection ────────────────────────────── */
 
-function bodyTemplateForMission(_mission) {
+function bodyTemplateForMission(mission) {
+  // Pass 25 Phase 1G — brand_lift missions use a brand-lift-specific
+  // body partial that includes the score dial, funnel, channel
+  // performance, geo, competitor comparison, wave comparison, and AI
+  // recs sections.
+  if (mission?.goal_type === 'brand_lift') return 'brand_lift_study';
   // Phase 0: every general-research mission uses general_research.hbs.
   // Phase 0.5 will route Creative Attention missions to creative_attention.hbs.
   return 'general_research';

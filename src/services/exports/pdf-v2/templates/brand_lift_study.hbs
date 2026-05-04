@@ -1,0 +1,132 @@
+{{!-- Pass 25 Phase 1G — Brand Lift Study PDF body partial.
+     Extends _base.hbs (which renders the cover + framework). All CSS
+     rules from _base.css apply, including page-break-inside: avoid on
+     every logical unit. --}}
+
+{{!-- ─── EXECUTIVE SUMMARY + SCORE ──────────────────────────── --}}
+<section class="page">
+  <div class="section-eyebrow">01 · Executive Summary</div>
+  <div class="section-divider"></div>
+  {{#if blr.score}}
+  <div class="kpi-grid" style="grid-template-columns: 1fr 2fr;">
+    <div class="kpi-card">
+      <div class="kpi-label">Brand Lift Score</div>
+      <div class="kpi-value">{{blr.score}} / 100</div>
+      {{#if blr.band_label}}<div class="lede" style="margin-top:6pt;">{{blr.band_label}}</div>{{/if}}
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Band explanation</div>
+      <p class="lede">{{blr.band_explanation}}</p>
+    </div>
+  </div>
+  {{/if}}
+  {{#if insights.executive_summary}}
+  <p class="lede">{{insights.executive_summary}}</p>
+  {{/if}}
+</section>
+
+{{!-- ─── FUNNEL PERFORMANCE ─────────────────────────────────── --}}
+{{#if blr.funnel}}
+<section class="page">
+  <div class="section-eyebrow">02 · Funnel Performance</div>
+  <div class="section-divider"></div>
+  {{#each blr.funnel}}
+  <div class="bar-row">
+    <div></div>
+    <div class="bar-row-label">{{this.label}}</div>
+    <div class="bar-track"><div class="bar-fill" style="width: {{this.value}}%"></div></div>
+    <div class="bar-row-meta">{{this.value}}%</div>
+  </div>
+  {{/each}}
+</section>
+{{/if}}
+
+{{!-- ─── CHANNEL PERFORMANCE ────────────────────────────────── --}}
+{{#if blr.channels}}
+<section class="page">
+  <div class="section-eyebrow">03 · Channel Performance</div>
+  <div class="section-divider"></div>
+  {{#each blr.channels}}
+  <div class="followup">
+    <h3 class="followup-title">{{this.display_name}} — +{{this.brand_lift}}% lift</h3>
+    {{#if this.insight}}<p class="followup-rationale">{{this.insight}}</p>{{/if}}
+  </div>
+  {{/each}}
+</section>
+{{/if}}
+
+{{!-- ─── GEOGRAPHIC BREAKDOWN ───────────────────────────────── --}}
+{{#if blr.geography}}
+<section class="page">
+  <div class="section-eyebrow">04 · Geographic Breakdown</div>
+  <div class="section-divider"></div>
+  {{#each blr.geography}}
+  <div class="bar-row">
+    <div></div>
+    <div class="bar-row-label">{{this.region}} (n={{this.n}})</div>
+    <div class="bar-track"><div class="bar-fill" style="width: {{this.brand_lift}}%"></div></div>
+    <div class="bar-row-meta">+{{this.brand_lift}}%</div>
+  </div>
+  {{/each}}
+</section>
+{{/if}}
+
+{{!-- ─── COMPETITOR COMPARISON ──────────────────────────────── --}}
+{{#if blr.competitors}}
+<section class="page">
+  <div class="section-eyebrow">05 · Competitor Comparison</div>
+  <div class="section-divider"></div>
+  <table style="width:100%; border-collapse:collapse; font-size:10pt;">
+    <thead>
+      <tr style="border-bottom: 1pt solid var(--border);">
+        <th style="text-align:left; padding:6pt 0;">Brand</th>
+        <th style="text-align:right; padding:6pt 0;">Aided awareness</th>
+        <th style="text-align:right; padding:6pt 0;">Consideration</th>
+        <th style="text-align:right; padding:6pt 0;">Purchase intent</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{#each blr.competitors}}
+      <tr>
+        <td style="padding:5pt 0; color: {{#if this.isFocal}}var(--lime){{else}}var(--text2){{/if}};">{{this.brand}}</td>
+        <td style="padding:5pt 0; text-align:right; font-variant-numeric: tabular-nums;">{{this.awareness}}%</td>
+        <td style="padding:5pt 0; text-align:right; font-variant-numeric: tabular-nums;">{{this.consideration}}%</td>
+        <td style="padding:5pt 0; text-align:right; font-variant-numeric: tabular-nums;">{{this.intent}}%</td>
+      </tr>
+      {{/each}}
+    </tbody>
+  </table>
+</section>
+{{/if}}
+
+{{!-- ─── WAVE COMPARISON ────────────────────────────────────── --}}
+{{#if blr.waves}}
+<section class="page">
+  <div class="section-eyebrow">06 · Wave Comparison</div>
+  <div class="section-divider"></div>
+  {{#if blr.wave_synthesis}}<p class="lede">{{blr.wave_synthesis}}</p>{{/if}}
+</section>
+{{/if}}
+
+{{!-- ─── AI RECOMMENDATIONS ─────────────────────────────────── --}}
+{{#if blr.recommendations}}
+<section class="page">
+  <div class="section-eyebrow">07 · AI Recommendations</div>
+  <div class="section-divider"></div>
+  <ol class="rec-list">
+    {{#each blr.recommendations}}
+    <li class="rec-item">
+      <div class="rec-text"><strong>{{this.title}}</strong> — {{this.body}} <em style="color: var(--text3);">(confidence: {{this.confidence}})</em></div>
+    </li>
+    {{/each}}
+  </ol>
+</section>
+{{/if}}
+
+{{!-- ─── METHODOLOGY + DISCLAIMER ───────────────────────────── --}}
+<section class="page">
+  <div class="section-eyebrow">· Methodology + Disclaimers</div>
+  <div class="section-divider"></div>
+  <p class="lede">VETT Brand Lift Studies use synthetic respondents drawn from a targeting profile to simulate the awareness, recall, consideration, and intent measurement an offline panel would produce. Sample sizes mirror the General Research ladder.</p>
+  <p class="lede" style="margin-top:14pt;">Benchmarks are AI-estimated based on category norms. They are directional, not validated panel data. Use for orientation, not absolute claims.</p>
+</section>
