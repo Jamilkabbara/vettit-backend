@@ -137,10 +137,14 @@ function buildPPTX(pack, res) {
   const summary = pptx.addSlide();
   addDarkBackground(summary);
   addSectionHeader(summary, '01 · EXECUTIVE SUMMARY', 'What the research says');
-  // Bug 11 fix: autoFit so long summaries never clip at the frame edge
+  // Pass 26 Bug P — frame h was 4.5 (bottom y=6.1), too short for long
+  // summaries; autoFit shrinkage alone didn't recover. Frame extended to
+  // h=5.3 (bottom y=6.95, well clear of the y=7.15 footer), font dropped
+  // from 16 to 14 to give more text capacity at full size. autoFit kept
+  // so unusually long summaries still shrink rather than overflow.
   summary.addText(insights.executive_summary || 'Executive summary unavailable.', {
-    x: 0.5, y: 1.6, w: 12.3, h: 4.5,
-    fontSize: 16, color: hex(BRAND.text1), fontFace: 'Calibri',
+    x: 0.5, y: 1.65, w: 12.3, h: 5.3,
+    fontSize: 14, color: hex(BRAND.text1), fontFace: 'Calibri',
     paraSpaceAfter: 8, valign: 'top',
     autoFit: true,
   });
