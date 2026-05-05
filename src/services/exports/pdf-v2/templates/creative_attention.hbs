@@ -1,0 +1,160 @@
+{{!-- Pass 27 H — Creative Attention PDF body partial. Extends _base.hbs.
+     CA missions had Export buttons that fell through to general_research
+     which renders nothing meaningful for creative_analysis-shaped data.
+     This template targets 6-9 pages of CA-specific output.
+
+     Source data: mission.creative_analysis (alias `ca` in the view model).
+     Schema:
+       summary { overall_engagement_score, attention_arc, strengths[],
+                 weaknesses[], recommendations[] }
+       attention { active_seconds, passive_seconds, dba_score, decay_curve }
+       frame_analyses[] { timestamp, engagement_score, audience_resonance,
+                         message_clarity, emotions{}, narrative, verbatim? }
+       channel_benchmarks[] { channel, format, norm_seconds, predicted_seconds,
+                             delta_pct, assessment, format_match }
+       creative_effectiveness { strengths[], weaknesses[], recommendations[] }
+       is_video, total_frames, schema_version
+--}}
+
+{{!-- ─── EXECUTIVE SUMMARY + ENGAGEMENT SCORE ──────────────────── --}}
+<section class="page">
+  <div class="section-eyebrow">01 · Executive Summary</div>
+  <div class="section-divider"></div>
+
+  {{#if ca.summary.overall_engagement_score}}
+  <div class="kpi-grid" style="grid-template-columns: 1fr 2fr;">
+    <div class="kpi-card">
+      <div class="kpi-label">Engagement Score</div>
+      <div class="kpi-value">{{ca.summary.overall_engagement_score}} / 100</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Attention arc</div>
+      <p class="lede">{{ca.summary.attention_arc}}</p>
+    </div>
+  </div>
+  {{/if}}
+</section>
+
+{{!-- ─── ATTENTION METRICS ─────────────────────────────────────── --}}
+{{#if ca.attention}}
+<section class="page">
+  <div class="section-eyebrow">02 · Attention Metrics</div>
+  <div class="section-divider"></div>
+  <div class="kpi-grid" style="grid-template-columns: 1fr 1fr 1fr;">
+    {{#if ca.attention.active_seconds}}
+    <div class="kpi-card"><div class="kpi-label">Active attention</div><div class="kpi-value">{{ca.attention.active_seconds}}s</div></div>
+    {{/if}}
+    {{#if ca.attention.passive_seconds}}
+    <div class="kpi-card"><div class="kpi-label">Passive attention</div><div class="kpi-value">{{ca.attention.passive_seconds}}s</div></div>
+    {{/if}}
+    {{#if ca.attention.dba_score}}
+    <div class="kpi-card"><div class="kpi-label">DBA score</div><div class="kpi-value">{{ca.attention.dba_score}}</div></div>
+    {{/if}}
+  </div>
+</section>
+{{/if}}
+
+{{!-- ─── 24-EMOTION ANALYSIS ───────────────────────────────────── --}}
+{{#if ca.frame_analyses}}
+<section class="page">
+  <div class="section-eyebrow">03 · Emotion Analysis</div>
+  <div class="section-divider"></div>
+  <p class="lede" style="margin-bottom: 12pt; font-size: 10pt;">
+    24-emotion framework: 8 basic emotions plus 16 nuanced research-derived. Aggregate scores below.
+  </p>
+  {{#each ca.frame_analyses.[0].emotions}}
+  <div class="bar-row">
+    <div></div>
+    <div class="bar-row-label">{{@key}}</div>
+    <div class="bar-track"><div class="bar-fill" style="width: {{this}}%"></div></div>
+    <div class="bar-row-meta">{{this}}/100</div>
+  </div>
+  {{/each}}
+</section>
+{{/if}}
+
+{{!-- ─── CROSS-CHANNEL BENCHMARKS ──────────────────────────────── --}}
+{{#if ca.channel_benchmarks}}
+<section class="page">
+  <div class="section-eyebrow">04 · Cross-Channel Benchmarks</div>
+  <div class="section-divider"></div>
+  <table style="width:100%; border-collapse:collapse; font-size:10pt;">
+    <thead>
+      <tr style="border-bottom: 1pt solid var(--border);">
+        <th style="text-align:left; padding:6pt 0;">Channel</th>
+        <th style="text-align:right; padding:6pt 0;">Norm (s)</th>
+        <th style="text-align:right; padding:6pt 0;">Predicted (s)</th>
+        <th style="text-align:right; padding:6pt 0;">Δ %</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{#each ca.channel_benchmarks}}
+      <tr>
+        <td style="padding:5pt 0; color: var(--text1);">{{this.channel}} {{#if this.format}}<span style="color: var(--text3);">· {{this.format}}</span>{{/if}}</td>
+        <td style="padding:5pt 0; text-align:right;">{{this.norm_seconds}}</td>
+        <td style="padding:5pt 0; text-align:right;">{{this.predicted_seconds}}</td>
+        <td style="padding:5pt 0; text-align:right; color: var(--lime);">{{this.delta_pct}}%</td>
+      </tr>
+      {{/each}}
+    </tbody>
+  </table>
+</section>
+{{/if}}
+
+{{!-- ─── FRAME-BY-FRAME BREAKDOWN ──────────────────────────────── --}}
+{{#if ca.frame_analyses}}
+<section class="page">
+  <div class="section-eyebrow">05 · Frame-by-Frame Breakdown</div>
+  <div class="section-divider"></div>
+  {{#each ca.frame_analyses}}
+  <div class="followup">
+    <h3 class="followup-title">Frame {{add @index 1}}{{#if this.timestamp}} — {{this.timestamp}}s{{/if}} · Engagement {{this.engagement_score}}/100</h3>
+    {{#if this.narrative}}<p class="followup-rationale">{{this.narrative}}</p>{{/if}}
+    {{#if this.verbatim}}<p class="followup-rationale" style="font-style: italic;">"{{this.verbatim}}"</p>{{/if}}
+  </div>
+  {{/each}}
+</section>
+{{/if}}
+
+{{!-- ─── STRENGTHS / WEAKNESSES / RECOMMENDATIONS ──────────────── --}}
+{{#if ca.summary}}
+<section class="page">
+  <div class="section-eyebrow">06 · Diagnostics</div>
+  <div class="section-divider"></div>
+  {{#if ca.summary.strengths}}
+  <h3 class="followup-title" style="color: var(--lime);">Strengths</h3>
+  <ul style="margin: 6pt 0 14pt 14pt; font-size: 10pt; color: var(--text1);">
+    {{#each ca.summary.strengths}}<li style="margin-bottom: 3pt;">{{this}}</li>{{/each}}
+  </ul>
+  {{/if}}
+  {{#if ca.summary.weaknesses}}
+  <h3 class="followup-title" style="color: var(--orange);">Weaknesses</h3>
+  <ul style="margin: 6pt 0 14pt 14pt; font-size: 10pt; color: var(--text1);">
+    {{#each ca.summary.weaknesses}}<li style="margin-bottom: 3pt;">{{this}}</li>{{/each}}
+  </ul>
+  {{/if}}
+  {{#if ca.summary.recommendations}}
+  <h3 class="followup-title">Recommendations</h3>
+  <ul style="margin: 6pt 0 14pt 14pt; font-size: 10pt; color: var(--text1);">
+    {{#each ca.summary.recommendations}}<li style="margin-bottom: 3pt;">{{this}}</li>{{/each}}
+  </ul>
+  {{/if}}
+</section>
+{{/if}}
+
+{{!-- ─── METHODOLOGY + DISCLAIMER ──────────────────────────────── --}}
+<section class="page">
+  <div class="section-eyebrow">· Methodology + Disclaimer</div>
+  <div class="section-divider"></div>
+  <p class="lede">
+    VETT Creative Attention runs frame-by-frame Claude Vision analysis to predict
+    attention seconds, emotion peaks, and channel fit. The 24-emotion framework
+    combines 8 basic emotions with 16 nuanced research-derived ones. Cross-channel
+    benchmarks compare predicted attention against industry norms.
+  </p>
+  <p class="lede" style="margin-top: 14pt;">
+    Insights and summaries are generated by VETT AI using synthetic respondents
+    modelled on real demographic data. They are directionally indicative and are
+    not a substitute for primary market research or human survey data.
+  </p>
+</section>
