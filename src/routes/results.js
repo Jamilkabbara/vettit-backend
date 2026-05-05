@@ -20,6 +20,8 @@ const { buildPDF: buildPDFLegacy } = require('../services/exports/pdf');
 const buildPDF = process.env.PDF_LEGACY === '1' ? buildPDFLegacy : buildPDFv2;
 const { buildPPTX } = require('../services/exports/pptx');
 const { buildXLSX } = require('../services/exports/xlsx');
+// Pass 27.5 B — CA-specific XLSX exporter (6-sheet template).
+const { buildCreativeAttentionXLSX } = require('../services/exports/xlsx_creative_attention');
 
 // ─── GET /api/results/:missionId ─────────────────────────────
 // Bug 7 (Pass 20): this endpoint now serves three response shapes,
@@ -173,8 +175,14 @@ router.get('/:missionId/export/xlsx', authenticate, async (req, res, next) => {
     if (!pack)      return res.status(404).json({ error: 'Mission not found' });
     if (pack.error) return res.status(400).json({ error: pack.error });
 
-    await buildXLSX(pack, res);
-    logger.info('XLSX exported', { missionId: req.params.missionId, userId: req.user.id });
+    // Pass 27.5 B — CA missions get the 6-sheet creative_attention template.
+    // brand_lift + general_research stay on the existing buildXLSX path.
+    if (pack.mission?.goal_type === 'creative_attention') {
+      await buildCreativeAttentionXLSX(pack, res);
+    } else {
+      await buildXLSX(pack, res);
+    }
+    logger.info('XLSX exported', { missionId: req.params.missionId, userId: req.user.id, goal_type: pack.mission?.goal_type });
   } catch (err) { next(err); }
 });
 
