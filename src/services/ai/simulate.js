@@ -22,10 +22,26 @@ ${WRITING_STYLE}`;
  * @returns {Promise<Array<{question_id, answer}>>}
  */
 async function simulateResponses(persona, questions, mission) {
+  // Pass 27 — Brand Lift incrementality. When the persona is tagged
+  // _exposure_status=exposed, instruct the model that this persona was
+  // exposed to the brand's campaign on the selected channels and shift
+  // aided recall / awareness / message association answers upward in a
+  // realistic range. control personas answer at category baseline.
+  // Lift sizes (calibrated to industry norms): aided recall +20-40pp,
+  // brand awareness +5-15pp, consideration +3-10pp, intent +2-8pp,
+  // NPS +1-4 points. Never push every metric to 100%.
+  const isBrandLift = mission.goal_type === 'brand_lift';
+  const exposure = persona._exposure_status;
+  const exposureBlock = isBrandLift && exposure === 'exposed'
+    ? `\n\nIncrementality flag: this persona was EXPOSED to the brand's campaign on the selected channels. When answering aided ad recall, brand awareness, consideration, intent, NPS, and message association, reflect that exposure with realistic uplift over baseline (aided recall +20-40pp, brand awareness +5-15pp, consideration +3-10pp, intent +2-8pp, NPS +1-4 points). Don't exaggerate — many exposed people still don't recall, and lift never pushes every metric to 100%.`
+    : isBrandLift && exposure === 'control'
+    ? `\n\nIncrementality flag: this persona is in the CONTROL group. They were NOT exposed to the brand's campaign. They answer at category baseline — they may still recognize the brand if it has prior equity, but they do NOT show campaign-specific message association.`
+    : '';
+
   const userPrompt = `You are this persona:
 ${JSON.stringify(persona, null, 2)}
 
-Mission brief: ${mission.brief || mission.mission_statement || ''}
+Mission brief: ${mission.brief || mission.mission_statement || ''}${exposureBlock}
 
 Answer every question below as this persona. For each question:
 - "single" / "opinion" → pick ONE option from the provided options

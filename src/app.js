@@ -22,6 +22,7 @@ const webhookRoutes = require('./routes/webhooks');
 // users_own_notif RLS policy (Pass 23 A2/Bug 23.11). The 4 endpoints
 // in routes/notifications.js were dead code post-A2.
 const adminRoutes = require('./routes/admin');
+const adminCostsRoutes = require('./routes/adminCosts');
 const blogRoutes = require('./routes/blog');
 const chatRoutes = require('./routes/chat');
 const pricingRoutes = require('./routes/pricing');
@@ -65,6 +66,22 @@ app.use('/api/webhooks', webhookRoutes);
 // ─── Body Parsing ────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// Pass 27 J — Cache-Control hygiene. Static-ish reference data caches
+// for 5 min at the browser + 10 min at the edge; user data never
+// caches. Skipped for non-GET (no body-changing route should cache).
+app.use((req, res, next) => {
+  if (req.method !== 'GET') return next();
+  if (req.path.startsWith('/api/version') || req.path.startsWith('/healthz')) {
+    res.set('Cache-Control', 'public, max-age=60');
+  } else if (req.path.startsWith('/api/admin/')) {
+    res.set('Cache-Control', 'private, no-cache, must-revalidate');
+  } else if (req.path.startsWith('/api/')) {
+    // User-specific by default — never cache by default.
+    res.set('Cache-Control', 'private, no-cache, must-revalidate');
+  }
+  next();
+});
 
 // ─── Logging ─────────────────────────────────────────────────
 app.use(morgan('combined', {
@@ -132,6 +149,8 @@ app.use('/api/profile', profileRoutes);
 // Pass 23 A9 — /api/notifications/* mount removed alongside the routes
 // file delete. Frontend reads via supabase-js + RLS now.
 app.use('/api/admin', adminRoutes);
+// Pass 24 Bug 24.02 — admin costs panel (mounted under /api/admin/costs)
+app.use('/api/admin/costs', adminCostsRoutes);
 app.use('/api/blog', blogRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/pricing', pricingRoutes);

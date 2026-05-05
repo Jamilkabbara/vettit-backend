@@ -127,6 +127,22 @@ async function runMission(missionId) {
 
     // Round 1: generate exactly N with screener constraints baked in.
     let personas = await generatePersonas(mission, targetCount);
+
+    // Pass 27 — Brand Lift incrementality. Split ~50/50 exposed vs control
+    // and tag each persona so the simulator prompt can shift answers
+    // realistically (exposed: lifted aided recall, awareness, message
+    // association; control: baseline). Other goal types stay
+    // 'not_applicable'.
+    if (mission.goal_type === 'brand_lift') {
+      const exposedCount = Math.ceil(personas.length / 2);
+      personas = personas.map((p, i) => ({
+        ...p,
+        _exposure_status: i < exposedCount ? 'exposed' : 'control',
+      }));
+      logger.info('Mission run: brand_lift exposure split', {
+        missionId, exposed: exposedCount, control: personas.length - exposedCount,
+      });
+    }
     let responses = await simulateAllResponses(
       personas,
       mission.questions || [],
@@ -225,6 +241,15 @@ async function runMission(missionId) {
       });
     }
 
+    // Pass 27 — propagate exposure_status from persona to its responses
+    // for brand_lift missions. Lookup map is small (≤ targetCount) so a
+    // plain object is fine.
+    const exposureByPersonaId = {};
+    for (const p of personas) {
+      const pid = p.persona_id || p.id;
+      if (pid && p._exposure_status) exposureByPersonaId[pid] = p._exposure_status;
+    }
+
     // Persist responses (chunked).
     const rows = responses.map((r) => ({
       mission_id:      missionId,
@@ -233,6 +258,7 @@ async function runMission(missionId) {
       question_id:     r.question_id,
       answer:          r.answer,
       screened_out:    Boolean((r.persona_profile || {}).screened_out),
+      exposure_status: exposureByPersonaId[r.persona_id] || 'not_applicable',
     }));
     for (let i = 0; i < rows.length; i += RESPONSE_INSERT_CHUNK) {
       const { error: insErr } = await supabase

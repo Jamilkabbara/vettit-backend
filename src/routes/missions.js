@@ -83,7 +83,7 @@ router.post('/', authenticate, async (req, res, next) => {
     // Pass 25 Phase 0.3 — CA missions need >= 10 respondents. Reject early
     // with 400 so the UI can surface the message rather than silently
     // creating a broken draft.
-    const { CA_MIN_RESPONDENTS } = require('../utils/pricingEngine');
+    const { CA_MIN_RESPONDENTS, calculateBrandLiftMissionPrice } = require('../utils/pricingEngine');
     if (resolvedGoal === 'creative_attention' && respCount < CA_MIN_RESPONDENTS) {
       return res.status(400).json({
         error: 'min_respondents',
@@ -91,8 +91,46 @@ router.post('/', authenticate, async (req, res, next) => {
       });
     }
 
+    // Pass 27 — brand_lift markets + channels are mandatory.
+    if (resolvedGoal === 'brand_lift') {
+      const targetedMarkets = req.body.targetedMarkets || req.body.targeted_markets || [];
+      const campaignChannels = req.body.campaignChannels || req.body.campaign_channels || [];
+      if (!Array.isArray(targetedMarkets) || targetedMarkets.length === 0) {
+        return res.status(400).json({
+          error: 'markets_required',
+          message: 'Brand Lift Studies require at least 1 target market.',
+        });
+      }
+      if (!Array.isArray(campaignChannels) || campaignChannels.length === 0) {
+        return res.status(400).json({
+          error: 'channels_required',
+          message: 'Brand Lift Studies require at least 1 campaign channel.',
+        });
+      }
+    }
+
     const filters = deriveFilters(finalTarget);
     const pricing = calculateMissionPrice(respCount, filters, finalQs.length);
+
+    // Pass 27 — recompute brand_lift total with market + channel uplifts;
+    // backend stays canonical source of truth at payment time.
+    let priceBreakdown = null;
+    if (resolvedGoal === 'brand_lift') {
+      const targetedMarkets = req.body.targetedMarkets || req.body.targeted_markets || [];
+      const campaignChannels = req.body.campaignChannels || req.body.campaign_channels || [];
+      priceBreakdown = calculateBrandLiftMissionPrice({
+        respondentBaseUSD: pricing.total,
+        marketCount: targetedMarkets.length,
+        channelCount: campaignChannels.length,
+      });
+      // Server total may differ from frontend; prefer server.
+      if (Math.abs((req.body.totalPriceUsd || pricing.total) - priceBreakdown.total_usd) > 0.5) {
+        logger.warn('POST /missions: frontend price drifted from server', {
+          frontend: req.body.totalPriceUsd, server: priceBreakdown.total_usd,
+        });
+      }
+      pricing.total = priceBreakdown.total_usd;
+    }
 
     // Only include columns that exist in public.missions. `mission_statement`,
     // `targeting_config`, `price`, `pricing_breakdown` are all drift and
@@ -110,6 +148,12 @@ router.post('/', authenticate, async (req, res, next) => {
       extra_questions_cost_usd: pricing.extraQuestionsCost,
       total_price_usd:         pricing.total,
       status:                  'draft',
+      // Pass 27 — persist brand_lift uplift breakdown for audit + future re-pricing.
+      ...(priceBreakdown ? { price_breakdown: priceBreakdown } : {}),
+      ...(resolvedGoal === 'brand_lift' && (req.body.targetedMarkets || req.body.targeted_markets)
+          ? { targeted_markets: req.body.targetedMarkets || req.body.targeted_markets } : {}),
+      ...(resolvedGoal === 'brand_lift' && (req.body.campaignChannels || req.body.campaign_channels)
+          ? { campaign_channels: req.body.campaignChannels || req.body.campaign_channels } : {}),
     });
     if (rejected.length) logger.warn('POST /missions: dropped cols', { rejected });
 

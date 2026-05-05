@@ -76,6 +76,11 @@ function registerHelpers() {
   });
 
   // Question eyebrow text: "02 · QUESTION 1"
+  // Pass 27 H — frame numbering on the CA template
+  Handlebars.registerHelper('add', function (a, b) {
+    return Number(a) + Number(b);
+  });
+
   Handlebars.registerHelper('questionEyebrow', function (idx) {
     const sectionNum = String(idx + 2).padStart(2, '0');
     const qNum       = idx + 1;
@@ -217,6 +222,11 @@ function buildViewModel(pack) {
     // (score / funnel / channels / geography / competitors / waves /
     // recommendations) so the brand_lift_study.hbs body can render it.
     blr: mission?.brand_lift_results || null,
+    // Pass 27 H — Creative Attention payload for the creative_attention.hbs
+    // body. Schema documented in docs/PASS_24_BUG_01_LOG.md.
+    ca: mission?.creative_analysis || null,
+    media_url: mission?.media_url || null,
+    brand_name: mission?.brand_name || null,
     fontFaceCss:        getFontFaceCss(),
     baseCss:            loadBaseCss(),
   };
@@ -230,8 +240,10 @@ function bodyTemplateForMission(mission) {
   // performance, geo, competitor comparison, wave comparison, and AI
   // recs sections.
   if (mission?.goal_type === 'brand_lift') return 'brand_lift_study';
-  // Phase 0: every general-research mission uses general_research.hbs.
-  // Phase 0.5 will route Creative Attention missions to creative_attention.hbs.
+  // Pass 27 H — Creative Attention missions get their own body partial.
+  // Was falling through to general_research which renders nothing for
+  // creative_analysis-shaped data.
+  if (mission?.goal_type === 'creative_attention') return 'creative_attention';
   return 'general_research';
 }
 

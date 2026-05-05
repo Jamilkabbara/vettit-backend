@@ -389,7 +389,67 @@ function validateMissionPricing({ goalType, respondentCount, mediaType }) {
   return { valid: true, tier: resolveTier({ goalType, respondentCount: c }) };
 }
 
+// ── Pass 27 — Brand Lift uplift tiers (market + channel) ──────────
+const MARKET_UPLIFT_TIERS = [
+  { min: 1,  max: 1,        name: 'single_market',  upliftUSD: 0   },
+  { min: 2,  max: 3,        name: 'small_multi',    upliftUSD: 10  },
+  { min: 4,  max: 7,        name: 'regional',       upliftUSD: 25  },
+  { min: 8,  max: 15,       name: 'multi_regional', upliftUSD: 50  },
+  { min: 16, max: Infinity, name: 'global',         upliftUSD: 100 },
+];
+
+const CHANNEL_UPLIFT_TIERS = [
+  { min: 1,   max: 10,       name: 'starter',    upliftUSD: 0  },
+  { min: 11,  max: 25,       name: 'standard',   upliftUSD: 10 },
+  { min: 26,  max: 50,       name: 'plus',       upliftUSD: 20 },
+  { min: 51,  max: 100,      name: 'pro',        upliftUSD: 35 },
+  { min: 101, max: Infinity, name: 'enterprise', upliftUSD: 50 },
+];
+
+function calculateMarketUplift(count) {
+  const c = Math.max(0, Math.floor(Number(count) || 0));
+  if (c === 0) return 0;
+  return (MARKET_UPLIFT_TIERS.find(t => c >= t.min && c <= t.max) || {}).upliftUSD || 0;
+}
+
+function calculateChannelUplift(count) {
+  const c = Math.max(0, Math.floor(Number(count) || 0));
+  if (c === 0) return 0;
+  return (CHANNEL_UPLIFT_TIERS.find(t => c >= t.min && c <= t.max) || {}).upliftUSD || 0;
+}
+
+/**
+ * Compute the Brand Lift price breakdown.
+ *
+ * @param {object} input
+ * @param {number} input.respondentBaseUSD
+ * @param {number} input.marketCount
+ * @param {number} input.channelCount
+ * @returns {object} { base, market_uplift_usd, channel_uplift_usd,
+ *   total_usd, market_count, channel_count, ladder_version }
+ */
+function calculateBrandLiftMissionPrice({ respondentBaseUSD, marketCount, channelCount }) {
+  const base = Math.max(0, Number(respondentBaseUSD) || 0);
+  const marketUplift = calculateMarketUplift(marketCount);
+  const channelUplift = calculateChannelUplift(channelCount);
+  const total = base + marketUplift + channelUplift;
+  return {
+    base_usd: base,
+    market_uplift_usd: marketUplift,
+    channel_uplift_usd: channelUplift,
+    total_usd: total,
+    market_count: Number(marketCount) || 0,
+    channel_count: Number(channelCount) || 0,
+    ladder_version: 'pass_27_v1',
+  };
+}
+
 module.exports = {
+  MARKET_UPLIFT_TIERS,
+  CHANNEL_UPLIFT_TIERS,
+  calculateMarketUplift,
+  calculateChannelUplift,
+  calculateBrandLiftMissionPrice,
   calculateMissionPrice,
   extractCountriesFromMission,
   // Goal-keyed tier ladders (Pass 23 Bug 23.51 — canonical)
