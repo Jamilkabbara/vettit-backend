@@ -35,14 +35,18 @@ respondents; brand_lift uses the volume ladder for base price.
 
 ## Worked examples
 
-- 5 respondents, 1 market, 8 channels:
-  base = $35 + market = $0 + channel = $0 = **$35**
-- 10 respondents, 3 markets, 15 channels:
-  base = $35 + market = $10 + channel = $10 = **$55**
-- 50 respondents, 8 markets, 60 channels:
-  base = $99 + market = $50 + channel = $35 = **$184**
-- 250 respondents, 16 markets, 120 channels:
-  base = $299 + market = $100 + channel = $50 = **$449**
+| Respondents | Markets | Channels | Base | Market uplift | Channel uplift | **Total** |
+|---|---|---|---|---|---|---|
+| 5 (Sniff Test) | 1 | 8 | $9 | $0 | $0 | **$9** |
+| 50 (Validate) | 1 | 12 | $99 | $0 | $10 | **$109** |
+| 100 (Validate) | 3 | 25 | $179 | $10 | $10 | **$199** |
+| 250 (Validate) | 8 | 60 | $299 | $50 | $20 | **$369** |
+| 1000 (Pro) | 16 | 120 | $799 | $100 | $50 | **$949** |
+| 5000 (Enterprise) | 16+ | 101+ | $1990 | $100 | $50 | **$2140** |
+
+Bands stack additively: lift the respondent base off the volume ladder,
+then add the market uplift band, then add the channel uplift band. The
+backend applies the same composition in `pricingEngine.js`.
 
 ## Validation
 
