@@ -22,6 +22,7 @@ const webhookRoutes = require('./routes/webhooks');
 // users_own_notif RLS policy (Pass 23 A2/Bug 23.11). The 4 endpoints
 // in routes/notifications.js were dead code post-A2.
 const adminRoutes = require('./routes/admin');
+const adminCostsRoutes = require('./routes/adminCosts');
 const blogRoutes = require('./routes/blog');
 const chatRoutes = require('./routes/chat');
 const pricingRoutes = require('./routes/pricing');
@@ -132,6 +133,8 @@ app.use('/api/profile', profileRoutes);
 // Pass 23 A9 — /api/notifications/* mount removed alongside the routes
 // file delete. Frontend reads via supabase-js + RLS now.
 app.use('/api/admin', adminRoutes);
+// Pass 24 Bug 24.02 — admin costs panel (mounted under /api/admin/costs)
+app.use('/api/admin/costs', adminCostsRoutes);
 app.use('/api/blog', blogRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/pricing', pricingRoutes);
