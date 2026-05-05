@@ -67,6 +67,22 @@ app.use('/api/webhooks', webhookRoutes);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// Pass 27 J — Cache-Control hygiene. Static-ish reference data caches
+// for 5 min at the browser + 10 min at the edge; user data never
+// caches. Skipped for non-GET (no body-changing route should cache).
+app.use((req, res, next) => {
+  if (req.method !== 'GET') return next();
+  if (req.path.startsWith('/api/version') || req.path.startsWith('/healthz')) {
+    res.set('Cache-Control', 'public, max-age=60');
+  } else if (req.path.startsWith('/api/admin/')) {
+    res.set('Cache-Control', 'private, no-cache, must-revalidate');
+  } else if (req.path.startsWith('/api/')) {
+    // User-specific by default — never cache by default.
+    res.set('Cache-Control', 'private, no-cache, must-revalidate');
+  }
+  next();
+});
+
 // ─── Logging ─────────────────────────────────────────────────
 app.use(morgan('combined', {
   stream: { write: (msg) => logger.info(msg.trim()) }
