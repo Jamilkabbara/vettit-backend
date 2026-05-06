@@ -95,6 +95,14 @@ const ALLOWED_COLUMNS = new Set([
   'brand_name',
   'category',
   'audience_description',
+  // Pass 29 B4 — pricing research (Van Westendorp + Gabor-Granger).
+  'pricing_product_description',
+  'pricing_currency',
+  'pricing_model',
+  'pricing_context',
+  'pricing_expected_min',
+  'pricing_expected_max',
+  'pricing_methodology',
 ]);
 
 /**

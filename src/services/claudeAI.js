@@ -367,6 +367,9 @@ async function generateSurvey({
   if (goal === 'brand_lift') {
     return generateBrandLiftSurvey({ description, clarify, missionAssets });
   }
+  if (goal === 'pricing') {
+    return generatePricingSurvey({ description, clarify });
+  }
 
   const prompt = `Mission Goal: ${goal}
 Description: "${description}"
@@ -438,6 +441,149 @@ Return the JSON again with that issue fixed. Keep all other rules.`;
   // for diagnosis. We DO NOT throw, because failing the whole setup flow
   // is worse for the user than letting them see imperfect questions.
   logger.warn('brand_lift survey: both attempts failed validation', {
+    reason: validationErr,
+    questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
+  });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
+}
+
+// ── PASS 29 B4 — PRICING RESEARCH (VAN WESTENDORP + GABOR-GRANGER) ─────────
+// Generic SURVEY_GEN_SYSTEM forces "exactly 5 questions"; pricing
+// research needs the 4 VW questions + 5 GG anchors + screener +
+// behavior + WTP ceiling + switching cost = 13 questions. Splitting
+// into a dedicated prompt keeps the cache prefix stable for both paths.
+const PRICING_SURVEY_GEN_SYSTEM = `You are a senior pricing-research methodologist. You design Van Westendorp (Price Sensitivity Meter) and Gabor-Granger price-acceptance studies. Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short product/brand name extracted from the brief (2-5 words)",
+  "missionStatement": "One-sentence research objective starting with 'To determine the optimal price point for...' or 'To quantify price sensitivity across...'",
+  "questions": [
+    {
+      "id": "q1",
+      "text": "Question text — use the short productName, never paste the full brief",
+      "type": "single|multi|rating|text",
+      "options": ["Option A"],
+      "isScreening": true,
+      "qualifyingAnswer": "Option A",
+      "qualifying_answers": ["Option A"],
+      "screening_continue_on": ["Option A"],
+      "methodology": "screener|van_westendorp|gabor_granger|wtp_ceiling|switching_cost|behavior",
+      "vw_band": "too_expensive|expensive|bargain|too_cheap",
+      "gg_anchor_index": 0,
+      "currency": "USD"
+    }
+  ],
+  "targetingSuggestions": {
+    "recommendedCountries": ["US"],
+    "recommendedAgeRanges": ["25-44"],
+    "recommendedGenders": [],
+    "reasoning": "Brief explanation"
+  },
+  "suggestedRespondentCount": 200
+}
+
+Hard rules:
+- Generate EXACTLY 13 questions in this order: screener (q1), current behavior (q2), VW too-expensive (q3), VW expensive-but-consider (q4), VW bargain (q5), VW too-cheap (q6), GG anchor 0 (q7), GG anchor 1 (q8), GG anchor 2 (q9), GG anchor 3 (q10), GG anchor 4 (q11), WTP ceiling (q12), switching cost (q13).
+- All 4 VW questions are open-numeric (type="text"; the frontend will validate numeric input). Each carries vw_band set to one of {too_expensive, expensive, bargain, too_cheap}.
+- VW question wording follows the canonical Van Westendorp script:
+    too_expensive   → "At what price would <productName> be SO EXPENSIVE you would not consider buying it?"
+    expensive       → "At what price would <productName> be priced so high that, although it's not out of the question, you'd have to think hard about buying?"
+    bargain         → "At what price would <productName> be a BARGAIN — a great buy for the money?"
+    too_cheap       → "At what price would <productName> be priced so low you'd feel the quality couldn't be very good?"
+- All 5 GG questions are type="single" with options ["Definitely would buy","Probably would buy","Might buy","Probably would NOT buy","Definitely would NOT buy"]. Each carries gg_anchor_index 0-4 and the price text is "At <currency_symbol><price>, would you ..." where the prices form an ascending ladder spanning the user's expected range (or the VW span if no expected range was supplied; use $9 / $19 / $39 / $79 / $149 as defaults if the brief gives no anchors).
+- Screener (q1, isScreening=true) qualifies category buyers; methodology="screener", is_lift_question=null.
+- Current behavior (q2) is type="single" or "multi" — how the respondent currently solves the need; methodology="behavior".
+- WTP ceiling (q12) is type="text" open-numeric: "What's the absolute most you'd pay for <productName>?" methodology="wtp_ceiling".
+- Switching cost (q13) is type="rating" 1-5: "If your current solution increased its price by 20%, how likely would you be to switch to <productName>?" methodology="switching_cost".
+- currency MUST be set on every VW + GG + WTP question to the ISO 4217 code from the user message (default USD if absent).
+- DO NOT include funnel_stage, kpi_category, is_lift_question, channel_id, category — those belong to brand_lift only. Strip them.
+- suggestedRespondentCount default 200 (well above the 150 GG bound). Escalate to 300+ when the brief mentions multi-segment splits.
+
+Output MUST be valid JSON. No prose, no markdown fences.`;
+
+function validatePricingSurvey(parsed) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  if (qs.length !== 13) return `expected 13 questions, got ${qs.length}`;
+
+  const vwBands = qs.filter((q) => q.methodology === 'van_westendorp').map((q) => q.vw_band);
+  for (const band of ['too_expensive', 'expensive', 'bargain', 'too_cheap']) {
+    if (!vwBands.includes(band)) return `missing VW band: ${band}`;
+  }
+  const ggAnchors = qs
+    .filter((q) => q.methodology === 'gabor_granger')
+    .map((q) => q.gg_anchor_index);
+  if (ggAnchors.length !== 5) return `expected 5 GG anchors, got ${ggAnchors.length}`;
+  const sortedAnchors = [...ggAnchors].sort((a, b) => a - b);
+  for (let i = 0; i < 5; i++) {
+    if (sortedAnchors[i] !== i) return `GG anchors must be 0-4; got ${sortedAnchors.join(',')}`;
+  }
+  if (qs[0].methodology !== 'screener') return 'q1 must be screener';
+  return null;
+}
+
+function buildPricingUserPrompt({ description, clarify }) {
+  const c = clarify || {};
+  const currency = c.pricing_currency || 'USD';
+  const productDesc = c.pricing_product_description || description;
+  const model = c.pricing_model || 'one_time';
+  const context = c.pricing_context || '';
+  const expectedMin = c.pricing_expected_min;
+  const expectedMax = c.pricing_expected_max;
+  const lines = [
+    'Mission Goal: pricing',
+    `Brief: "${description}"`,
+    `Product description: "${productDesc}"`,
+    `Currency: ${currency}`,
+    `Pricing model: ${model}`,
+  ];
+  if (context) lines.push(`Context: "${context}"`);
+  if (expectedMin && expectedMax) {
+    lines.push(`Expected price range hint: ${currency} ${expectedMin} - ${currency} ${expectedMax}`);
+    lines.push(`Use this hint to anchor the GG ladder. Distribute 5 prices across this range with extrapolation +/- 20%.`);
+  } else {
+    lines.push(`No expected price range supplied. Pick the GG ladder anchors based on the product description and category norms.`);
+  }
+  lines.push('');
+  lines.push('First extract a SHORT product name (2-5 words) from the brief.');
+  lines.push('Then generate the 13-question Van Westendorp + Gabor-Granger survey JSON.');
+  return lines.join('\n');
+}
+
+async function generatePricingSurvey({ description, clarify }) {
+  const userPrompt = buildPricingUserPrompt({ description, clarify });
+  const firstResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: PRICING_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }],
+    maxTokens: 3000,
+    enablePromptCache: true,
+  });
+  let parsed;
+  try { parsed = extractJSON(firstResp.text); }
+  catch (err) { parsed = null; logger.warn('pricing survey: parse failed', { err: err.message }); }
+  let validationErr = parsed ? validatePricingSurvey(parsed) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.info('pricing survey: retry on validation failure', { reason: validationErr });
+  const retryResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: PRICING_SURVEY_GEN_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
+    }],
+    maxTokens: 3000,
+    enablePromptCache: true,
+  });
+  try { parsed = extractJSON(retryResp.text); }
+  catch (err) { parsed = null; logger.warn('pricing survey: retry parse failed', { err: err.message }); }
+  validationErr = parsed ? validatePricingSurvey(parsed) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.warn('pricing survey: both attempts failed validation', {
     reason: validationErr,
     questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
   });
