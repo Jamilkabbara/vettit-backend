@@ -54,12 +54,18 @@ also revert.
 
 ### Tickets remaining open
 
-- `perf-LCP-001`: bundle composition audit (separate scope)
-- `perf-LCP-003`: hero image preload (`/landing` doesn't currently
-  use an above-the-fold image — defer until one exists)
-- `perf-LCP-004`: Cache-Control verify on font WOFF2 files (font CDN
-  is now Google Fonts, not @fontsource — Google sets long Cache-Control
-  by default; ticket can be closed once we confirm via DevTools)
+- `perf-LCP-001`: ✅ shipped Pass 29 A2 (jsPDF + pptxgenjs lazy-loaded;
+  ProfilePage chunk 852 kB → 22 kB)
+- `perf-LCP-003`: ✅ shipped Pass 29 A3 (LandingPage eager-imported
+  to remove the lazy round-trip; one fewer RTT on cold load)
+- `perf-LCP-004`: ✅ shipped Pass 30 A1 (Google Fonts WOFF2 caching
+  verified via `scripts/verify-font-caching.sh`. Google serves with
+  `Cache-Control: public, max-age=31536000` — 1 year — by default;
+  the script asserts ≥30-day floor and flags any drop. perf-LCP-004
+  closed; rerun the script post-deploy to catch any future CDN
+  change.)
+
+All four LCP tickets from the Pass 27.5 F audit are now resolved.
 
 ## Pass 27.5 F — Lighthouse production measurements
 
