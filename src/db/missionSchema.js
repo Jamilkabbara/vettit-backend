@@ -106,6 +106,12 @@ const ALLOWED_COLUMNS = new Set([
   // Pass 29 B6 — feature roadmap (MaxDiff + Kano).
   'roadmap_features',
   'roadmap_methodology',
+  // Pass 29 B8 — customer satisfaction (NPS + CSAT + CES).
+  'csat_touchpoint',
+  'csat_custom_touchpoint',
+  'csat_customer_type',
+  'csat_recency_window',
+  'csat_methodology',
 ]);
 
 /**
