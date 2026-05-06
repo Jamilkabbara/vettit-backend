@@ -123,6 +123,14 @@ const ALLOWED_COLUMNS = new Set([
   'concepts',
   'comparison_methodology',
   'rotation_strategy',
+  // Pass 30 B5 — test marketing / ads (ad effectiveness).
+  'creative_media_url',
+  'creative_media_type',
+  'campaign_channel',
+  'campaign_format',
+  'campaign_objective',
+  'intended_message',
+  'ad_methodology',
 ]);
 
 /**

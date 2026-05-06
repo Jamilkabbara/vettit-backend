@@ -382,6 +382,9 @@ async function generateSurvey({
   if (goal === 'compare') {
     return generateCompareSurvey({ description, clarify });
   }
+  if (goal === 'marketing') {
+    return generateMarketingSurvey({ description, clarify });
+  }
 
   const prompt = `Mission Goal: ${goal}
 Description: "${description}"
@@ -1152,6 +1155,131 @@ async function generateCompareSurvey({ description, clarify }) {
   if (!validationErr) return parsed;
 
   logger.warn('compare survey: both attempts failed validation', {
+    reason: validationErr,
+    questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
+  });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
+}
+
+// ── PASS 30 B5 — TEST MARKETING / ADS (AD EFFECTIVENESS) ──────────────────
+const MARKETING_SURVEY_GEN_SYSTEM = `You are a senior advertising-research methodologist designing ad effectiveness studies in the Kantar Link / ASI tradition. Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short brand name extracted from the brief",
+  "missionStatement": "One-sentence research objective",
+  "questions": [
+    {
+      "id": "q1",
+      "text": "...",
+      "type": "single|multi|rating|text",
+      "options": ["..."],
+      "isScreening": true,
+      "qualifyingAnswer": "...",
+      "qualifying_answers": ["..."],
+      "screening_continue_on": ["..."],
+      "methodology": "ad_effectiveness",
+      "funnel_stage": "screener|recall|exposure|attribution|message|likeability|stopping|distinctiveness|emotional|persuasion|message_match|sharing"
+    }
+  ],
+  "targetingSuggestions": { "recommendedCountries": ["US"], "recommendedAgeRanges": ["25-44"], "recommendedGenders": [], "reasoning": "..." },
+  "suggestedRespondentCount": 200
+}
+
+Hard rules — generate 12 or 13 questions in this fixed order:
+  q1 SCREENER (isScreening=true, methodology="ad_effectiveness", funnel_stage="screener") — qualifies category buyers from the brief context. type="single", 2-3 options, qualify the most relevant.
+  q2 UNAIDED RECALL (funnel_stage="recall") — "What ads have you seen recently for <category>?" type="text".
+  q3 EXPOSURE — text="[<creative_url>] Please review the ad above before answering the next questions." type="text" with options=[]. Use funnel_stage="exposure". This is a soft acknowledgement step; the simulator will substitute the creative URL in the prompt.
+  q4 AIDED RECALL (funnel_stage="recall") — "Have you seen this ad before?" type="single", options=["Yes","No","Not sure"].
+  q5 BRAND ATTRIBUTION (funnel_stage="attribution") — "Whose ad is this?" type="text".
+  q6 MAIN MESSAGE (funnel_stage="message") — "What's the main message of this ad?" type="text".
+  q7 LIKEABILITY (funnel_stage="likeability") — "How much did you like this ad?" type="rating" 1-7.
+  q8 STOPPING POWER (funnel_stage="stopping") — "On <campaign_channel>, would this ad get your attention?" type="rating" 1-7.
+  q9 DISTINCTIVENESS (funnel_stage="distinctiveness") — "How different is this from other <category> ads?" type="rating" 1-7.
+  q10 EMOTIONAL RESPONSE (funnel_stage="emotional") — "How does this ad make you feel?" type="multi", options=["Amused","Inspired","Curious","Surprised","Happy","Nostalgic","Annoyed","Bored","Confused","Skeptical","Indifferent","Other"].
+  q11 PERSUASION (funnel_stage="persuasion") — "After seeing this, are you more or less likely to <campaign_objective>?" type="rating" 1-7 (1=Much less likely, 7=Much more likely).
+  q12 MESSAGE MATCH (funnel_stage="message_match", ONLY include when intended_message was supplied — otherwise OMIT) — "Did the ad communicate <intended_message>?" type="single", options=["Yes","Somewhat","No"].
+  q13 SHARING (funnel_stage="sharing") — "Would you share or recommend this ad to a friend?" type="single", options=["Yes","Maybe","No"].
+- "<category>" / "<campaign_channel>" / "<campaign_objective>" / "<intended_message>" / "<creative_url>" — pull from the user message context. If a value is missing, use a sensible neutral phrasing.
+- DO NOT include vw_band, gg_anchor_index, kano_type, feature_set, concept_id, kpi_category, is_lift_question, channel_id — those belong to other methodologies.
+- suggestedRespondentCount default 200 (well above the 100 ad_effectiveness bound). Escalate to 400+ when the brief mentions sub-segment splits.
+
+Output MUST be valid JSON. No prose, no markdown fences.`;
+
+function validateMarketingSurvey(parsed, hasMessage) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  const expected = hasMessage ? 13 : 12;
+  if (qs.length !== expected) return `expected ${expected} questions, got ${qs.length}`;
+  if (qs[0].isScreening !== true) return 'q1 must be isScreening=true';
+  const expectedStages = [
+    'screener', 'recall', 'exposure', 'recall', 'attribution', 'message',
+    'likeability', 'stopping', 'distinctiveness', 'emotional', 'persuasion',
+  ];
+  if (hasMessage) expectedStages.push('message_match');
+  expectedStages.push('sharing');
+  for (let i = 0; i < expectedStages.length; i++) {
+    if (qs[i].funnel_stage !== expectedStages[i]) {
+      return `q${i + 1} expected funnel_stage="${expectedStages[i]}", got "${qs[i].funnel_stage}"`;
+    }
+  }
+  return null;
+}
+
+function buildMarketingUserPrompt({ description, clarify }) {
+  const c = clarify || {};
+  const lines = [
+    'Mission Goal: marketing',
+    `Brief: "${description}"`,
+    `Creative URL: ${c.creative_media_url || '<not provided>'}`,
+    `Creative type: ${c.creative_media_type || 'image'}`,
+    `Campaign channel: ${c.campaign_channel || 'social'}`,
+    `Campaign format: ${c.campaign_format || 'static_image'}`,
+    `Campaign objective: ${c.campaign_objective || 'awareness'}`,
+  ];
+  if (c.intended_message) lines.push(`Intended message: "${c.intended_message}"`);
+  if (c.category) lines.push(`Category: ${c.category}`);
+  if (c.brand_name) lines.push(`Brand: ${c.brand_name}`);
+  lines.push('');
+  lines.push('Generate the screener (q1) + 11 ad-effectiveness questions, plus q12 message-match if intended_message was supplied, plus q13 sharing.');
+  return lines.join('\n');
+}
+
+async function generateMarketingSurvey({ description, clarify }) {
+  const userPrompt = buildMarketingUserPrompt({ description, clarify });
+  const hasMessage = !!(clarify && clarify.intended_message && clarify.intended_message.trim());
+
+  const firstResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: MARKETING_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }],
+    maxTokens: 3000,
+    enablePromptCache: true,
+  });
+  let parsed;
+  try { parsed = extractJSON(firstResp.text); }
+  catch (err) { parsed = null; logger.warn('marketing survey: parse failed', { err: err.message }); }
+  let validationErr = parsed ? validateMarketingSurvey(parsed, hasMessage) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.info('marketing survey: retry on validation failure', { reason: validationErr });
+  const retryResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: MARKETING_SURVEY_GEN_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
+    }],
+    maxTokens: 3000,
+    enablePromptCache: true,
+  });
+  try { parsed = extractJSON(retryResp.text); }
+  catch (err) { parsed = null; logger.warn('marketing survey: retry parse failed', { err: err.message }); }
+  validationErr = parsed ? validateMarketingSurvey(parsed, hasMessage) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.warn('marketing survey: both attempts failed validation', {
     reason: validationErr,
     questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
   });
