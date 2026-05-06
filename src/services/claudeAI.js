@@ -370,6 +370,9 @@ async function generateSurvey({
   if (goal === 'pricing') {
     return generatePricingSurvey({ description, clarify });
   }
+  if (goal === 'roadmap') {
+    return generateRoadmapSurvey({ description, clarify });
+  }
 
   const prompt = `Mission Goal: ${goal}
 Description: "${description}"
@@ -584,6 +587,156 @@ async function generatePricingSurvey({ description, clarify }) {
   if (!validationErr) return parsed;
 
   logger.warn('pricing survey: both attempts failed validation', {
+    reason: validationErr,
+    questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
+  });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
+}
+
+// ── PASS 29 B6 — FEATURE ROADMAP (MAXDIFF + KANO) ──────────────────────────
+// Generic SURVEY_GEN_SYSTEM forces "exactly 5 questions". MaxDiff + Kano
+// needs ~12 MaxDiff sets + 2 Kano questions × top-5 features = ~22
+// questions. Splitting into a dedicated prompt keeps the cache prefix
+// stable for both paths.
+const ROADMAP_SURVEY_GEN_SYSTEM = `You are a senior product-research methodologist specializing in feature prioritization. You design MaxDiff (best-worst scaling) and Kano (functional/dysfunctional pair) instruments. Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short product/brand name extracted from the brief (2-5 words)",
+  "missionStatement": "One-sentence research objective starting with 'To prioritize features for...' or 'To classify the importance of...'",
+  "questions": [
+    {
+      "id": "q1",
+      "text": "Question text",
+      "type": "single|max_diff_set",
+      "options": ["Option A", "Option B"],
+      "isScreening": true,
+      "qualifyingAnswer": "Option A",
+      "qualifying_answers": ["Option A"],
+      "screening_continue_on": ["Option A"],
+      "methodology": "screener|max_diff|kano",
+      "feature_set": ["id1","id2","id3","id4"],
+      "feature_id": "f3",
+      "kano_type": "functional|dysfunctional"
+    }
+  ],
+  "targetingSuggestions": {
+    "recommendedCountries": ["US"],
+    "recommendedAgeRanges": ["25-44"],
+    "recommendedGenders": [],
+    "reasoning": "Brief explanation"
+  },
+  "suggestedRespondentCount": 250
+}
+
+Hard rules:
+- q1 is the screener (methodology="screener", isScreening=true) qualifying respondents to the product's category. Generate it from the user message context. Type "single", 2-3 options, qualify the most relevant.
+- q2..qN are MaxDiff sets. Generate exactly 12 sets. Each set has 4 features drawn from the supplied feature list. Each feature should appear in at least 3 sets and at most 5 sets across the 12 sets (rough balance — exact balance is checked by the validator).
+  - type="max_diff_set"
+  - methodology="max_diff"
+  - feature_set carries the 4 feature ids in display order
+  - text="Of these 4 features, which is MOST important to you, and which is LEAST important?"
+  - options should list the 4 feature names verbatim (the simulator interprets the answer as {best: id, worst: id})
+- After the 12 MaxDiff sets come the Kano pairs. Pick the TOP 5 features from the supplied list (or all features if N<=5). For each top feature, emit TWO questions back-to-back:
+  - Functional (methodology="kano", kano_type="functional"): text="How would you feel if [feature name] WAS in the product?" type="single", options=["I like it","I expect it","Neutral","I can live with it","I dislike it"]
+  - Dysfunctional (methodology="kano", kano_type="dysfunctional"): text="How would you feel if [feature name] WAS NOT in the product?" same 5 options.
+  - feature_id carries the feature id on both pair members.
+- Total question count: 1 screener + 12 MaxDiff + (2 × min(5, feature_count)) Kano = 23 when feature_count >= 5, else 13 + 2*N.
+- DO NOT include funnel_stage, kpi_category, is_lift_question, channel_id, vw_band, gg_anchor_index, currency, category — those belong to other methodologies.
+- suggestedRespondentCount default 250 (well above the 150 MaxDiff bound). Escalate to 400+ when the brief mentions sub-segment splits.
+
+Output MUST be valid JSON. No prose, no markdown fences.`;
+
+function validateRoadmapSurvey(parsed, featureCount) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  if (qs.length < 13) return `expected at least 13 questions (1 screener + 12 MaxDiff sets), got ${qs.length}`;
+
+  if (qs[0].methodology !== 'screener') return 'q1 must be screener';
+
+  const maxDiffs = qs.filter((q) => q.methodology === 'max_diff');
+  if (maxDiffs.length !== 12) return `expected 12 MaxDiff sets, got ${maxDiffs.length}`;
+  for (const m of maxDiffs) {
+    if (!Array.isArray(m.feature_set) || m.feature_set.length !== 4) {
+      return 'each MaxDiff set must carry feature_set of 4 ids';
+    }
+  }
+  // Each feature should appear in at least 3 of the 12 sets (rough balance).
+  const counts = {};
+  for (const m of maxDiffs) for (const fid of m.feature_set) counts[fid] = (counts[fid] || 0) + 1;
+  const min = Math.min(...Object.values(counts));
+  if (min < 2) return `MaxDiff balance: at least one feature appears in < 2 sets (got ${min})`;
+
+  const kanoPairs = qs.filter((q) => q.methodology === 'kano');
+  const expectedKano = 2 * Math.min(5, featureCount || 6);
+  if (kanoPairs.length !== expectedKano) {
+    return `expected ${expectedKano} Kano questions (${expectedKano / 2} features × 2), got ${kanoPairs.length}`;
+  }
+  return null;
+}
+
+function buildRoadmapUserPrompt({ description, clarify }) {
+  const c = clarify || {};
+  const featuresJson = c.roadmap_features || '[]';
+  let features;
+  try { features = JSON.parse(featuresJson); }
+  catch { features = []; }
+  const featureCount = Array.isArray(features) ? features.length : 0;
+
+  const lines = [
+    'Mission Goal: roadmap',
+    `Brief: "${description}"`,
+    '',
+    'Feature list (use these exact ids in feature_set / feature_id):',
+  ];
+  for (const f of features) {
+    lines.push(`- id=${f.id} name="${f.name}"${f.description ? ` desc="${f.description}"` : ''}`);
+  }
+  lines.push('');
+  lines.push(`Total features: ${featureCount}.`);
+  lines.push('First extract a SHORT product name (2-5 words) from the brief.');
+  lines.push('Generate the screener (q1), 12 balanced MaxDiff sets, and Kano pairs for the top 5 features (or all if fewer than 5 features supplied).');
+  return lines.join('\n');
+}
+
+async function generateRoadmapSurvey({ description, clarify }) {
+  const userPrompt = buildRoadmapUserPrompt({ description, clarify });
+  let features;
+  try { features = JSON.parse(clarify?.roadmap_features || '[]'); }
+  catch { features = []; }
+  const featureCount = Array.isArray(features) ? features.length : 0;
+
+  const firstResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: ROADMAP_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }],
+    maxTokens: 4500,
+    enablePromptCache: true,
+  });
+  let parsed;
+  try { parsed = extractJSON(firstResp.text); }
+  catch (err) { parsed = null; logger.warn('roadmap survey: parse failed', { err: err.message }); }
+  let validationErr = parsed ? validateRoadmapSurvey(parsed, featureCount) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.info('roadmap survey: retry on validation failure', { reason: validationErr });
+  const retryResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: ROADMAP_SURVEY_GEN_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
+    }],
+    maxTokens: 4500,
+    enablePromptCache: true,
+  });
+  try { parsed = extractJSON(retryResp.text); }
+  catch (err) { parsed = null; logger.warn('roadmap survey: retry parse failed', { err: err.message }); }
+  validationErr = parsed ? validateRoadmapSurvey(parsed, featureCount) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.warn('roadmap survey: both attempts failed validation', {
     reason: validationErr,
     questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
   });

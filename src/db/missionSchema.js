@@ -103,6 +103,9 @@ const ALLOWED_COLUMNS = new Set([
   'pricing_expected_min',
   'pricing_expected_max',
   'pricing_methodology',
+  // Pass 29 B6 — feature roadmap (MaxDiff + Kano).
+  'roadmap_features',
+  'roadmap_methodology',
 ]);
 
 /**
