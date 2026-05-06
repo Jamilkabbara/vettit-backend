@@ -112,6 +112,13 @@ const ALLOWED_COLUMNS = new Set([
   'csat_customer_type',
   'csat_recency_window',
   'csat_methodology',
+  // Pass 30 B1 — validate product (concept test).
+  'concept_description',
+  'concept_media_url',
+  'concept_media_type',
+  'concept_price_usd',
+  'concept_use_occasion',
+  'validate_methodology',
 ]);
 
 /**
