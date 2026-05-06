@@ -106,6 +106,25 @@ router.get('/:missionId', authenticate, async (req, res, next) => {
     const filtered = applyFilters(responses || [], pack.mission, filters);
     const lift_mode = filters.exposure === 'lift';
 
+    // Pass 28 C — for brand_lift missions with filters applied (or
+    // lift mode requested), compute a filtered brand_lift_results
+    // shape so the score dial / funnel / channel table actually
+    // re-render with the slice. Non-brand_lift missions and unfiltered
+    // brand_lift requests pass through the canonical
+    // mission.brand_lift_results JSONB.
+    const isBrandLift = pack.mission.goal_type === 'brand_lift';
+    const baseBlr = pack.mission.brand_lift_results || null;
+    const shouldRecomputeBlr = isBrandLift && baseBlr && (filters.applied || lift_mode);
+    const filteredBlr = shouldRecomputeBlr
+      ? computeFilteredBrandLiftResults({
+          blr: baseBlr,
+          filtered,
+          questions: pack.mission.questions || [],
+          lift_mode,
+          filters,
+        })
+      : null;
+
     let payload;
     if (lift_mode) {
       const exposedSet = filtered.filter(r => r.exposure_status === 'exposed');
@@ -122,6 +141,7 @@ router.get('/:missionId', authenticate, async (req, res, next) => {
         filtered_respondent_count: distinctPersonas(filtered).size,
         total_respondent_count: distinctPersonas(responses || []).size,
         lift_mode: true,
+        brand_lift_results: filteredBlr,
       };
     } else {
       const filteredAgg = filters.applied
@@ -139,6 +159,7 @@ router.get('/:missionId', authenticate, async (req, res, next) => {
         filtered_respondent_count: distinctPersonas(filtered).size,
         total_respondent_count: distinctPersonas(responses || []).size,
         lift_mode: false,
+        brand_lift_results: filteredBlr,
       };
     }
     res.json(payload);
@@ -225,6 +246,178 @@ function pairAggregates(exposedRows, controlRows, questions) {
     out[q.id] = { exposed: e[q.id] || null, control: c[q.id] || null };
   }
   return out;
+}
+
+// ─── Pass 28 C — filtered brand_lift_results aggregator ────────
+// Recomputes the brand_lift_results shape (score + funnel + channels +
+// geography + waves) for an arbitrary respondent slice. Anything that
+// cannot be recomputed from response-level data (competitors,
+// recommendations, AI synthesis) passes through from the canonical
+// pre-aggregated mission.brand_lift_results.
+//
+// Funnel value heuristic: per stage, average normalized values
+// (rating averages 1-5 → 0-100 by *20; NPS 0-10 → 0-100 by *10;
+// single/opinion/multi → top option's share %).
+//
+// Score: weighted blend of brand_favorability (0.20),
+// brand_consideration (0.30), purchase_intent (0.30), nps (0.20).
+function stageValueFromAgg(qAgg, q) {
+  if (!qAgg || !q) return null;
+  const type = q.type || qAgg.type;
+  if (type === 'rating') {
+    const avg = qAgg.average;
+    if (typeof avg !== 'number') return null;
+    if (q.funnel_stage === 'nps') return Math.round(avg * 10);
+    return Math.round(avg * 20);
+  }
+  if (type === 'single' || type === 'opinion') {
+    const dist = qAgg.distribution || {};
+    const total = Object.values(dist).reduce((s, n) => s + (Number(n) || 0), 0);
+    if (total === 0) return null;
+    const top = Object.entries(dist).sort((a, b) => b[1] - a[1])[0];
+    return Math.round(((Number(top[1]) || 0) / total) * 100);
+  }
+  if (type === 'multi') {
+    const dist = qAgg.distribution || {};
+    const n = qAgg.n_respondents || qAgg.n || 0;
+    if (n === 0) return null;
+    const top = Object.entries(dist).sort((a, b) => b[1] - a[1])[0];
+    return Math.round(((Number(top[1]) || 0) / n) * 100);
+  }
+  return null;
+}
+
+function buildFunnelFromAgg(agg, questions) {
+  const STAGES = [
+    { id: 'unaided_ad_recall',       label: 'Unaided ad recall' },
+    { id: 'aided_ad_recall',         label: 'Aided ad recall' },
+    { id: 'unaided_brand_awareness', label: 'Unaided awareness' },
+    { id: 'aided_brand_awareness',   label: 'Aided awareness' },
+    { id: 'brand_familiarity',       label: 'Familiarity' },
+    { id: 'brand_favorability',      label: 'Favorability' },
+    { id: 'brand_consideration',     label: 'Consideration' },
+    { id: 'purchase_intent',         label: 'Purchase intent' },
+    { id: 'nps',                     label: 'NPS' },
+  ];
+  const out = [];
+  for (const stage of STAGES) {
+    const qsForStage = (questions || []).filter(q => q.funnel_stage === stage.id);
+    if (qsForStage.length === 0) continue;
+    const values = qsForStage
+      .map(q => stageValueFromAgg(agg[q.id], q))
+      .filter(v => v != null);
+    if (values.length === 0) continue;
+    const value = Math.round(values.reduce((s, v) => s + v, 0) / values.length);
+    out.push({ id: stage.id, label: stage.label, value });
+  }
+  return out;
+}
+
+function computeScoreFromFunnel(funnel) {
+  const weights = {
+    brand_favorability: 0.20,
+    brand_consideration: 0.30,
+    purchase_intent: 0.30,
+    nps: 0.20,
+  };
+  let total = 0;
+  let used = 0;
+  for (const stage of funnel) {
+    const w = weights[stage.id];
+    if (typeof w === 'number' && typeof stage.value === 'number') {
+      total += stage.value * w;
+      used += w;
+    }
+  }
+  if (used === 0) {
+    if (funnel.length === 0) return null;
+    return Math.round(funnel.reduce((s, f) => s + (f.value || 0), 0) / funnel.length);
+  }
+  return Math.round(total / used);
+}
+
+function liftStages(exposedFunnel, controlFunnel) {
+  const cIdx = new Map(controlFunnel.map(s => [s.id, s]));
+  return exposedFunnel.map(s => {
+    const c = cIdx.get(s.id);
+    const exposed = s.value;
+    const control = c ? c.value : 0;
+    return {
+      id: s.id,
+      label: s.label,
+      value: exposed,
+      control,
+      delta_pp: exposed - control,
+    };
+  });
+}
+
+function intersect(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b)) return false;
+  const set = new Set(b);
+  return a.some(x => set.has(x));
+}
+
+function filterChannels(channels, f) {
+  if (!Array.isArray(channels)) return [];
+  let out = channels;
+  if (f.channels && f.channels.length > 0) out = out.filter(c => f.channels.includes(c.id));
+  if (f.categories && f.categories.length > 0) out = out.filter(c => f.categories.includes(c.category));
+  if (f.markets && f.markets.length > 0) {
+    out = out.filter(c => {
+      const mks = Array.isArray(c.markets) ? c.markets : [];
+      return mks.length === 0 || intersect(mks, f.markets);
+    });
+  }
+  return out;
+}
+
+function filterGeography(geo, f) {
+  if (!Array.isArray(geo)) return [];
+  if (!f.markets || f.markets.length === 0) return geo;
+  return geo.filter(row => f.markets.includes(row.region));
+}
+
+function filterWaves(waves, f) {
+  if (!Array.isArray(waves)) return [];
+  if (f.wave == null) return waves;
+  return waves.filter(w => Number(w.wave_index ?? w.label) === Number(f.wave) || w.label === String(f.wave));
+}
+
+function computeFilteredBrandLiftResults({ blr, filtered, questions, lift_mode, filters }) {
+  if (!blr) return null;
+  const fallback = { ...blr };
+  if (lift_mode) {
+    const exposedRows = filtered.filter(r => r.exposure_status === 'exposed');
+    const controlRows = filtered.filter(r => r.exposure_status === 'control');
+    const eAgg = recomputeAggregates(exposedRows, questions);
+    const cAgg = recomputeAggregates(controlRows, questions);
+    const eFunnel = buildFunnelFromAgg(eAgg, questions);
+    const cFunnel = buildFunnelFromAgg(cAgg, questions);
+    const funnel = liftStages(eFunnel, cFunnel);
+    const score = computeScoreFromFunnel(eFunnel);
+    return {
+      ...fallback,
+      score: score != null ? score : fallback.score,
+      funnel: funnel.length > 0 ? funnel : fallback.funnel,
+      channels: filterChannels(fallback.channels, filters),
+      geography: filterGeography(fallback.geography, filters),
+      waves: filterWaves(fallback.waves, filters),
+      lift_mode: true,
+    };
+  }
+  const agg = recomputeAggregates(filtered, questions);
+  const funnel = buildFunnelFromAgg(agg, questions);
+  const score = computeScoreFromFunnel(funnel);
+  return {
+    ...fallback,
+    score: score != null ? score : fallback.score,
+    funnel: funnel.length > 0 ? funnel : fallback.funnel,
+    channels: filterChannels(fallback.channels, filters),
+    geography: filterGeography(fallback.geography, filters),
+    waves: filterWaves(fallback.waves, filters),
+    lift_mode: false,
+  };
 }
 
 // ─── GET /api/results/:missionId/status ──────────────────────

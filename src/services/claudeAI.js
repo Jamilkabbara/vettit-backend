@@ -207,10 +207,167 @@ JSON structure required:
 
 // ── FUNCTIONS ───────────────────────────────────────────────────────────────
 
+// ── PASS 28 B — BRAND LIFT SURVEY SYSTEM PROMPT ─────────────────────────────
+// The general SURVEY_GEN_SYSTEM forces "exactly 5 questions", which clashes
+// with the brand-lift framework that needs 10-14 funnel-staged questions.
+// Splitting brand_lift into its own system prompt keeps the cache prefix
+// stable for both paths (cache miss only on the first hit per prompt).
+const BRAND_LIFT_SURVEY_GEN_SYSTEM = `You are a senior brand-lift research methodologist at a top-tier research consultancy.
+Your job is to design brand-lift survey instruments that measure ad recall, brand awareness, perception shift, consideration, intent, and advocacy. Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short brand name extracted from the brief (2-5 words)",
+  "missionStatement": "One-sentence research objective starting with 'To measure...' or 'To quantify...'",
+  "questions": [
+    {
+      "id": "q1",
+      "text": "Question text — use the short brand name, never paste the full brief",
+      "type": "single|multi|rating|opinion|text",
+      "options": ["Option A", "Option B"],
+      "isScreening": true,
+      "qualifyingAnswer": "Option A",
+      "qualifying_answers": ["Option A"],
+      "screening_continue_on": ["Option A"],
+      "funnel_stage": "screening|unaided_ad_recall|aided_ad_recall|unaided_brand_awareness|aided_brand_awareness|brand_familiarity|brand_favorability|brand_consideration|purchase_intent|nps|message_association|channel_specific_recall",
+      "kpi_category": "screening|ad_recall|awareness|perception|consideration|intent|advocacy",
+      "is_lift_question": true,
+      "channel_id": null
+    }
+  ],
+  "targetingSuggestions": {
+    "recommendedCountries": ["AE", "US"],
+    "recommendedAgeRanges": ["25-34", "35-44"],
+    "recommendedGenders": [],
+    "reasoning": "Brief explanation"
+  },
+  "suggestedRespondentCount": 50
+}
+
+Hard rules:
+- Generate 10 to 14 questions. Default 12. Never fewer than 10, never more than 14.
+- Question 1 MUST be a screening question with funnel_stage="screening", kpi_category="screening", is_lift_question=false. All other questions: is_lift_question=true.
+- Cover the funnel: at least one question for each of {unaided_ad_recall|aided_ad_recall, unaided_brand_awareness|aided_brand_awareness, brand_favorability, brand_consideration, purchase_intent, nps, message_association}. Channel-specific recall is required when channel_ids are provided in the user message.
+- Question types map to funnel stages:
+    unaided_ad_recall / unaided_brand_awareness    → "text"
+    aided_ad_recall / aided_brand_awareness        → "multi" (options must include the brand + every supplied competitor)
+    brand_familiarity / brand_favorability         → "rating" (1-5)
+    brand_consideration                            → "rating" (1-5) or "single" yes/no
+    purchase_intent                                → "rating" (1-5)
+    nps                                            → "rating" (0-10 NPS scale)
+    message_association                            → "multi" (4-6 short message takeaways grounded in the brief)
+    channel_specific_recall                        → "multi" (the supplied channel display names; channel_id MUST match the chosen channel id)
+- For aided questions, every competitor name supplied in the user message MUST appear in options alongside the brand. Add 1-2 plausible distractors only when fewer than 3 competitors were supplied.
+- channel_specific_recall question(s): emit ONE per channel from the top 3 supplied channel ids; set channel_id to the matching id. If no channel ids supplied, omit channel_specific_recall and emit at least 11 other questions.
+- KPI template adjustments:
+    funnel_overview            → balanced 12 across all stages (default)
+    brand_awareness_builder    → 10-12; emphasise unaided_brand_awareness, aided_brand_awareness, brand_familiarity; drop nps + favorability
+    ad_recall_optimizer        → 10-12; emphasise unaided_ad_recall, aided_ad_recall, message_association
+    brand_perception_shift     → 10-12; emphasise brand_familiarity, brand_favorability, message_association
+    consideration_driver       → 10-12; emphasise brand_consideration, purchase_intent
+    purchase_intent_generator  → 10-12; emphasise purchase_intent, nps, brand_consideration
+    creative_effectiveness     → 10-12; emphasise message_association, brand_favorability, ad_recall
+    multi_market_comparison    → 10-12; mirror the funnel_overview but flag stages that are best compared cross-market
+- Country codes: AE (UAE), US (USA), GB (UK), SA (Saudi Arabia), IN (India), AU (Australia), DE (Germany), FR (France), JP (Japan), BR (Brazil).
+- suggestedRespondentCount default 50 (Pulse tier). Escalate to 200 (Tracker) only when the brief explicitly asks for sub-segment statistical comparison.
+- NEVER include any of {category, recommendedCountries.cities, suggestedTargeting.behaviors} unless the brief explicitly requires them.
+
+This is a brand-lift instrument. Funnel stage metadata, lift flags, and channel grounding are not optional; downstream results, exports, and benchmarks depend on them.`;
+
 /**
- * Generate a complete survey from a user's mission description
+ * Pass 28 B — output validator for brand-lift surveys.
+ * Returns null on success, or a string describing what's missing / wrong
+ * so the caller can ask Claude to retry once with the explicit fix-up.
  */
-async function generateSurvey({ goal, description, targetingHints = {} }) {
+function validateBrandLiftSurvey(parsed) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  if (qs.length < 10) return `only ${qs.length} questions returned; need at least 10`;
+  if (qs.length > 14) return `${qs.length} questions returned; cap is 14`;
+
+  const first = qs[0];
+  if (!first || first.funnel_stage !== 'screening') {
+    return 'first question must have funnel_stage="screening"';
+  }
+  if (first.is_lift_question !== false) {
+    return 'screening question must have is_lift_question=false';
+  }
+
+  for (let i = 1; i < qs.length; i++) {
+    const q = qs[i];
+    if (!q || typeof q !== 'object') return `question ${i + 1} is not an object`;
+    if (!q.funnel_stage) return `question ${i + 1} missing funnel_stage`;
+    if (!q.kpi_category) return `question ${i + 1} missing kpi_category`;
+    if (q.is_lift_question !== true) {
+      return `question ${i + 1} (non-screening) must have is_lift_question=true`;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Pass 28 B — build the brand-lift user prompt from clarify_answers.
+ * Reads markets, channel_ids, competitors, brand_lift_template, wave_mode,
+ * creative_url forwarded by Pass 28 A. Falls back to safe defaults when
+ * fields are missing so older clients keep working.
+ */
+function buildBrandLiftUserPrompt({ description, clarify, missionAssets }) {
+  const c = clarify || {};
+  const markets = (c.markets || '').split(',').filter(Boolean);
+  const channelIds = (c.channel_ids || '').split(',').filter(Boolean);
+  const competitors = (c.competitors || '').split('|').filter(Boolean);
+  const template = c.brand_lift_template || 'funnel_overview';
+  const waveMode = c.wave_mode || 'single_wave';
+  const creativeUrl = c.creative_url || (missionAssets && missionAssets[0]?.url) || '';
+  const creativeMime = c.creative_mime || (missionAssets && missionAssets[0]?.mimeType) || '';
+
+  const lines = [
+    `Mission Goal: brand_lift`,
+    `Brief: "${description}"`,
+    `KPI Template: ${template}`,
+    `Wave Mode: ${waveMode}`,
+  ];
+  if (markets.length) lines.push(`Target Markets: ${markets.join(', ')}`);
+  if (channelIds.length) {
+    lines.push(`Selected Channel IDs (top 3 used for channel_specific_recall): ${channelIds.slice(0, 3).join(', ')}`);
+  }
+  if (competitors.length) lines.push(`Competitors: ${competitors.join(', ')}`);
+  if (creativeUrl) lines.push(`Creative: ${creativeUrl} (${creativeMime || 'unknown mime'})`);
+
+  lines.push('');
+  lines.push('First extract a SHORT brand name (2-5 words) from the brief.');
+  lines.push('Then generate the brand-lift survey JSON as specified.');
+  return lines.join('\n');
+}
+
+/**
+ * Generate a complete survey from a user's mission description.
+ *
+ * Pass 28 B — branches on goal === 'brand_lift'. The brand-lift path:
+ *   - Uses BRAND_LIFT_SURVEY_GEN_SYSTEM (10-14 funnel-staged questions
+ *     instead of the generic "exactly 5"; funnel_stage / kpi_category /
+ *     is_lift_question / channel_id metadata required).
+ *   - Reads markets / channel_ids / competitors / brand_lift_template /
+ *     wave_mode / creative_url from clarify_answers (forwarded by the
+ *     setup page in Pass 28 A).
+ *   - Validates output; one retry on validation failure with the
+ *     specific reason fed back to the model. Falls through with a
+ *     warn-log if the second attempt also fails so the user can still
+ *     create the mission (the dashboard already lets them edit Qs).
+ */
+async function generateSurvey({
+  goal,
+  description,
+  targetingHints = {},
+  clarify = {},
+  missionAssets = [],
+}) {
+  if (goal === 'brand_lift') {
+    return generateBrandLiftSurvey({ description, clarify, missionAssets });
+  }
+
   const prompt = `Mission Goal: ${goal}
 Description: "${description}"
 ${targetingHints.countries?.length ? `Target Markets: ${targetingHints.countries.join(', ')}` : ''}
@@ -227,6 +384,64 @@ Then generate the survey JSON as specified in your instructions.`;
   });
 
   return extractJSON(response.text);
+}
+
+async function generateBrandLiftSurvey({ description, clarify, missionAssets }) {
+  const userPrompt = buildBrandLiftUserPrompt({ description, clarify, missionAssets });
+
+  const firstResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: BRAND_LIFT_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }],
+    maxTokens: 4000,
+    enablePromptCache: true,
+  });
+
+  let parsed;
+  try {
+    parsed = extractJSON(firstResp.text);
+  } catch (err) {
+    parsed = null;
+    logger.warn('brand_lift survey: first attempt parse failed', { err: err.message });
+  }
+
+  let validationErr = parsed ? validateBrandLiftSurvey(parsed) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+
+  // Single retry — feed the specific failure back so Claude can fix it.
+  logger.info('brand_lift survey: retry on validation failure', { reason: validationErr });
+  const retryPrompt = `${userPrompt}
+
+Your previous reply failed validation: ${validationErr}
+Return the JSON again with that issue fixed. Keep all other rules.`;
+
+  const retryResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: BRAND_LIFT_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: retryPrompt }],
+    maxTokens: 4000,
+    enablePromptCache: true,
+  });
+
+  try {
+    parsed = extractJSON(retryResp.text);
+  } catch (err) {
+    parsed = null;
+    logger.warn('brand_lift survey: retry parse failed', { err: err.message });
+  }
+
+  validationErr = parsed ? validateBrandLiftSurvey(parsed) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+
+  // Both attempts failed — surface the best-effort result. The frontend
+  // continues, the user can edit questions on the dashboard, and we log
+  // for diagnosis. We DO NOT throw, because failing the whole setup flow
+  // is worse for the user than letting them see imperfect questions.
+  logger.warn('brand_lift survey: both attempts failed validation', {
+    reason: validationErr,
+    questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
+  });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
 }
 
 /**

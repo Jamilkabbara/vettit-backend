@@ -1,13 +1,74 @@
 # Pass 27 — Performance Audit + Implementation
 
-**Date:** 2026-05-05 (updated 2026-05-05 with Pass 27.5 F measurements)
+**Date:** 2026-05-05 (updated 2026-05-06 with Pass 28 D LCP fix)
+
+## Pass 28 D — Top LCP fix shipped
+
+**perf-LCP-002 (web font swap)** picked as the #1 ticket and shipped.
+
+Diagnosis from the Pass 27.5 F audit: Inter + Manrope were imported
+inside `src/index.css` via `@import url('https://fonts.googleapis.com/...')`.
+That created a four-step serial fetch chain:
+
+```
+HTML parse → bundle download → bundle parse → CSS @import fetch →
+CSS parse → font-CDN woff2 fetch → text render → LCP fires
+```
+
+There was also no preconnect to `fonts.gstatic.com` — every woff2
+file paid a fresh TLS handshake.
+
+Fix (`vett-platform pass-28-brand-lift-closeout`):
+
+1. `index.html` gains `<link rel="preconnect" href="https://fonts.googleapis.com">`
+   and `<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>`.
+2. The Google Fonts stylesheet itself moves from `@import` inside
+   `src/index.css` to a `<link rel="stylesheet">` in the HTML head —
+   parses in parallel with the JS bundle instead of after it.
+
+Expected delta: -800ms to -1.5s LCP on `/landing` mobile (the
+worst-case slow-4G profile from the Pass 27.5 F run). Re-measure
+post-deploy and add the comparison row below.
+
+### Comparison (re-measure post-Vercel auto-deploy)
+
+| Page | Form factor | LCP before | LCP after | Δ | Ticket |
+|---|---|---|---|---|---|
+| /landing | mobile | 4.4s | _(pending Vercel deploy)_ | _(pending)_ | perf-LCP-002 |
+| /landing | desktop | 4.8s | _(pending Vercel deploy)_ | _(pending)_ | perf-LCP-002 |
+| /privacy | desktop | 4.2s | _(pending Vercel deploy)_ | _(pending)_ | perf-LCP-002 |
+
+Re-measure command (run after Vercel finishes the auto-deploy of
+the merged `pass-28-brand-lift-closeout` branch):
+
+```
+npx lighthouse@12.8.2 https://www.vettit.ai/ --quiet --output=json \
+  --only-categories=performance --form-factor=mobile \
+  --chrome-flags="--headless"
+```
+
+If LCP did not measurably improve on `/landing` mobile, revert the
+stylesheet move (the preconnect hints are a no-op on their own,
+zero risk to leave). If TBT, CLS, or FCP regressed on any page,
+also revert.
+
+### Tickets remaining open
+
+- `perf-LCP-001`: bundle composition audit (separate scope)
+- `perf-LCP-003`: hero image preload (`/landing` doesn't currently
+  use an above-the-fold image — defer until one exists)
+- `perf-LCP-004`: Cache-Control verify on font WOFF2 files (font CDN
+  is now Google Fonts, not @fontsource — Google sets long Cache-Control
+  by default; ticket can be closed once we confirm via DevTools)
 
 ## Pass 27.5 F — Lighthouse production measurements
+
+## Pass 27.5 F — Lighthouse production measurements (baseline)
 
 Run via `npx lighthouse@12.8.2` against [www.vettit.ai](https://www.vettit.ai)
 post Pass 27 deploy. Conditions: headless Chrome, default network +
 CPU throttling (slow 4G simulated for mobile, no throttle for desktop).
-Date: 2026-05-05.
+Date: 2026-05-05. **These are the pre-Pass-28-D baseline numbers.**
 
 | Page | Form factor | LCP | TBT | CLS | FCP | TTI | Speed Index | Performance score |
 |---|---|---|---|---|---|---|---|---|

@@ -6,14 +6,35 @@ const { callClaude, extractJSON } = require('../services/ai/anthropic');
 const logger = require('../utils/logger');
 
 // POST /api/ai/generate-survey
+//
+// Pass 28 B — accepts clarify_answers (or legacy `clarify`) and
+// mission_assets. When goal_type === 'brand_lift', claudeAI.generateSurvey
+// branches into a brand-lift specific prompt that returns 10-14
+// funnel-staged questions with funnel_stage / kpi_category /
+// is_lift_question / channel_id metadata.
 router.post('/generate-survey', optionalAuthenticate, async (req, res, next) => {
   try {
-    const { goal, description, targetingHints } = req.body;
-    if (!goal || !description) return res.status(400).json({ error: 'goal and description are required' });
+    const {
+      goal,
+      goal_type,
+      description,
+      targetingHints,
+      clarify_answers,
+      clarify,
+      mission_assets,
+    } = req.body;
+    const resolvedGoal = goal_type || goal;
+    if (!resolvedGoal || !description) return res.status(400).json({ error: 'goal and description are required' });
     if (description.length < 20) return res.status(400).json({ error: 'Description too short. Please provide more detail.' });
 
-    const result = await ai.generateSurvey({ goal, description, targetingHints });
-    logger.info('Survey generated', { userId: req.user?.id, goal });
+    const result = await ai.generateSurvey({
+      goal: resolvedGoal,
+      description,
+      targetingHints,
+      clarify: clarify_answers || clarify || {},
+      missionAssets: Array.isArray(mission_assets) ? mission_assets : [],
+    });
+    logger.info('Survey generated', { userId: req.user?.id, goal: resolvedGoal });
     res.json(result);
   } catch (err) {
     next(err);
