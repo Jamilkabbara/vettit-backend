@@ -82,6 +82,10 @@ const ALLOWED_COLUMNS = new Set([
   'delivery_status',
   'delivery_check_at',
   'paid_amount_cents',
+  // Pass 29 A1 — flag for backfilled paid_amount_cents (TRUE means
+  // estimated from total_price_usd, FALSE means captured directly
+  // from Stripe payment_intent.succeeded).
+  'paid_amount_estimated',
   'partial_refund_id',
   'partial_refund_amount_cents',
 ]);

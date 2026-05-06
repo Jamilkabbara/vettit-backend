@@ -143,6 +143,13 @@ router.get('/dashboard', async (req, res, next) => {
     const { count: missingPaidCount } = await supabase
       .from('missions').select('id', { count: 'exact', head: true })
       .not('paid_at', 'is', null).is('paid_amount_cents', null);
+    // Pass 29 A1 — count rows that were backfilled from total_price_usd
+    // (estimated). These no longer trigger the critical warning, but
+    // surface as an info-level note so future audits know which revenue
+    // numbers are Stripe-confirmed vs estimated.
+    const { count: estimatedPaidCount } = await supabase
+      .from('missions').select('id', { count: 'exact', head: true })
+      .eq('paid_amount_estimated', true);
     const integrity_warnings = [];
     if (missingPaidCount > 0) {
       integrity_warnings.push({
@@ -152,6 +159,16 @@ router.get('/dashboard', async (req, res, next) => {
         description: `${missingPaidCount} missions have paid_at but no paid_amount_cents — Stripe webhook bug.`,
         affected_count: missingPaidCount,
         suggested_action: 'Fix Stripe webhook to populate paid_amount_cents on payment_intent.succeeded events.',
+      });
+    }
+    if (estimatedPaidCount > 0) {
+      integrity_warnings.push({
+        severity: 'info',
+        code: 'paid_amount_estimated',
+        title: 'Revenue includes estimated paid amounts',
+        description: `${estimatedPaidCount} missions have paid_amount_cents backfilled from total_price_usd (Pass 29 A1). Stripe-confirmed amounts are preferred for downstream reporting.`,
+        affected_count: estimatedPaidCount,
+        suggested_action: 'No action required. To replace estimates with Stripe-confirmed amounts, look up each mission\'s latest_payment_intent_id and read amount_received from the Stripe API.',
       });
     }
     if ((aiFailedRes.count || 0) >= 6) {
