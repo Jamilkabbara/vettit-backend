@@ -151,8 +151,8 @@ top-2-box ≥75% = great.
 
 **Sample size.** Min 100, best 200+.
 
-**Pass 29 commit.** ✅ B8 + B9 ship the input collector, NPS+CSAT+CES
-question generation, and benchmark-band callouts on the results page.
+**Pass 29 commit.** ✅ Shipped in Pass 29 B8 + B9 (`CSATInputs.tsx`,
+`generateCSATSurvey`, `CSATResultsPage.tsx`).
 
 ---
 
@@ -185,8 +185,8 @@ OPP; revenue-max often 10–20% below OPP.
 
 **Sample size.** Min 150 (GG bound), best 300+.
 
-**Pass 29 commit.** ✅ B4 + B5 ship pricing inputs, VW+GG question
-generation, and the 4-curve + demand-curve results page.
+**Pass 29 commit.** ✅ Shipped in Pass 29 B4 + B5 (`PricingInputs.tsx`,
+`generatePricingSurvey`, `PricingResultsPage.tsx`).
 
 ---
 
@@ -215,9 +215,9 @@ mandatory.
 
 **Sample size.** MaxDiff min 150, best 250; Kano min 100, best 200.
 
-**Pass 29 commit.** ✅ B6 + B7 ship the feature list collector,
-MaxDiff+Kano question generation, and the utility-bars + Kano-quadrant
-results page.
+**Pass 29 commit.** ✅ Shipped in Pass 29 B6 + B7
+(`FeatureListCollector.tsx`, `generateRoadmapSurvey`,
+`RoadmapResultsPage.tsx`).
 
 ---
 
