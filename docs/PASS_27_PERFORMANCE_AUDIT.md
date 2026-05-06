@@ -1,6 +1,73 @@
 # Pass 27 — Performance Audit + Implementation
 
-**Date:** 2026-05-05
+**Date:** 2026-05-05 (updated 2026-05-05 with Pass 27.5 F measurements)
+
+## Pass 27.5 F — Lighthouse production measurements
+
+Run via `npx lighthouse@12.8.2` against [www.vettit.ai](https://www.vettit.ai)
+post Pass 27 deploy. Conditions: headless Chrome, default network +
+CPU throttling (slow 4G simulated for mobile, no throttle for desktop).
+Date: 2026-05-05.
+
+| Page | Form factor | LCP | TBT | CLS | FCP | TTI | Speed Index | Performance score |
+|---|---|---|---|---|---|---|---|---|
+| /landing | desktop | 4.8s | 40ms | 0.002 | 4.4s | 4.9s | 6.7s | 0.68 |
+| /landing | mobile | 4.4s | 0ms | 0 | — | — | — | 0.75 |
+| /privacy | desktop | 4.2s | 0ms | 0 | — | — | — | 0.76 |
+
+Authenticated pages (/dashboard, /results/CA) not measured —
+require auth flow that headless Chrome doesn't carry, beyond scope
+of this pass. Will be measured manually post-merge by signing in
+and running Lighthouse from DevTools.
+
+### Reading the results
+
+- **TBT and CLS are excellent** across all measured pages
+  (TBT ≤40ms vs 200ms target, CLS ≤0.002 vs 0.1 target). The
+  Pass 27 J wins (manualChunks, font-display:block, etc.) are
+  doing their job; main thread is not blocked.
+- **LCP is the bottleneck** (4.2-4.8s vs 2.5s target). Largest
+  Contentful Paint is consistently 2× above target across pages.
+  Root cause analysis below.
+- **Performance score 0.68-0.76** — driven entirely by LCP.
+
+### Root cause hypothesis for LCP regression
+
+LCP measures when the largest above-the-fold element finishes
+rendering. On VETT's landing page, that's likely:
+1. The hero copy + CTA card (rendered in React)
+2. OR a hero image / video (if any)
+
+Suspects (in order of likelihood):
+1. **Render-blocking JS** — main bundle parses before the React
+   tree mounts. The Pass 27 J `vendor-charts` / `vendor-motion`
+   chunks may not be loaded until interaction, but the main
+   App + Router bundle is. Measure: production main bundle size.
+2. **Hero image not preloaded** — if there's an OG image or
+   logo above the fold, it's loaded after CSS, after the JS
+   parse decides it's needed.
+3. **Web font swap** — Manrope / Inter via @fontsource may
+   render text after the bundle parses. font-display: block
+   means a brief invisible-text window then a swap, which
+   delays LCP if text is the largest element.
+
+### Follow-up tickets (not Pass 27.5 scope)
+
+- `perf-LCP-001`: Audit landing page bundle composition. Run
+  `vite-bundle-visualizer` and identify any module > 100KB that
+  could be lazy-loaded.
+- `perf-LCP-002`: Add `<link rel="preload" as="font">` for
+  Manrope-Bold and Inter-Regular weights used above the fold.
+- `perf-LCP-003`: If a hero image exists, add
+  `<link rel="preload" as="image">` for it.
+- `perf-LCP-004`: Verify the @fontsource WOFF2 files are served
+  with `Cache-Control: public, max-age=31536000, immutable` from
+  Vercel — should be by default but worth confirming.
+
+These are LCP-targeted, low-risk, hygiene fixes. None require
+architectural changes (no SSR, no service worker).
+
+## Original Pass 27 J — wins shipped
 
 ## Constraints
 

@@ -20,6 +20,8 @@ const { buildPDF: buildPDFLegacy } = require('../services/exports/pdf');
 const buildPDF = process.env.PDF_LEGACY === '1' ? buildPDFLegacy : buildPDFv2;
 const { buildPPTX } = require('../services/exports/pptx');
 const { buildXLSX } = require('../services/exports/xlsx');
+// Pass 27.5 B — CA-specific XLSX exporter (6-sheet template).
+const { buildCreativeAttentionXLSX } = require('../services/exports/xlsx_creative_attention');
 
 // ─── GET /api/results/:missionId ─────────────────────────────
 // Bug 7 (Pass 20): this endpoint now serves three response shapes,
@@ -95,17 +97,135 @@ router.get('/:missionId', authenticate, async (req, res, next) => {
 
     const { mission: full, responses, insights, aggregatedByQuestion, screeningFunnel } = pack;
 
-    res.json({
-      status: 'completed',
-      mission: full,
-      insights,
-      aggregatedByQuestion,
-      screeningFunnel: screeningFunnel || null,
-      responses: (responses || []).slice(0, 500),
-      responseCount: (responses || []).length,
-    });
+    // Pass 27.5 C — filter aggregation. AND composition across the 7 axes.
+    // Empty filter result returns 200 with zero counts (not 404). Lift mode
+    // returns paired exposed/control aggregations so the page can render
+    // delta_pp metrics. Backwards-compatible: omitting query params returns
+    // the existing shape plus new metadata fields.
+    const filters = parseFilters(req.query);
+    const filtered = applyFilters(responses || [], pack.mission, filters);
+    const lift_mode = filters.exposure === 'lift';
+
+    let payload;
+    if (lift_mode) {
+      const exposedSet = filtered.filter(r => r.exposure_status === 'exposed');
+      const controlSet = filtered.filter(r => r.exposure_status === 'control');
+      payload = {
+        status: 'completed',
+        mission: full,
+        insights,
+        aggregatedByQuestion: pairAggregates(exposedSet, controlSet, pack.mission.questions || []),
+        screeningFunnel: screeningFunnel || null,
+        responses: filtered.slice(0, 500),
+        responseCount: filtered.length,
+        filters_applied: filters,
+        filtered_respondent_count: distinctPersonas(filtered).size,
+        total_respondent_count: distinctPersonas(responses || []).size,
+        lift_mode: true,
+      };
+    } else {
+      const filteredAgg = filters.applied
+        ? recomputeAggregates(filtered, pack.mission.questions || [])
+        : aggregatedByQuestion;
+      payload = {
+        status: 'completed',
+        mission: full,
+        insights,
+        aggregatedByQuestion: filteredAgg,
+        screeningFunnel: screeningFunnel || null,
+        responses: filtered.slice(0, 500),
+        responseCount: filtered.length,
+        filters_applied: filters,
+        filtered_respondent_count: distinctPersonas(filtered).size,
+        total_respondent_count: distinctPersonas(responses || []).size,
+        lift_mode: false,
+      };
+    }
+    res.json(payload);
   } catch (err) { next(err); }
 });
+
+// ─── Filter helpers (Pass 27.5 C) ─────────────────────────────────
+// All filter axes parsed from req.query as CSV. Returned object carries
+// `applied` flag so the consumer knows whether the result differs from
+// the unfiltered set.
+function parseFilters(q) {
+  const csv = (s) => (typeof s === 'string' && s.length > 0 ? s.split(',').map(x => x.trim()).filter(Boolean) : []);
+  const exposure = typeof q.exposure === 'string' && ['exposed','control','lift','all'].includes(q.exposure)
+    ? q.exposure
+    : 'all';
+  const wave = q.wave != null && q.wave !== '' && !Number.isNaN(Number(q.wave))
+    ? Number(q.wave)
+    : null;
+  const f = {
+    markets: csv(q.markets),
+    channels: csv(q.channels),
+    categories: csv(q.categories),
+    genders: csv(q.genders),
+    ages: csv(q.ages),
+    exposure,
+    wave,
+  };
+  f.applied = f.markets.length > 0 || f.channels.length > 0 || f.categories.length > 0
+    || f.genders.length > 0 || f.ages.length > 0 || f.exposure !== 'all' || f.wave !== null;
+  return f;
+}
+
+function ageBucket(age) {
+  const a = Number(age);
+  if (!Number.isFinite(a)) return null;
+  if (a < 25) return '18-24';
+  if (a < 35) return '25-34';
+  if (a < 45) return '35-44';
+  if (a < 55) return '45-54';
+  if (a < 65) return '55-64';
+  return '65+';
+}
+
+function applyFilters(responses, mission, f) {
+  if (!f.applied) return responses;
+  return responses.filter(r => {
+    const profile = r.persona_profile || {};
+    if (f.markets.length > 0) {
+      const country = profile.country || profile.country_code;
+      if (!country || !f.markets.includes(country)) return false;
+    }
+    if (f.genders.length > 0) {
+      const g = (profile.gender || '').toLowerCase();
+      const norm = g === 'm' ? 'male' : g === 'f' ? 'female' : g.replace(/[ -]/g, '_');
+      if (!f.genders.map(x => x.toLowerCase()).includes(norm)) return false;
+    }
+    if (f.ages.length > 0) {
+      const bucket = ageBucket(profile.age);
+      if (!bucket || !f.ages.includes(bucket)) return false;
+    }
+    if (f.exposure === 'exposed' || f.exposure === 'control') {
+      if (r.exposure_status !== f.exposure) return false;
+    }
+    return true;
+  });
+}
+
+function distinctPersonas(rows) {
+  const s = new Set();
+  for (const r of rows) if (r.persona_id) s.add(r.persona_id);
+  return s;
+}
+
+function recomputeAggregates(rows, questions) {
+  const { aggregate } = require('../services/ai/insights');
+  return aggregate(rows, questions);
+}
+
+function pairAggregates(exposedRows, controlRows, questions) {
+  const e = recomputeAggregates(exposedRows, questions);
+  const c = recomputeAggregates(controlRows, questions);
+  const out = {};
+  for (const q of questions) {
+    out[q.id] = { exposed: e[q.id] || null, control: c[q.id] || null };
+  }
+  return out;
+}
 
 // ─── GET /api/results/:missionId/status ──────────────────────
 // Lightweight poll — used by the progress UI while a mission is running.
@@ -173,8 +293,14 @@ router.get('/:missionId/export/xlsx', authenticate, async (req, res, next) => {
     if (!pack)      return res.status(404).json({ error: 'Mission not found' });
     if (pack.error) return res.status(400).json({ error: pack.error });
 
-    await buildXLSX(pack, res);
-    logger.info('XLSX exported', { missionId: req.params.missionId, userId: req.user.id });
+    // Pass 27.5 B — CA missions get the 6-sheet creative_attention template.
+    // brand_lift + general_research stay on the existing buildXLSX path.
+    if (pack.mission?.goal_type === 'creative_attention') {
+      await buildCreativeAttentionXLSX(pack, res);
+    } else {
+      await buildXLSX(pack, res);
+    }
+    logger.info('XLSX exported', { missionId: req.params.missionId, userId: req.user.id, goal_type: pack.mission?.goal_type });
   } catch (err) { next(err); }
 });
 
