@@ -88,6 +88,13 @@ const ALLOWED_COLUMNS = new Set([
   'paid_amount_estimated',
   'partial_refund_id',
   'partial_refund_amount_cents',
+  // Pass 29 B2 — universal mission inputs. Required on every
+  // methodology-bound mission type (everything except `research`).
+  // Brand Lift and Creative Attention already capture equivalents
+  // through their deep pickers but writing here is harmless.
+  'brand_name',
+  'category',
+  'audience_description',
 ]);
 
 /**
