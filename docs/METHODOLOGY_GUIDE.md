@@ -1,6 +1,6 @@
 # Methodology Guide
 
-**Last updated:** 2026-05-06 (Pass 29 C1)
+**Last updated:** 2026-05-07 (Pass 30 C4)
 
 VETT ships industry-standard research methodologies on synthetic
 respondents. Each methodology has a setup-page input collector, a
@@ -11,7 +11,7 @@ This file is the index. Each methodology links to the audit row in
 [MISSION_METHODOLOGY_AUDIT.md](./MISSION_METHODOLOGY_AUDIT.md) and to the
 relevant code paths.
 
-## Shipped methodologies (Pass 29 + earlier)
+## Shipped methodologies (Pass 30 + earlier)
 
 | Methodology | Mission `goal_type` | Sample size (min / best) | Setup component | Backend dispatch | Results page | Pass |
 |---|---|---|---|---|---|---|
@@ -20,6 +20,9 @@ relevant code paths.
 | Van Westendorp + Gabor-Granger | `pricing` | 150 / 300 | `PricingInputs.tsx` | `generatePricingSurvey` | `PricingResultsPage.tsx` | 29 B4–B5 |
 | MaxDiff + Kano | `roadmap` | 150 / 250 | `FeatureListCollector.tsx` | `generateRoadmapSurvey` | `RoadmapResultsPage.tsx` | 29 B6–B7 |
 | NPS + CSAT + CES | `satisfaction` | 100 / 200 | `CSATInputs.tsx` | `generateCSATSurvey` | `CSATResultsPage.tsx` | 29 B8–B9 |
+| Concept Test | `validate` | 100 / 200 | `ConceptCollector.tsx` | `generateValidateSurvey` | `ValidateResultsPage.tsx` | 30 B1–B2 |
+| Sequential Monadic | `compare` | 80 / 150 (per concept) | `ConceptListCollector.tsx` | `generateCompareSurvey` | `CompareResultsPage.tsx` | 30 B3–B4 |
+| Ad Effectiveness | `marketing` | 100 / 200 | `AdTestingInputs.tsx` | `generateMarketingSurvey` | _(generic ResultsPage — bespoke deferred to Pass 31)_ | 30 B5 |
 
 Cross-cutting components ship in Pass 29 B2–B3:
 

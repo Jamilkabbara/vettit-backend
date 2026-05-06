@@ -1,6 +1,6 @@
 # Mission Methodology Audit
 
-**Last updated:** 2026-05-06 (Pass 29 B1)
+**Last updated:** 2026-05-07 (Pass 30 closure update)
 
 A read-only inventory of where each of the 14 canonical mission types
 sits on the methodology-rigor scale. Each section follows the same
@@ -12,22 +12,30 @@ for types shipped in earlier passes).
 The 14 ids match `src/data/missionGoals.ts` and the
 `missions.goal_type` column.
 
-| # | id (`missions.goal_type`) | Label | Pass 29 status |
+| # | id (`missions.goal_type`) | Label | Pass 30 status |
 |---|---|---|---|
-| 1 | `validate` | Validate Product | ⏸ Deferred to Pass 30 |
-| 2 | `compare` | Compare Concepts | ⏸ Deferred to Pass 30 |
-| 3 | `marketing` | Test Marketing / Ads | ⏸ Deferred to Pass 30 |
-| 4 | `satisfaction` | Customer Satisfaction | ✅ B8 + B9 ship NPS+CSAT+CES |
-| 5 | `pricing` | Pricing Research | ✅ B4 + B5 ship VW + GG |
-| 6 | `roadmap` | Feature Roadmap | ✅ B6 + B7 ship MaxDiff + Kano |
+| 1 | `validate` | Validate Product | ✅ Pass 30 B1 + B2 ship Concept Test |
+| 2 | `compare` | Compare Concepts | ✅ Pass 30 B3 + B4 ship Sequential Monadic |
+| 3 | `marketing` | Test Marketing / Ads | ✅ Pass 30 B5 ships Ad Effectiveness backend; results page deferred to Pass 31 |
+| 4 | `satisfaction` | Customer Satisfaction | ✅ Pass 29 B8 + B9 |
+| 5 | `pricing` | Pricing Research | ✅ Pass 29 B4 + B5 |
+| 6 | `roadmap` | Feature Roadmap | ✅ Pass 29 B6 + B7 |
 | 7 | `research` | General Research | Stays open-ended (no methodology lock) |
-| 8 | `competitor` | Competitor Analysis | ⏸ Deferred to Pass 30 |
-| 9 | `audience_profiling` | Audience Profiling | ⏸ Deferred to Pass 30 |
-| 10 | `naming_messaging` | Naming & Messaging | ⏸ Deferred to Pass 30 |
-| 11 | `market_entry` | Market Entry | ⏸ Deferred to Pass 30 |
-| 12 | `churn_research` | Churn Research | ⏸ Deferred to Pass 30 |
-| 13 | `brand_lift` | Brand Lift Study | ✅ Already best-in-class (Pass 28 B) |
+| 8 | `competitor` | Competitor Analysis | ⏸ Deferred to Pass 31 |
+| 9 | `audience_profiling` | Audience Profiling | ⏸ Deferred to Pass 31 |
+| 10 | `naming_messaging` | Naming & Messaging | ⏸ Deferred to Pass 31 |
+| 11 | `market_entry` | Market Entry | ⏸ Deferred to Pass 31 |
+| 12 | `churn_research` | Churn Research | ⏸ Deferred to Pass 31 |
+| 13 | `brand_lift` | Brand Lift Study | ✅ Already best-in-class (Pass 28) |
 | 14 | `creative_attention` | Creative Attention | ✅ Already best-in-class (Pass 25–26) |
+
+**Pass 30 ships methodology-correct backends + setup collectors for
+3 new mission types** (Validate Product, Compare Concepts, Test
+Marketing/Ads), bringing the total to 8 of 13 methodology-bound
+types fully shipped (research stays open-ended). Test Marketing
+shares the generic `ResultsPage` for now; a bespoke ad-effectiveness
+results page (funnel + emotion + persuasion shift) is deferred to
+Pass 31 alongside the 5 remaining mission types.
 
 Pass 29 ships methodology-correct flows for 3 of the 11 outstanding
 mission types (Pricing, Feature Roadmap, Customer Satisfaction). The
@@ -63,7 +71,9 @@ differentiated.
 
 **Sample size.** Min 100, best 200.
 
-**Pass 29 commit.** ⏸ Deferred to Pass 30.
+**Pass 30 commit.** ✅ Shipped in Pass 30 B1 + B2
+(`ConceptCollector.tsx`, `generateValidateSurvey`,
+`ValidateResultsPage.tsx`).
 
 ---
 
@@ -90,7 +100,9 @@ forced-choice winner, reason themes.
 
 **Sample size.** Min 80 per concept, best 150 per concept.
 
-**Pass 29 commit.** ⏸ Deferred to Pass 30.
+**Pass 30 commit.** ✅ Shipped in Pass 30 B3 + B4
+(`ConceptListCollector.tsx`, `generateCompareSurvey`,
+`CompareResultsPage.tsx`). Sequential monadic with random rotation.
 
 ---
 
@@ -120,7 +132,12 @@ likeability ≥50% = positive; persuasion shift +0.5pt on 7-pt = real.
 
 **Sample size.** Min 100, best 200+.
 
-**Pass 29 commit.** ⏸ Deferred to Pass 30.
+**Pass 30 commit.** ✅ Backend shipped in Pass 30 B5
+(`AdTestingInputs.tsx`, `generateMarketingSurvey`). Bespoke results
+page with funnel + emotion radar + persuasion shift deferred to
+Pass 31; `marketing` missions currently render through the generic
+`ResultsPage` which shows per-question distributions correctly but
+without the Kantar-Link-style cross-Q diagnostics.
 
 ---
 

@@ -7,14 +7,21 @@
 ## What This Backend Does
 
 This is the engine behind Vettit.ai. It handles:
-- **AI survey generation** using Claude (Anthropic)
+- **AI survey generation** using Claude (Anthropic) — methodology-aware
+  (8 industry-standard methodologies as of Pass 30; see
+  [docs/METHODOLOGY_GUIDE.md](./docs/METHODOLOGY_GUIDE.md))
 - **Real-time pricing** calculated server-side (you never lose margin)
 - **Stripe payments** — collects payment before launching surveys
-- **Pollfish integration** — sends surveys to real respondents
+- **Synthetic respondent simulation** — Claude generates personas
+  calibrated to demographic patterns
 - **AI results analysis** — generates insights, summaries, follow-up suggestions
 - **PDF export** — downloadable research reports
 - **Email notifications** — welcome, launch confirmation, completion, invoices
-- **File uploads** — images for A/B testing stored in Supabase
+- **File uploads** — images / video for concept and ad testing stored in Supabase
+
+For methodology fidelity claims and what VETT can / cannot say in
+external materials, see
+[docs/HONEST_CLAIMS.md](./docs/HONEST_CLAIMS.md).
 
 ---
 
