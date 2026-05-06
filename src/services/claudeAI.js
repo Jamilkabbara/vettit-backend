@@ -367,6 +367,15 @@ async function generateSurvey({
   if (goal === 'brand_lift') {
     return generateBrandLiftSurvey({ description, clarify, missionAssets });
   }
+  if (goal === 'pricing') {
+    return generatePricingSurvey({ description, clarify });
+  }
+  if (goal === 'roadmap') {
+    return generateRoadmapSurvey({ description, clarify });
+  }
+  if (goal === 'satisfaction') {
+    return generateCSATSurvey({ description, clarify });
+  }
 
   const prompt = `Mission Goal: ${goal}
 Description: "${description}"
@@ -438,6 +447,446 @@ Return the JSON again with that issue fixed. Keep all other rules.`;
   // for diagnosis. We DO NOT throw, because failing the whole setup flow
   // is worse for the user than letting them see imperfect questions.
   logger.warn('brand_lift survey: both attempts failed validation', {
+    reason: validationErr,
+    questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
+  });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
+}
+
+// ── PASS 29 B4 — PRICING RESEARCH (VAN WESTENDORP + GABOR-GRANGER) ─────────
+// Generic SURVEY_GEN_SYSTEM forces "exactly 5 questions"; pricing
+// research needs the 4 VW questions + 5 GG anchors + screener +
+// behavior + WTP ceiling + switching cost = 13 questions. Splitting
+// into a dedicated prompt keeps the cache prefix stable for both paths.
+const PRICING_SURVEY_GEN_SYSTEM = `You are a senior pricing-research methodologist. You design Van Westendorp (Price Sensitivity Meter) and Gabor-Granger price-acceptance studies. Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short product/brand name extracted from the brief (2-5 words)",
+  "missionStatement": "One-sentence research objective starting with 'To determine the optimal price point for...' or 'To quantify price sensitivity across...'",
+  "questions": [
+    {
+      "id": "q1",
+      "text": "Question text — use the short productName, never paste the full brief",
+      "type": "single|multi|rating|text",
+      "options": ["Option A"],
+      "isScreening": true,
+      "qualifyingAnswer": "Option A",
+      "qualifying_answers": ["Option A"],
+      "screening_continue_on": ["Option A"],
+      "methodology": "screener|van_westendorp|gabor_granger|wtp_ceiling|switching_cost|behavior",
+      "vw_band": "too_expensive|expensive|bargain|too_cheap",
+      "gg_anchor_index": 0,
+      "currency": "USD"
+    }
+  ],
+  "targetingSuggestions": {
+    "recommendedCountries": ["US"],
+    "recommendedAgeRanges": ["25-44"],
+    "recommendedGenders": [],
+    "reasoning": "Brief explanation"
+  },
+  "suggestedRespondentCount": 200
+}
+
+Hard rules:
+- Generate EXACTLY 13 questions in this order: screener (q1), current behavior (q2), VW too-expensive (q3), VW expensive-but-consider (q4), VW bargain (q5), VW too-cheap (q6), GG anchor 0 (q7), GG anchor 1 (q8), GG anchor 2 (q9), GG anchor 3 (q10), GG anchor 4 (q11), WTP ceiling (q12), switching cost (q13).
+- All 4 VW questions are open-numeric (type="text"; the frontend will validate numeric input). Each carries vw_band set to one of {too_expensive, expensive, bargain, too_cheap}.
+- VW question wording follows the canonical Van Westendorp script:
+    too_expensive   → "At what price would <productName> be SO EXPENSIVE you would not consider buying it?"
+    expensive       → "At what price would <productName> be priced so high that, although it's not out of the question, you'd have to think hard about buying?"
+    bargain         → "At what price would <productName> be a BARGAIN — a great buy for the money?"
+    too_cheap       → "At what price would <productName> be priced so low you'd feel the quality couldn't be very good?"
+- All 5 GG questions are type="single" with options ["Definitely would buy","Probably would buy","Might buy","Probably would NOT buy","Definitely would NOT buy"]. Each carries gg_anchor_index 0-4 and the price text is "At <currency_symbol><price>, would you ..." where the prices form an ascending ladder spanning the user's expected range (or the VW span if no expected range was supplied; use $9 / $19 / $39 / $79 / $149 as defaults if the brief gives no anchors).
+- Screener (q1, isScreening=true) qualifies category buyers; methodology="screener", is_lift_question=null.
+- Current behavior (q2) is type="single" or "multi" — how the respondent currently solves the need; methodology="behavior".
+- WTP ceiling (q12) is type="text" open-numeric: "What's the absolute most you'd pay for <productName>?" methodology="wtp_ceiling".
+- Switching cost (q13) is type="rating" 1-5: "If your current solution increased its price by 20%, how likely would you be to switch to <productName>?" methodology="switching_cost".
+- currency MUST be set on every VW + GG + WTP question to the ISO 4217 code from the user message (default USD if absent).
+- DO NOT include funnel_stage, kpi_category, is_lift_question, channel_id, category — those belong to brand_lift only. Strip them.
+- suggestedRespondentCount default 200 (well above the 150 GG bound). Escalate to 300+ when the brief mentions multi-segment splits.
+
+Output MUST be valid JSON. No prose, no markdown fences.`;
+
+function validatePricingSurvey(parsed) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  if (qs.length !== 13) return `expected 13 questions, got ${qs.length}`;
+
+  const vwBands = qs.filter((q) => q.methodology === 'van_westendorp').map((q) => q.vw_band);
+  for (const band of ['too_expensive', 'expensive', 'bargain', 'too_cheap']) {
+    if (!vwBands.includes(band)) return `missing VW band: ${band}`;
+  }
+  const ggAnchors = qs
+    .filter((q) => q.methodology === 'gabor_granger')
+    .map((q) => q.gg_anchor_index);
+  if (ggAnchors.length !== 5) return `expected 5 GG anchors, got ${ggAnchors.length}`;
+  const sortedAnchors = [...ggAnchors].sort((a, b) => a - b);
+  for (let i = 0; i < 5; i++) {
+    if (sortedAnchors[i] !== i) return `GG anchors must be 0-4; got ${sortedAnchors.join(',')}`;
+  }
+  if (qs[0].methodology !== 'screener') return 'q1 must be screener';
+  return null;
+}
+
+function buildPricingUserPrompt({ description, clarify }) {
+  const c = clarify || {};
+  const currency = c.pricing_currency || 'USD';
+  const productDesc = c.pricing_product_description || description;
+  const model = c.pricing_model || 'one_time';
+  const context = c.pricing_context || '';
+  const expectedMin = c.pricing_expected_min;
+  const expectedMax = c.pricing_expected_max;
+  const lines = [
+    'Mission Goal: pricing',
+    `Brief: "${description}"`,
+    `Product description: "${productDesc}"`,
+    `Currency: ${currency}`,
+    `Pricing model: ${model}`,
+  ];
+  if (context) lines.push(`Context: "${context}"`);
+  if (expectedMin && expectedMax) {
+    lines.push(`Expected price range hint: ${currency} ${expectedMin} - ${currency} ${expectedMax}`);
+    lines.push(`Use this hint to anchor the GG ladder. Distribute 5 prices across this range with extrapolation +/- 20%.`);
+  } else {
+    lines.push(`No expected price range supplied. Pick the GG ladder anchors based on the product description and category norms.`);
+  }
+  lines.push('');
+  lines.push('First extract a SHORT product name (2-5 words) from the brief.');
+  lines.push('Then generate the 13-question Van Westendorp + Gabor-Granger survey JSON.');
+  return lines.join('\n');
+}
+
+async function generatePricingSurvey({ description, clarify }) {
+  const userPrompt = buildPricingUserPrompt({ description, clarify });
+  const firstResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: PRICING_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }],
+    maxTokens: 3000,
+    enablePromptCache: true,
+  });
+  let parsed;
+  try { parsed = extractJSON(firstResp.text); }
+  catch (err) { parsed = null; logger.warn('pricing survey: parse failed', { err: err.message }); }
+  let validationErr = parsed ? validatePricingSurvey(parsed) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.info('pricing survey: retry on validation failure', { reason: validationErr });
+  const retryResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: PRICING_SURVEY_GEN_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
+    }],
+    maxTokens: 3000,
+    enablePromptCache: true,
+  });
+  try { parsed = extractJSON(retryResp.text); }
+  catch (err) { parsed = null; logger.warn('pricing survey: retry parse failed', { err: err.message }); }
+  validationErr = parsed ? validatePricingSurvey(parsed) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.warn('pricing survey: both attempts failed validation', {
+    reason: validationErr,
+    questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
+  });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
+}
+
+// ── PASS 29 B6 — FEATURE ROADMAP (MAXDIFF + KANO) ──────────────────────────
+// Generic SURVEY_GEN_SYSTEM forces "exactly 5 questions". MaxDiff + Kano
+// needs ~12 MaxDiff sets + 2 Kano questions × top-5 features = ~22
+// questions. Splitting into a dedicated prompt keeps the cache prefix
+// stable for both paths.
+const ROADMAP_SURVEY_GEN_SYSTEM = `You are a senior product-research methodologist specializing in feature prioritization. You design MaxDiff (best-worst scaling) and Kano (functional/dysfunctional pair) instruments. Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short product/brand name extracted from the brief (2-5 words)",
+  "missionStatement": "One-sentence research objective starting with 'To prioritize features for...' or 'To classify the importance of...'",
+  "questions": [
+    {
+      "id": "q1",
+      "text": "Question text",
+      "type": "single|max_diff_set",
+      "options": ["Option A", "Option B"],
+      "isScreening": true,
+      "qualifyingAnswer": "Option A",
+      "qualifying_answers": ["Option A"],
+      "screening_continue_on": ["Option A"],
+      "methodology": "screener|max_diff|kano",
+      "feature_set": ["id1","id2","id3","id4"],
+      "feature_id": "f3",
+      "kano_type": "functional|dysfunctional"
+    }
+  ],
+  "targetingSuggestions": {
+    "recommendedCountries": ["US"],
+    "recommendedAgeRanges": ["25-44"],
+    "recommendedGenders": [],
+    "reasoning": "Brief explanation"
+  },
+  "suggestedRespondentCount": 250
+}
+
+Hard rules:
+- q1 is the screener (methodology="screener", isScreening=true) qualifying respondents to the product's category. Generate it from the user message context. Type "single", 2-3 options, qualify the most relevant.
+- q2..qN are MaxDiff sets. Generate exactly 12 sets. Each set has 4 features drawn from the supplied feature list. Each feature should appear in at least 3 sets and at most 5 sets across the 12 sets (rough balance — exact balance is checked by the validator).
+  - type="max_diff_set"
+  - methodology="max_diff"
+  - feature_set carries the 4 feature ids in display order
+  - text="Of these 4 features, which is MOST important to you, and which is LEAST important?"
+  - options should list the 4 feature names verbatim (the simulator interprets the answer as {best: id, worst: id})
+- After the 12 MaxDiff sets come the Kano pairs. Pick the TOP 5 features from the supplied list (or all features if N<=5). For each top feature, emit TWO questions back-to-back:
+  - Functional (methodology="kano", kano_type="functional"): text="How would you feel if [feature name] WAS in the product?" type="single", options=["I like it","I expect it","Neutral","I can live with it","I dislike it"]
+  - Dysfunctional (methodology="kano", kano_type="dysfunctional"): text="How would you feel if [feature name] WAS NOT in the product?" same 5 options.
+  - feature_id carries the feature id on both pair members.
+- Total question count: 1 screener + 12 MaxDiff + (2 × min(5, feature_count)) Kano = 23 when feature_count >= 5, else 13 + 2*N.
+- DO NOT include funnel_stage, kpi_category, is_lift_question, channel_id, vw_band, gg_anchor_index, currency, category — those belong to other methodologies.
+- suggestedRespondentCount default 250 (well above the 150 MaxDiff bound). Escalate to 400+ when the brief mentions sub-segment splits.
+
+Output MUST be valid JSON. No prose, no markdown fences.`;
+
+function validateRoadmapSurvey(parsed, featureCount) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  if (qs.length < 13) return `expected at least 13 questions (1 screener + 12 MaxDiff sets), got ${qs.length}`;
+
+  if (qs[0].methodology !== 'screener') return 'q1 must be screener';
+
+  const maxDiffs = qs.filter((q) => q.methodology === 'max_diff');
+  if (maxDiffs.length !== 12) return `expected 12 MaxDiff sets, got ${maxDiffs.length}`;
+  for (const m of maxDiffs) {
+    if (!Array.isArray(m.feature_set) || m.feature_set.length !== 4) {
+      return 'each MaxDiff set must carry feature_set of 4 ids';
+    }
+  }
+  // Each feature should appear in at least 3 of the 12 sets (rough balance).
+  const counts = {};
+  for (const m of maxDiffs) for (const fid of m.feature_set) counts[fid] = (counts[fid] || 0) + 1;
+  const min = Math.min(...Object.values(counts));
+  if (min < 2) return `MaxDiff balance: at least one feature appears in < 2 sets (got ${min})`;
+
+  const kanoPairs = qs.filter((q) => q.methodology === 'kano');
+  const expectedKano = 2 * Math.min(5, featureCount || 6);
+  if (kanoPairs.length !== expectedKano) {
+    return `expected ${expectedKano} Kano questions (${expectedKano / 2} features × 2), got ${kanoPairs.length}`;
+  }
+  return null;
+}
+
+function buildRoadmapUserPrompt({ description, clarify }) {
+  const c = clarify || {};
+  const featuresJson = c.roadmap_features || '[]';
+  let features;
+  try { features = JSON.parse(featuresJson); }
+  catch { features = []; }
+  const featureCount = Array.isArray(features) ? features.length : 0;
+
+  const lines = [
+    'Mission Goal: roadmap',
+    `Brief: "${description}"`,
+    '',
+    'Feature list (use these exact ids in feature_set / feature_id):',
+  ];
+  for (const f of features) {
+    lines.push(`- id=${f.id} name="${f.name}"${f.description ? ` desc="${f.description}"` : ''}`);
+  }
+  lines.push('');
+  lines.push(`Total features: ${featureCount}.`);
+  lines.push('First extract a SHORT product name (2-5 words) from the brief.');
+  lines.push('Generate the screener (q1), 12 balanced MaxDiff sets, and Kano pairs for the top 5 features (or all if fewer than 5 features supplied).');
+  return lines.join('\n');
+}
+
+async function generateRoadmapSurvey({ description, clarify }) {
+  const userPrompt = buildRoadmapUserPrompt({ description, clarify });
+  let features;
+  try { features = JSON.parse(clarify?.roadmap_features || '[]'); }
+  catch { features = []; }
+  const featureCount = Array.isArray(features) ? features.length : 0;
+
+  const firstResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: ROADMAP_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }],
+    maxTokens: 4500,
+    enablePromptCache: true,
+  });
+  let parsed;
+  try { parsed = extractJSON(firstResp.text); }
+  catch (err) { parsed = null; logger.warn('roadmap survey: parse failed', { err: err.message }); }
+  let validationErr = parsed ? validateRoadmapSurvey(parsed, featureCount) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.info('roadmap survey: retry on validation failure', { reason: validationErr });
+  const retryResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: ROADMAP_SURVEY_GEN_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
+    }],
+    maxTokens: 4500,
+    enablePromptCache: true,
+  });
+  try { parsed = extractJSON(retryResp.text); }
+  catch (err) { parsed = null; logger.warn('roadmap survey: retry parse failed', { err: err.message }); }
+  validationErr = parsed ? validateRoadmapSurvey(parsed, featureCount) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.warn('roadmap survey: both attempts failed validation', {
+    reason: validationErr,
+    questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
+  });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
+}
+
+// ── PASS 29 B8 — CUSTOMER SATISFACTION (NPS + CSAT + CES + ATTRIBUTES) ────
+// 10-question battery covering recommendation (NPS), satisfaction (CSAT),
+// effort (CES), attribute matrix, retention intent, and specific issues.
+// Each scoring Q has a free-text driver follow-up so the results page can
+// theme verbatims by reason.
+const CSAT_SURVEY_GEN_SYSTEM = `You are a senior customer-research methodologist. You design NPS (Net Promoter Score), CSAT (Customer Satisfaction), and CES (Customer Effort Score) instruments. Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short brand/product name extracted from the brief (2-5 words)",
+  "missionStatement": "One-sentence research objective starting with 'To measure customer satisfaction with...' or 'To quantify NPS for...'",
+  "questions": [
+    {
+      "id": "q1",
+      "text": "Question text",
+      "type": "single|multi|rating|text",
+      "options": ["Option A"],
+      "isScreening": true,
+      "qualifyingAnswer": "Option A",
+      "qualifying_answers": ["Option A"],
+      "screening_continue_on": ["Option A"],
+      "methodology": "screener|nps|nps_driver|csat|csat_driver|ces|ces_driver|attribute_matrix|retention|specific_issues",
+      "is_driver": true
+    }
+  ],
+  "targetingSuggestions": {
+    "recommendedCountries": ["US"],
+    "recommendedAgeRanges": ["25-44"],
+    "recommendedGenders": [],
+    "reasoning": "Brief explanation"
+  },
+  "suggestedRespondentCount": 200
+}
+
+Hard rules:
+- Generate EXACTLY 10 questions in this order:
+  q1  screener (isScreening=true, methodology="screener") — qualifies the customer type from the user message ("Have you [used / interacted with support / purchased from] <brand> in the past <recency_window>?"). Type "single" with yes/no options; qualifying_answers=["Yes"].
+  q2  NPS (methodology="nps", type="rating", options=[]) — "How likely are you to recommend <brand> to a friend or colleague?" 0-10 scale.
+  q3  NPS driver (methodology="nps_driver", is_driver=true, type="text") — "What's the main reason for your score?"
+  q4  CSAT (methodology="csat", type="single") — "How satisfied are you with <brand>'s <touchpoint>?" Options: ["Very dissatisfied","Dissatisfied","Neutral","Satisfied","Very satisfied"].
+  q5  CSAT driver (methodology="csat_driver", is_driver=true, type="text") — "What could <brand> do to improve?"
+  q6  CES (methodology="ces", type="rating") — "How easy was it to <touchpoint action>?" Use a 7-point scale (1=Very difficult, 7=Very easy).
+  q7  CES driver (methodology="ces_driver", is_driver=true, type="text") — "What made it easy or hard?"
+  q8  Attribute matrix (methodology="attribute_matrix", type="rating") — "Rate <brand> on each: Quality / Value / Reliability / Customer service / Ease of use." Single rating Q with options=[] (1-5 scale); the options list each attribute as a sub-row (the simulator will iterate). Set "options" to ["Quality","Value","Reliability","Customer service","Ease of use"].
+  q9  Retention intent (methodology="retention", type="rating") — "How likely are you to continue using <brand> in the next 12 months?" 1-5 scale.
+  q10 Specific issues (methodology="specific_issues", type="multi") — "Which of these have you experienced in the past <recency_window>?" Generate 5-7 category-relevant issue options based on the brief (e.g. for SaaS: "App crashed/froze", "Slow load times", "Difficult to find a feature", "Got incorrect data", "Couldn't reach support").
+- Touchpoint mapping in question text:
+    product     → "<brand>'s product"
+    support     → "<brand>'s customer support"
+    purchase    → "<brand>'s purchase / checkout flow"
+    onboarding  → "<brand>'s onboarding experience"
+    overall     → "<brand> overall"
+    custom      → "<brand>'s <csat_custom_touchpoint>"
+- "<touchpoint action>" in CES (q6) — derive a verb-form from touchpoint:
+    product     → "use <brand>'s product"
+    support     → "get help from <brand>"
+    purchase    → "complete the <brand> purchase"
+    onboarding  → "get started with <brand>"
+    overall     → "interact with <brand>"
+    custom      → "<csat_custom_touchpoint>"
+- Recency window in q1: insert the user-supplied window verbatim (30 days, 90 days, 12 months, all time).
+- DO NOT include funnel_stage, kpi_category, is_lift_question, channel_id, vw_band, gg_anchor_index, currency, feature_id, kano_type, feature_set, category — those belong to other methodologies.
+- suggestedRespondentCount default 200 (well above the 100 NPS bound). Escalate to 400+ when the brief mentions sub-segment splits.
+
+Output MUST be valid JSON. No prose, no markdown fences.`;
+
+function validateCSATSurvey(parsed) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  if (qs.length !== 10) return `expected 10 questions, got ${qs.length}`;
+
+  const expected = [
+    'screener', 'nps', 'nps_driver', 'csat', 'csat_driver',
+    'ces', 'ces_driver', 'attribute_matrix', 'retention', 'specific_issues',
+  ];
+  for (let i = 0; i < expected.length; i++) {
+    if (qs[i].methodology !== expected[i]) {
+      return `q${i + 1} expected methodology "${expected[i]}", got "${qs[i].methodology}"`;
+    }
+  }
+  if (qs[0].isScreening !== true) return 'q1 must be a screener (isScreening=true)';
+  if (qs[1].type !== 'rating') return 'q2 (NPS) must be type=rating';
+  if (qs[3].type !== 'single' || !Array.isArray(qs[3].options) || qs[3].options.length !== 5) {
+    return 'q4 (CSAT) must be single with 5 options';
+  }
+  if (qs[5].type !== 'rating') return 'q6 (CES) must be type=rating';
+  return null;
+}
+
+function buildCSATUserPrompt({ description, clarify }) {
+  const c = clarify || {};
+  const touchpoint = c.csat_touchpoint || 'overall';
+  const customTp = c.csat_custom_touchpoint || '';
+  const customerType = c.csat_customer_type || 'all';
+  const recency = c.csat_recency_window || '90 days';
+  const lines = [
+    'Mission Goal: satisfaction',
+    `Brief: "${description}"`,
+    `Touchpoint: ${touchpoint}${touchpoint === 'custom' && customTp ? ` (${customTp})` : ''}`,
+    `Customer type: ${customerType}`,
+    `Recency window: ${recency}`,
+    '',
+    'First extract the SHORT brand/product name (2-5 words) from the brief.',
+    'Then generate the 10-question NPS + CSAT + CES survey JSON.',
+  ];
+  return lines.join('\n');
+}
+
+async function generateCSATSurvey({ description, clarify }) {
+  const userPrompt = buildCSATUserPrompt({ description, clarify });
+  const firstResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: CSAT_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }],
+    maxTokens: 2500,
+    enablePromptCache: true,
+  });
+  let parsed;
+  try { parsed = extractJSON(firstResp.text); }
+  catch (err) { parsed = null; logger.warn('csat survey: parse failed', { err: err.message }); }
+  let validationErr = parsed ? validateCSATSurvey(parsed) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.info('csat survey: retry on validation failure', { reason: validationErr });
+  const retryResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: CSAT_SURVEY_GEN_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
+    }],
+    maxTokens: 2500,
+    enablePromptCache: true,
+  });
+  try { parsed = extractJSON(retryResp.text); }
+  catch (err) { parsed = null; logger.warn('csat survey: retry parse failed', { err: err.message }); }
+  validationErr = parsed ? validateCSATSurvey(parsed) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.warn('csat survey: both attempts failed validation', {
     reason: validationErr,
     questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
   });

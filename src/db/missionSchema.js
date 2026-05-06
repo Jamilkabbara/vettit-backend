@@ -82,8 +82,36 @@ const ALLOWED_COLUMNS = new Set([
   'delivery_status',
   'delivery_check_at',
   'paid_amount_cents',
+  // Pass 29 A1 — flag for backfilled paid_amount_cents (TRUE means
+  // estimated from total_price_usd, FALSE means captured directly
+  // from Stripe payment_intent.succeeded).
+  'paid_amount_estimated',
   'partial_refund_id',
   'partial_refund_amount_cents',
+  // Pass 29 B2 — universal mission inputs. Required on every
+  // methodology-bound mission type (everything except `research`).
+  // Brand Lift and Creative Attention already capture equivalents
+  // through their deep pickers but writing here is harmless.
+  'brand_name',
+  'category',
+  'audience_description',
+  // Pass 29 B4 — pricing research (Van Westendorp + Gabor-Granger).
+  'pricing_product_description',
+  'pricing_currency',
+  'pricing_model',
+  'pricing_context',
+  'pricing_expected_min',
+  'pricing_expected_max',
+  'pricing_methodology',
+  // Pass 29 B6 — feature roadmap (MaxDiff + Kano).
+  'roadmap_features',
+  'roadmap_methodology',
+  // Pass 29 B8 — customer satisfaction (NPS + CSAT + CES).
+  'csat_touchpoint',
+  'csat_custom_touchpoint',
+  'csat_customer_type',
+  'csat_recency_window',
+  'csat_methodology',
 ]);
 
 /**
