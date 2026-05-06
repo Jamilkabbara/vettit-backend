@@ -379,6 +379,9 @@ async function generateSurvey({
   if (goal === 'validate') {
     return generateValidateSurvey({ description, clarify });
   }
+  if (goal === 'compare') {
+    return generateCompareSurvey({ description, clarify });
+  }
 
   const prompt = `Mission Goal: ${goal}
 Description: "${description}"
@@ -1021,6 +1024,134 @@ async function generateValidateSurvey({ description, clarify }) {
   if (!validationErr) return parsed;
 
   logger.warn('validate survey: both attempts failed validation', {
+    reason: validationErr,
+    questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
+  });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
+}
+
+// ── PASS 30 B3 — COMPARE CONCEPTS (SEQUENTIAL MONADIC + FORCED CHOICE) ─────
+const COMPARE_SURVEY_GEN_SYSTEM = `You are a senior research methodologist designing sequential-monadic concept comparison surveys (Drive Research / SurveyMonkey 2026 published guidance). Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short brand/category name extracted from the brief",
+  "missionStatement": "One-sentence research objective: 'To compare N concepts on appeal, relevance, and purchase intent...'",
+  "questions": [
+    {
+      "id": "q1",
+      "text": "Question text",
+      "type": "single|multi|rating|text",
+      "options": ["Option A"],
+      "isScreening": true,
+      "qualifyingAnswer": "Option A",
+      "qualifying_answers": ["Option A"],
+      "screening_continue_on": ["Option A"],
+      "methodology": "sequential_monadic",
+      "concept_id": "c1",
+      "is_final_choice": false
+    }
+  ],
+  "targetingSuggestions": { "recommendedCountries": ["US"], "recommendedAgeRanges": ["25-44"], "recommendedGenders": [], "reasoning": "..." },
+  "suggestedRespondentCount": 240
+}
+
+Hard rules:
+- q1 is the screener (methodology="sequential_monadic", isScreening=true) qualifying category buyers. Options 2-3, qualify the most relevant.
+- For each concept (in input order, the simulator handles per-respondent rotation), emit 5 questions in this order with concept_id set to that concept's id:
+  - APPEAL — "Considering [<concept name>]: [<concept description>]. How appealing is this concept?" type="rating" 1-10. funnel_stage="appeal".
+  - RELEVANCE — "How relevant is this concept to your needs?" type="rating" 1-7. funnel_stage="relevance".
+  - UNIQUENESS — "How different is this from other <category> options?" type="rating" 1-7. funnel_stage="uniqueness".
+  - PURCHASE INTENT — "If [<concept name>] were available[ at $<price> if a price was supplied], how likely would you be to buy?" type="single", 5 options ["Definitely would buy","Probably would buy","Might or might not","Probably would NOT buy","Definitely would NOT buy"]. funnel_stage="intent".
+  - BEST/WORST — "What's the best thing and the worst thing about this concept?" type="text". funnel_stage="qualitative".
+- After ALL concepts, two final questions (concept_id=null, is_final_choice=true):
+  - FORCED CHOICE — "Which concept did you find most appealing overall?" type="single", options=[ <each concept name> , "None of these"]. methodology stays "sequential_monadic".
+  - WHY — "Why?" type="text".
+- Total questions = 1 (screener) + 5N (per-concept) + 2 (final) = 5N + 3.
+  - 2 concepts → 13 Qs.  3 concepts → 18 Qs.  4 concepts → 23 Qs.  5 concepts → 28 Qs.
+- DO NOT include funnel_stage on the screener or final-choice/why; only on the per-concept rows. Do not include vw_band, gg_anchor_index, kano_type, feature_set — those belong to other methodologies.
+- suggestedRespondentCount = 80 × N (per-concept floor) at minimum, 150 × N preferred.
+
+Output MUST be valid JSON. No prose, no markdown fences.`;
+
+function validateCompareSurvey(parsed, conceptCount) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  const expected = 1 + 5 * conceptCount + 2;
+  if (qs.length !== expected) return `expected ${expected} questions for ${conceptCount} concepts, got ${qs.length}`;
+  if (qs[0].isScreening !== true) return 'q1 must be isScreening=true';
+  // Per-concept block validation — each concept should have 5 Qs.
+  for (let c = 0; c < conceptCount; c++) {
+    const block = qs.slice(1 + c * 5, 1 + (c + 1) * 5);
+    if (block.length !== 5) return `concept block ${c + 1} missing questions`;
+    const cid = block[0].concept_id;
+    if (!cid) return `concept block ${c + 1} missing concept_id`;
+    for (const q of block) {
+      if (q.concept_id !== cid) return `concept block ${c + 1}: concept_id inconsistent`;
+    }
+  }
+  const final = qs[qs.length - 2];
+  if (!final || final.is_final_choice !== true) return 'final-choice question missing or not flagged is_final_choice=true';
+  return null;
+}
+
+function buildCompareUserPrompt({ description, clarify }) {
+  const c = clarify || {};
+  let concepts = [];
+  try { concepts = JSON.parse(c.concepts || '[]'); } catch { concepts = []; }
+  const lines = [
+    'Mission Goal: compare',
+    `Brief: "${description}"`,
+    `Total concepts: ${concepts.length}`,
+    '',
+    'Concepts (use these exact ids in concept_id):',
+  ];
+  for (const x of concepts) {
+    const priceStr = x.price_usd ? ` price=$${x.price_usd}` : '';
+    lines.push(`- id=${x.id} name="${x.name}" description="${x.description}"${priceStr}`);
+  }
+  lines.push('');
+  lines.push('Generate the screener (q1), 5 questions per concept (5N), then the forced-choice + why (2). Total = 5N+3 questions.');
+  return lines.join('\n');
+}
+
+async function generateCompareSurvey({ description, clarify }) {
+  const userPrompt = buildCompareUserPrompt({ description, clarify });
+  let concepts = [];
+  try { concepts = JSON.parse(clarify?.concepts || '[]'); } catch { concepts = []; }
+  const conceptCount = concepts.length || 2;
+
+  const firstResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: COMPARE_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }],
+    maxTokens: 5000,
+    enablePromptCache: true,
+  });
+  let parsed;
+  try { parsed = extractJSON(firstResp.text); }
+  catch (err) { parsed = null; logger.warn('compare survey: parse failed', { err: err.message }); }
+  let validationErr = parsed ? validateCompareSurvey(parsed, conceptCount) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.info('compare survey: retry on validation failure', { reason: validationErr });
+  const retryResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: COMPARE_SURVEY_GEN_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
+    }],
+    maxTokens: 5000,
+    enablePromptCache: true,
+  });
+  try { parsed = extractJSON(retryResp.text); }
+  catch (err) { parsed = null; logger.warn('compare survey: retry parse failed', { err: err.message }); }
+  validationErr = parsed ? validateCompareSurvey(parsed, conceptCount) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.warn('compare survey: both attempts failed validation', {
     reason: validationErr,
     questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
   });

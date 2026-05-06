@@ -119,6 +119,10 @@ const ALLOWED_COLUMNS = new Set([
   'concept_price_usd',
   'concept_use_occasion',
   'validate_methodology',
+  // Pass 30 B3 — compare concepts (sequential monadic).
+  'concepts',
+  'comparison_methodology',
+  'rotation_strategy',
 ]);
 
 /**
