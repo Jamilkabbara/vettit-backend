@@ -177,11 +177,18 @@ router.get('/missions', async (req, res, next) => {
     const offset    = parseInt(req.query.offset) || 0;
     const { search, status, goal_type } = req.query;
 
+    // Pass 32 X5 — column names had drifted. The legacy SELECT asked
+    // for `target_countries` (plural) and `promo_discount_usd`; the
+    // missions table actually has `country` (singular) and
+    // `discount_usd`. PostgREST returned a 400 on the select, the
+    // whole row array came back empty, and AdminMissions surfaced
+    // "Failed to load missions". Aligning with missionSchema.js
+    // ALLOWED_COLUMNS so the query stays in sync with the schema.
     let q = supabase
       .from('missions')
       .select(
         `id, user_id, status, goal_type, brief, total_price_usd, ai_cost_usd,
-         respondent_count, target_countries, promo_code, promo_discount_usd,
+         respondent_count, country, promo_code, discount_usd,
          created_at, paid_at, completed_at, executive_summary`,
         { count: 'exact' }
       )
