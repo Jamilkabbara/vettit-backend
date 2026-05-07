@@ -131,6 +131,10 @@ const ALLOWED_COLUMNS = new Set([
   'campaign_objective',
   'intended_message',
   'ad_methodology',
+  // Pass 31 B1 — competitor analysis (brand health tracker).
+  // competitor_brands JSONB already exists from Pass 28.
+  'attribute_battery',
+  'competitor_methodology',
 ]);
 
 /**

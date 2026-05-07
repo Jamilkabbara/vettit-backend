@@ -385,6 +385,9 @@ async function generateSurvey({
   if (goal === 'marketing') {
     return generateMarketingSurvey({ description, clarify });
   }
+  if (goal === 'competitor') {
+    return generateCompetitorSurvey({ description, clarify });
+  }
 
   const prompt = `Mission Goal: ${goal}
 Description: "${description}"
@@ -1280,6 +1283,135 @@ async function generateMarketingSurvey({ description, clarify }) {
   if (!validationErr) return parsed;
 
   logger.warn('marketing survey: both attempts failed validation', {
+    reason: validationErr,
+    questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
+  });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
+}
+
+// ── PASS 31 B1 — COMPETITOR ANALYSIS (BRAND HEALTH TRACKER) ────────────────
+// 11-question 5-stage funnel (Awareness → Consideration → Preference →
+// Use → Recommendation) per published 2026 industry guidance from
+// YouGov BrandIndex / Hanover / Kantar.
+const COMPETITOR_SURVEY_GEN_SYSTEM = `You are a senior brand-research methodologist designing Brand Health Tracker studies (YouGov BrandIndex / Hanover / Kantar tradition). Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short focal brand name (2-5 words)",
+  "missionStatement": "One-sentence research objective on brand health vs competitors",
+  "questions": [
+    {
+      "id": "q1",
+      "text": "...",
+      "type": "single|multi|rating|text",
+      "options": ["..."],
+      "isScreening": true,
+      "qualifyingAnswer": "...",
+      "qualifying_answers": ["..."],
+      "screening_continue_on": ["..."],
+      "methodology": "brand_health_tracker",
+      "funnel_stage": "screener|awareness|consideration|preference|use|recommendation|switching|wom",
+      "brand_id": null
+    }
+  ],
+  "targetingSuggestions": { "recommendedCountries": ["US"], "recommendedAgeRanges": ["25-44"], "recommendedGenders": [], "reasoning": "..." },
+  "suggestedRespondentCount": 400
+}
+
+Hard rules — generate EXACTLY 11 questions in this order:
+  q1 SCREENER (isScreening=true, methodology="brand_health_tracker", funnel_stage="screener") — qualifies category buyers from the brief context. type="single", 2-3 options, qualify the most relevant.
+  q2 UNAIDED AWARENESS (funnel_stage="awareness") — "What <category> brands come to mind? List up to 5." type="text".
+  q3 AIDED AWARENESS (funnel_stage="awareness") — "Which of these brands have you heard of? Select all." type="multi", options = [<focal_brand>, ...<competitors>] in supplied order.
+  q4 CONSIDERATION (funnel_stage="consideration") — "Of the brands you've heard of, which would you consider buying next time you need a <category>?" type="multi", options = same as q3.
+  q5 PREFERENCE (funnel_stage="preference") — "Of the brands you'd consider, if you had to choose ONE, which would you pick?" type="single", options = same as q3.
+  q6 CURRENT USE (funnel_stage="use") — "Which of these brands do you use most often?" type="single", options = same as q3 + "None of these".
+  q7 NPS PER BRAND (funnel_stage="recommendation") — "How likely are you to recommend [<focal_brand>] to a friend or colleague?" type="rating" 0-10. brand_id=<focal_brand_id>.
+  q8 ATTRIBUTE MATRIX (funnel_stage="awareness") — "Which of these attributes apply to <focal_brand>? Select all that apply." type="multi", options = the supplied attribute battery (default 10 standard or user-specified).
+  q9 SWITCHING INTENT (funnel_stage="switching") — "How likely are you to switch from your current <category> brand to a different one in the next 6 months?" type="rating" 1-5.
+  q10 SWITCHING TARGET (funnel_stage="switching") — "If you were to switch, which brand would you most likely switch to?" type="single", options = competitor list.
+  q11 WORD-OF-MOUTH (funnel_stage="wom") — "In the past 2 weeks, have you talked about <focal_brand> with friends, family, or colleagues?" type="single", options=["Yes - positively","Yes - negatively","No, but I've thought about them","No, not at all"].
+- Per-brand questions (q7) carry brand_id; the simulator runs the question per aware brand. For now, emit q7 once with brand_id set to the focal brand id; downstream aggregator extends to competitors.
+- DO NOT include vw_band, gg_anchor_index, kano_type, feature_set, concept_id — those belong to other methodologies.
+- suggestedRespondentCount default 400 (well above the 200 brand_health_tracker bound). Per-brand cells get small below 200.
+
+Output MUST be valid JSON. No prose, no markdown fences.`;
+
+function validateCompetitorSurvey(parsed) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  if (qs.length !== 11) return `expected 11 questions, got ${qs.length}`;
+  if (qs[0].isScreening !== true) return 'q1 must be isScreening=true';
+  const expectedStages = [
+    'screener', 'awareness', 'awareness', 'consideration', 'preference',
+    'use', 'recommendation', 'awareness', 'switching', 'switching', 'wom',
+  ];
+  for (let i = 0; i < expectedStages.length; i++) {
+    if (qs[i].funnel_stage !== expectedStages[i]) {
+      return `q${i + 1} expected funnel_stage="${expectedStages[i]}", got "${qs[i].funnel_stage}"`;
+    }
+  }
+  if (qs[6].type !== 'rating') return 'q7 (NPS) must be type=rating';
+  return null;
+}
+
+function buildCompetitorUserPrompt({ description, clarify }) {
+  const c = clarify || {};
+  let competitors = [];
+  try { competitors = JSON.parse(c.competitor_brands || '[]'); } catch { /* ignore */ }
+  if (typeof c.competitors === 'string' && c.competitors) {
+    competitors = c.competitors.split('|').filter(Boolean);
+  }
+  let attrs = [];
+  try { attrs = JSON.parse(c.attribute_battery || '[]'); } catch { /* ignore */ }
+  if (!attrs.length && typeof c.attribute_battery === 'string') {
+    attrs = c.attribute_battery.split(',').filter(Boolean);
+  }
+  const lines = [
+    'Mission Goal: competitor',
+    `Brief: "${description}"`,
+    `Focal brand: ${c.brand_name || '<unknown>'}`,
+    `Category: ${c.category || '<unknown>'}`,
+    `Competitors (${competitors.length}): ${competitors.join(', ')}`,
+    `Attribute battery (${attrs.length}): ${attrs.join(', ')}`,
+    '',
+    'Generate the 11-question Brand Health Tracker survey JSON.',
+  ];
+  return lines.join('\n');
+}
+
+async function generateCompetitorSurvey({ description, clarify }) {
+  const userPrompt = buildCompetitorUserPrompt({ description, clarify });
+  const firstResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: COMPETITOR_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }],
+    maxTokens: 3000,
+    enablePromptCache: true,
+  });
+  let parsed;
+  try { parsed = extractJSON(firstResp.text); }
+  catch (err) { parsed = null; logger.warn('competitor survey: parse failed', { err: err.message }); }
+  let validationErr = parsed ? validateCompetitorSurvey(parsed) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.info('competitor survey: retry on validation failure', { reason: validationErr });
+  const retryResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: COMPETITOR_SURVEY_GEN_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
+    }],
+    maxTokens: 3000,
+    enablePromptCache: true,
+  });
+  try { parsed = extractJSON(retryResp.text); }
+  catch (err) { parsed = null; logger.warn('competitor survey: retry parse failed', { err: err.message }); }
+  validationErr = parsed ? validateCompetitorSurvey(parsed) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.warn('competitor survey: both attempts failed validation', {
     reason: validationErr,
     questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
   });
