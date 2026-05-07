@@ -147,6 +147,9 @@ const ALLOWED_COLUMNS = new Set([
   'churn_customer_type',
   'churn_winback_possible',
   'churn_methodology',
+  // Pass 32 X1 — delivered_respondent_count records actual delivered
+  // count (may differ from contract for Brand Lift paired splits etc).
+  'delivered_respondent_count',
 ]);
 
 /**

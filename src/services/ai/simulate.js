@@ -81,7 +81,31 @@ Return ONLY this JSON:
 
   try {
     const parsed = extractJSON(response.text);
-    return parsed.responses || [];
+    const raw = Array.isArray(parsed.responses) ? parsed.responses : [];
+    // Pass 32 X1 — DEDUPLICATE by question_id. Production audit
+    // (May 7 2026) found mission 23389bb1 had 100 response rows for
+    // 10 personas × 5 questions (expected 50). Root cause: Claude
+    // sometimes returns multiple entries with the same question_id
+    // (e.g. an answer + a "thinking out loud" duplicate, or a retry
+    // inside one response). Keeping the first answer per question_id
+    // gives the contract-correct N rows per persona; downstream code
+    // already assumes uniqueness.
+    const seenQuestionIds = new Set();
+    const deduped = [];
+    for (const r of raw) {
+      if (!r || typeof r.question_id !== 'string') continue;
+      if (seenQuestionIds.has(r.question_id)) continue;
+      seenQuestionIds.add(r.question_id);
+      deduped.push(r);
+    }
+    if (deduped.length !== raw.length) {
+      logger.warn('Response sim: deduplicated duplicate question_ids', {
+        personaId: persona.id,
+        raw: raw.length,
+        deduped: deduped.length,
+      });
+    }
+    return deduped;
   } catch (err) {
     logger.warn('Response sim parse failed', { personaId: persona.id, err: err.message });
     return [];
@@ -186,6 +210,28 @@ async function simulateAllResponses(personas, questions, mission, onProgress) {
       if (onProgress) onProgress(completed, personas.length);
     });
     await Promise.all(wave);
+  }
+
+  // Pass 32 X1 — contract verification. The customer paid for
+  // mission.respondent_count personas; out is the flat
+  // (persona × question) row list. Expected total = personas × Q
+  // when no screening kicked in, less when some personas got
+  // screened out. We log when actual diverges by >25% so production
+  // monitoring can flag mid-flight regressions early.
+  const expectedRows = personas.length * (questions || []).length;
+  if (expectedRows > 0) {
+    const ratio = out.length / expectedRows;
+    if (ratio < 0.5 || ratio > 1.5) {
+      const Logger = require('../../utils/logger');
+      Logger.warn('simulateAllResponses: row count diverges from expected', {
+        missionId: mission?.id,
+        personaCount: personas.length,
+        questionCount: (questions || []).length,
+        expected: expectedRows,
+        actual: out.length,
+        ratio: Number(ratio.toFixed(2)),
+      });
+    }
   }
 
   return out;
