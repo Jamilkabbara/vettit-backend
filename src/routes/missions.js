@@ -24,15 +24,61 @@ const activeRuns = new Set();
 const TERMINAL_OR_RUNNING = new Set(['processing', 'completed', 'paid', 'failed']);
 
 /**
- * GET /api/missions — list user's missions (ordered most-recent first).
+ * GET /api/missions — list user's missions (most-recent first).
+ *
+ * Pass 33 W10 — column-list select. The missions table has 77 columns
+ * including 20+ heavy JSONB (questions, insights, mission_assets,
+ * creative_analysis, targeting, etc.); a `select('*')` over a 38-row
+ * mission set returns ~184 kB and made the dashboard cold-load take
+ * ~9s. The card preview only needs ~16 fields. Detail endpoint
+ * (`/api/missions/:id` below) keeps select('*') for the full row.
+ *
+ * The set below covers everything MissionsListPage.tsx actually
+ * renders — id / title / brief / target_audience for the card preview,
+ * status / goal_type / delivery_unit / delivery_status for badges,
+ * respondent + delivery counts for progress, pricing for the footer,
+ * created_at for sort, refund metadata for failure UI. Anything not
+ * here belongs on the detail endpoint.
  */
+const MISSION_LIST_COLUMNS = [
+  'id',
+  'title',
+  'brief',
+  'target_audience',
+  'status',
+  'goal_type',
+  'delivery_unit',
+  'respondent_count',
+  'delivered_respondent_count',
+  'total_simulated_count',
+  'qualified_respondent_count',
+  'qualification_rate',
+  'delivery_status',
+  'price_estimated',
+  'total_price_usd',
+  'paid_at',
+  'created_at',
+  'partial_refund_id',
+  'partial_refund_amount_cents',
+  'failure_reason',
+  'brand_name',
+  'category',
+].join(', ');
+
+const MISSION_LIST_DEFAULT_LIMIT = 100;
+
 router.get('/', authenticate, async (req, res, next) => {
   try {
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || MISSION_LIST_DEFAULT_LIMIT, 1),
+      500,
+    );
     const { data, error } = await supabase
       .from('missions')
-      .select('*, mission_responses(count)')
+      .select(`${MISSION_LIST_COLUMNS}, mission_responses(count)`)
       .eq('user_id', req.user.id)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .limit(limit);
     if (error) throw error;
     // Flatten the join: mission_responses is [{count:N}], expose as responses_collected.
     const rows = (data || []).map(m => ({
