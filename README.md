@@ -21,7 +21,9 @@ This is the engine behind Vettit.ai. It handles:
 
 For methodology fidelity claims and what VETT can / cannot say in
 external materials, see
-[docs/HONEST_CLAIMS.md](./docs/HONEST_CLAIMS.md).
+[docs/HONEST_CLAIMS.md](./docs/HONEST_CLAIMS.md). The Pass 33 W audit
+added a "peer-reviewed" forward policy — frameworks are peer-reviewed,
+VETT outputs are simulations of those frameworks.
 
 ---
 
