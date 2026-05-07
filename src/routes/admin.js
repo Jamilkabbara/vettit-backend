@@ -275,14 +275,48 @@ router.get('/ai-costs', async (req, res, next) => {
     const { start, end } = resolveRange(req.query.range || '30d');
     const priorStart = new Date(start.getTime() - (end.getTime() - start.getTime()));
 
-    const [summary, priorSummary, byOperation, modelMix, margins, buckets] = await Promise.all([
+    // Pass 33 W2 — daily_revenue_buckets RPC returns columns named
+    // `bucket_date` + `ai_cost_usd`, but the frontend chart binds to
+    // `day` + `cost_usd` → keys silently undefined → chart empty even
+    // though the aggregate ($1.89) was correct. Pulling daily buckets
+    // directly from ai_calls (which Pass 32 X7 confirmed as the truth
+    // source) and missions.paid_at lets us return the right key shape
+    // and avoid the missions.ai_cost_usd stale-rollup problem in one
+    // shot.
+    const [summary, priorSummary, byOperation, modelMix, margins, dailyAi, dailyRev] = await Promise.all([
       supabase.rpc('admin_ai_cost_summary',      { range_start: start,      range_end: end }),
       supabase.rpc('admin_ai_cost_summary',      { range_start: priorStart, range_end: start }),
       supabase.rpc('admin_ai_cost_by_operation', { range_start: start,      range_end: end }),
       supabase.rpc('admin_ai_model_mix',         { range_start: start,      range_end: end }),
       supabase.rpc('admin_mission_margins',      { range_start: start,      range_end: end }),
-      supabase.rpc('daily_revenue_buckets',      { range_start: start,      range_end: end }),
+      supabase.from('ai_calls').select('cost_usd, created_at')
+        .gte('created_at', start.toISOString()).lt('created_at', end.toISOString()),
+      supabase.from('missions').select('total_price_usd, paid_at')
+        .in('status', ['paid', 'completed'])
+        .gte('paid_at', start.toISOString()).lt('paid_at', end.toISOString()),
     ]);
+
+    // Bucket by yyyy-mm-dd. Cost from ai_calls.cost_usd, revenue from
+    // missions.total_price_usd. Round cost to 4dp (Anthropic prices in
+    // fractions of cents) and revenue to 2dp.
+    const aiByDay = {};
+    for (const r of (dailyAi.data || [])) {
+      const day = String(r.created_at || '').slice(0, 10);
+      if (!day) continue;
+      aiByDay[day] = (aiByDay[day] || 0) + Number(r.cost_usd || 0);
+    }
+    const revByDay = {};
+    for (const r of (dailyRev.data || [])) {
+      const day = String(r.paid_at || '').slice(0, 10);
+      if (!day) continue;
+      revByDay[day] = (revByDay[day] || 0) + Number(r.total_price_usd || 0);
+    }
+    const allDays = new Set([...Object.keys(aiByDay), ...Object.keys(revByDay)]);
+    const dailyBuckets = Array.from(allDays).sort().map(day => ({
+      day,
+      cost_usd:    Math.round((aiByDay[day]  || 0) * 10000) / 10000,
+      revenue_usd: Math.round((revByDay[day] || 0) * 100) / 100,
+    }));
 
     const s  = summary.data      || {};
     const ps = priorSummary.data || {};
@@ -304,7 +338,7 @@ router.get('/ai-costs', async (req, res, next) => {
       by_operation:    byOperation.data || [],
       model_mix:       modelMix.data    || [],
       mission_margins: margins.data     || [],
-      daily_buckets:   buckets.data     || [],
+      daily_buckets:   dailyBuckets,
       last_updated:    new Date().toISOString(),
     });
   } catch (err) { next(err); }
