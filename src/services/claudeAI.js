@@ -376,6 +376,15 @@ async function generateSurvey({
   if (goal === 'satisfaction') {
     return generateCSATSurvey({ description, clarify });
   }
+  if (goal === 'validate') {
+    return generateValidateSurvey({ description, clarify });
+  }
+  if (goal === 'compare') {
+    return generateCompareSurvey({ description, clarify });
+  }
+  if (goal === 'marketing') {
+    return generateMarketingSurvey({ description, clarify });
+  }
 
   const prompt = `Mission Goal: ${goal}
 Description: "${description}"
@@ -887,6 +896,390 @@ async function generateCSATSurvey({ description, clarify }) {
   if (!validationErr) return parsed;
 
   logger.warn('csat survey: both attempts failed validation', {
+    reason: validationErr,
+    questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
+  });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
+}
+
+// ── PASS 30 B1 — VALIDATE PRODUCT (CONCEPT TEST) ────────────────────────────
+const VALIDATE_SURVEY_GEN_SYSTEM = `You are a senior concept-test methodologist. You design single-concept evaluation surveys following the standard appeal / relevance / uniqueness / believability / intent battery. Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short product/concept name extracted from the brief (2-5 words)",
+  "missionStatement": "One-sentence research objective starting with 'To validate...' or 'To measure appeal of...'",
+  "questions": [
+    {
+      "id": "q1",
+      "text": "Question text",
+      "type": "single|multi|rating|text",
+      "options": ["Option A"],
+      "isScreening": true,
+      "qualifyingAnswer": "Option A",
+      "qualifying_answers": ["Option A"],
+      "screening_continue_on": ["Option A"],
+      "methodology": "concept_test",
+      "funnel_stage": "screener|reaction|relevance|uniqueness|believability|intent|qualitative|price_fairness"
+    }
+  ],
+  "targetingSuggestions": {
+    "recommendedCountries": ["US"],
+    "recommendedAgeRanges": ["25-44"],
+    "recommendedGenders": [],
+    "reasoning": "Brief explanation"
+  },
+  "suggestedRespondentCount": 200
+}
+
+Hard rules:
+- Generate 9 or 10 questions in this fixed order:
+  q1 SCREENER (isScreening=true, methodology="concept_test", funnel_stage="screener") — qualifies category buyers from the brief context. type="single", 2-3 options, qualify the most relevant.
+  q2 REACTION — "What is your overall reaction to this concept?" type="rating" 1-10, options=[]. funnel_stage="reaction".
+  q3 RELEVANCE — "How relevant is this concept to your needs?" type="rating" 1-7. funnel_stage="relevance".
+  q4 UNIQUENESS — "How different is this from other <category> options?" type="rating" 1-7. funnel_stage="uniqueness".
+  q5 BELIEVABILITY — "How believable are the claims about this concept?" type="rating" 1-7. funnel_stage="believability".
+  q6 PURCHASE INTENT — "If this were available[ at $<price> if a price was supplied], how likely would you be to buy?" type="single" 5 options ["Definitely would buy","Probably would buy","Might or might not","Probably would NOT buy","Definitely would NOT buy"]. funnel_stage="intent".
+  q7 WORD ASSOCIATION — "What words come to mind when you think about this concept? Up to 5 words." type="text". funnel_stage="qualitative".
+  q8 BIGGEST CONCERN — "What's your biggest concern or hesitation about this concept?" type="text". funnel_stage="qualitative".
+  q9 WHO WOULD BUY — "Who do you think this concept is for?" type="text". funnel_stage="qualitative".
+  q10 PRICE FAIR (ONLY include when a concept_price was supplied; omit otherwise) — "Is $<price> a fair price for what's offered?" type="single", options=["Too low","Fair","Too high"]. funnel_stage="price_fairness".
+- "<category>" in q4 — pull from the universal-inputs category supplied in the user message (or infer from the brief if absent).
+- DO NOT include vw_band, gg_anchor_index, currency, feature_id, kano_type, kpi_category, is_lift_question, channel_id — those belong to other methodologies.
+- Q1 isScreening MUST be true. All other questions MUST have isScreening=false.
+- suggestedRespondentCount default 200 (well above the 100 concept_test bound). Escalate to 400+ when the brief mentions sub-segment splits.
+
+Output MUST be valid JSON. No prose, no markdown fences.`;
+
+function validateValidateSurvey(parsed, hasPrice) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  const expected = hasPrice ? 10 : 9;
+  if (qs.length !== expected) return `expected ${expected} questions, got ${qs.length}`;
+  const expectedStages = [
+    'screener', 'reaction', 'relevance', 'uniqueness', 'believability',
+    'intent', 'qualitative', 'qualitative', 'qualitative',
+  ];
+  if (hasPrice) expectedStages.push('price_fairness');
+  for (let i = 0; i < expectedStages.length; i++) {
+    if (qs[i].funnel_stage !== expectedStages[i]) {
+      return `q${i + 1} expected funnel_stage="${expectedStages[i]}", got "${qs[i].funnel_stage}"`;
+    }
+  }
+  if (qs[0].isScreening !== true) return 'q1 must be isScreening=true';
+  if (qs[1].type !== 'rating') return 'q2 (reaction) must be type=rating';
+  if (qs[5].type !== 'single' || !Array.isArray(qs[5].options) || qs[5].options.length !== 5) {
+    return 'q6 (intent) must be single with 5 options';
+  }
+  return null;
+}
+
+function buildValidateUserPrompt({ description, clarify }) {
+  const c = clarify || {};
+  const conceptDesc = c.concept_description || description;
+  const price = c.concept_price_usd;
+  const occasion = c.concept_use_occasion || '';
+  const lines = [
+    'Mission Goal: validate',
+    `Brief: "${description}"`,
+    `Concept description: "${conceptDesc}"`,
+  ];
+  if (price) lines.push(`Concept price: $${price}`);
+  if (occasion) lines.push(`Use occasion: "${occasion}"`);
+  lines.push('');
+  lines.push('Extract a SHORT concept name (2-5 words) from the brief.');
+  lines.push(`Generate the ${price ? 10 : 9}-question concept-test survey.`);
+  if (price) lines.push('Include q10 PRICE FAIR since a price was supplied.');
+  return lines.join('\n');
+}
+
+async function generateValidateSurvey({ description, clarify }) {
+  const userPrompt = buildValidateUserPrompt({ description, clarify });
+  const hasPrice = !!(clarify && clarify.concept_price_usd);
+  const firstResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: VALIDATE_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }],
+    maxTokens: 2500,
+    enablePromptCache: true,
+  });
+  let parsed;
+  try { parsed = extractJSON(firstResp.text); }
+  catch (err) { parsed = null; logger.warn('validate survey: parse failed', { err: err.message }); }
+  let validationErr = parsed ? validateValidateSurvey(parsed, hasPrice) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.info('validate survey: retry on validation failure', { reason: validationErr });
+  const retryResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: VALIDATE_SURVEY_GEN_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
+    }],
+    maxTokens: 2500,
+    enablePromptCache: true,
+  });
+  try { parsed = extractJSON(retryResp.text); }
+  catch (err) { parsed = null; logger.warn('validate survey: retry parse failed', { err: err.message }); }
+  validationErr = parsed ? validateValidateSurvey(parsed, hasPrice) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.warn('validate survey: both attempts failed validation', {
+    reason: validationErr,
+    questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
+  });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
+}
+
+// ── PASS 30 B3 — COMPARE CONCEPTS (SEQUENTIAL MONADIC + FORCED CHOICE) ─────
+const COMPARE_SURVEY_GEN_SYSTEM = `You are a senior research methodologist designing sequential-monadic concept comparison surveys (Drive Research / SurveyMonkey 2026 published guidance). Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short brand/category name extracted from the brief",
+  "missionStatement": "One-sentence research objective: 'To compare N concepts on appeal, relevance, and purchase intent...'",
+  "questions": [
+    {
+      "id": "q1",
+      "text": "Question text",
+      "type": "single|multi|rating|text",
+      "options": ["Option A"],
+      "isScreening": true,
+      "qualifyingAnswer": "Option A",
+      "qualifying_answers": ["Option A"],
+      "screening_continue_on": ["Option A"],
+      "methodology": "sequential_monadic",
+      "concept_id": "c1",
+      "is_final_choice": false
+    }
+  ],
+  "targetingSuggestions": { "recommendedCountries": ["US"], "recommendedAgeRanges": ["25-44"], "recommendedGenders": [], "reasoning": "..." },
+  "suggestedRespondentCount": 240
+}
+
+Hard rules:
+- q1 is the screener (methodology="sequential_monadic", isScreening=true) qualifying category buyers. Options 2-3, qualify the most relevant.
+- For each concept (in input order, the simulator handles per-respondent rotation), emit 5 questions in this order with concept_id set to that concept's id:
+  - APPEAL — "Considering [<concept name>]: [<concept description>]. How appealing is this concept?" type="rating" 1-10. funnel_stage="appeal".
+  - RELEVANCE — "How relevant is this concept to your needs?" type="rating" 1-7. funnel_stage="relevance".
+  - UNIQUENESS — "How different is this from other <category> options?" type="rating" 1-7. funnel_stage="uniqueness".
+  - PURCHASE INTENT — "If [<concept name>] were available[ at $<price> if a price was supplied], how likely would you be to buy?" type="single", 5 options ["Definitely would buy","Probably would buy","Might or might not","Probably would NOT buy","Definitely would NOT buy"]. funnel_stage="intent".
+  - BEST/WORST — "What's the best thing and the worst thing about this concept?" type="text". funnel_stage="qualitative".
+- After ALL concepts, two final questions (concept_id=null, is_final_choice=true):
+  - FORCED CHOICE — "Which concept did you find most appealing overall?" type="single", options=[ <each concept name> , "None of these"]. methodology stays "sequential_monadic".
+  - WHY — "Why?" type="text".
+- Total questions = 1 (screener) + 5N (per-concept) + 2 (final) = 5N + 3.
+  - 2 concepts → 13 Qs.  3 concepts → 18 Qs.  4 concepts → 23 Qs.  5 concepts → 28 Qs.
+- DO NOT include funnel_stage on the screener or final-choice/why; only on the per-concept rows. Do not include vw_band, gg_anchor_index, kano_type, feature_set — those belong to other methodologies.
+- suggestedRespondentCount = 80 × N (per-concept floor) at minimum, 150 × N preferred.
+
+Output MUST be valid JSON. No prose, no markdown fences.`;
+
+function validateCompareSurvey(parsed, conceptCount) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  const expected = 1 + 5 * conceptCount + 2;
+  if (qs.length !== expected) return `expected ${expected} questions for ${conceptCount} concepts, got ${qs.length}`;
+  if (qs[0].isScreening !== true) return 'q1 must be isScreening=true';
+  // Per-concept block validation — each concept should have 5 Qs.
+  for (let c = 0; c < conceptCount; c++) {
+    const block = qs.slice(1 + c * 5, 1 + (c + 1) * 5);
+    if (block.length !== 5) return `concept block ${c + 1} missing questions`;
+    const cid = block[0].concept_id;
+    if (!cid) return `concept block ${c + 1} missing concept_id`;
+    for (const q of block) {
+      if (q.concept_id !== cid) return `concept block ${c + 1}: concept_id inconsistent`;
+    }
+  }
+  const final = qs[qs.length - 2];
+  if (!final || final.is_final_choice !== true) return 'final-choice question missing or not flagged is_final_choice=true';
+  return null;
+}
+
+function buildCompareUserPrompt({ description, clarify }) {
+  const c = clarify || {};
+  let concepts = [];
+  try { concepts = JSON.parse(c.concepts || '[]'); } catch { concepts = []; }
+  const lines = [
+    'Mission Goal: compare',
+    `Brief: "${description}"`,
+    `Total concepts: ${concepts.length}`,
+    '',
+    'Concepts (use these exact ids in concept_id):',
+  ];
+  for (const x of concepts) {
+    const priceStr = x.price_usd ? ` price=$${x.price_usd}` : '';
+    lines.push(`- id=${x.id} name="${x.name}" description="${x.description}"${priceStr}`);
+  }
+  lines.push('');
+  lines.push('Generate the screener (q1), 5 questions per concept (5N), then the forced-choice + why (2). Total = 5N+3 questions.');
+  return lines.join('\n');
+}
+
+async function generateCompareSurvey({ description, clarify }) {
+  const userPrompt = buildCompareUserPrompt({ description, clarify });
+  let concepts = [];
+  try { concepts = JSON.parse(clarify?.concepts || '[]'); } catch { concepts = []; }
+  const conceptCount = concepts.length || 2;
+
+  const firstResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: COMPARE_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }],
+    maxTokens: 5000,
+    enablePromptCache: true,
+  });
+  let parsed;
+  try { parsed = extractJSON(firstResp.text); }
+  catch (err) { parsed = null; logger.warn('compare survey: parse failed', { err: err.message }); }
+  let validationErr = parsed ? validateCompareSurvey(parsed, conceptCount) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.info('compare survey: retry on validation failure', { reason: validationErr });
+  const retryResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: COMPARE_SURVEY_GEN_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
+    }],
+    maxTokens: 5000,
+    enablePromptCache: true,
+  });
+  try { parsed = extractJSON(retryResp.text); }
+  catch (err) { parsed = null; logger.warn('compare survey: retry parse failed', { err: err.message }); }
+  validationErr = parsed ? validateCompareSurvey(parsed, conceptCount) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.warn('compare survey: both attempts failed validation', {
+    reason: validationErr,
+    questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
+  });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
+}
+
+// ── PASS 30 B5 — TEST MARKETING / ADS (AD EFFECTIVENESS) ──────────────────
+const MARKETING_SURVEY_GEN_SYSTEM = `You are a senior advertising-research methodologist designing ad effectiveness studies in the Kantar Link / ASI tradition. Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short brand name extracted from the brief",
+  "missionStatement": "One-sentence research objective",
+  "questions": [
+    {
+      "id": "q1",
+      "text": "...",
+      "type": "single|multi|rating|text",
+      "options": ["..."],
+      "isScreening": true,
+      "qualifyingAnswer": "...",
+      "qualifying_answers": ["..."],
+      "screening_continue_on": ["..."],
+      "methodology": "ad_effectiveness",
+      "funnel_stage": "screener|recall|exposure|attribution|message|likeability|stopping|distinctiveness|emotional|persuasion|message_match|sharing"
+    }
+  ],
+  "targetingSuggestions": { "recommendedCountries": ["US"], "recommendedAgeRanges": ["25-44"], "recommendedGenders": [], "reasoning": "..." },
+  "suggestedRespondentCount": 200
+}
+
+Hard rules — generate 12 or 13 questions in this fixed order:
+  q1 SCREENER (isScreening=true, methodology="ad_effectiveness", funnel_stage="screener") — qualifies category buyers from the brief context. type="single", 2-3 options, qualify the most relevant.
+  q2 UNAIDED RECALL (funnel_stage="recall") — "What ads have you seen recently for <category>?" type="text".
+  q3 EXPOSURE — text="[<creative_url>] Please review the ad above before answering the next questions." type="text" with options=[]. Use funnel_stage="exposure". This is a soft acknowledgement step; the simulator will substitute the creative URL in the prompt.
+  q4 AIDED RECALL (funnel_stage="recall") — "Have you seen this ad before?" type="single", options=["Yes","No","Not sure"].
+  q5 BRAND ATTRIBUTION (funnel_stage="attribution") — "Whose ad is this?" type="text".
+  q6 MAIN MESSAGE (funnel_stage="message") — "What's the main message of this ad?" type="text".
+  q7 LIKEABILITY (funnel_stage="likeability") — "How much did you like this ad?" type="rating" 1-7.
+  q8 STOPPING POWER (funnel_stage="stopping") — "On <campaign_channel>, would this ad get your attention?" type="rating" 1-7.
+  q9 DISTINCTIVENESS (funnel_stage="distinctiveness") — "How different is this from other <category> ads?" type="rating" 1-7.
+  q10 EMOTIONAL RESPONSE (funnel_stage="emotional") — "How does this ad make you feel?" type="multi", options=["Amused","Inspired","Curious","Surprised","Happy","Nostalgic","Annoyed","Bored","Confused","Skeptical","Indifferent","Other"].
+  q11 PERSUASION (funnel_stage="persuasion") — "After seeing this, are you more or less likely to <campaign_objective>?" type="rating" 1-7 (1=Much less likely, 7=Much more likely).
+  q12 MESSAGE MATCH (funnel_stage="message_match", ONLY include when intended_message was supplied — otherwise OMIT) — "Did the ad communicate <intended_message>?" type="single", options=["Yes","Somewhat","No"].
+  q13 SHARING (funnel_stage="sharing") — "Would you share or recommend this ad to a friend?" type="single", options=["Yes","Maybe","No"].
+- "<category>" / "<campaign_channel>" / "<campaign_objective>" / "<intended_message>" / "<creative_url>" — pull from the user message context. If a value is missing, use a sensible neutral phrasing.
+- DO NOT include vw_band, gg_anchor_index, kano_type, feature_set, concept_id, kpi_category, is_lift_question, channel_id — those belong to other methodologies.
+- suggestedRespondentCount default 200 (well above the 100 ad_effectiveness bound). Escalate to 400+ when the brief mentions sub-segment splits.
+
+Output MUST be valid JSON. No prose, no markdown fences.`;
+
+function validateMarketingSurvey(parsed, hasMessage) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  const expected = hasMessage ? 13 : 12;
+  if (qs.length !== expected) return `expected ${expected} questions, got ${qs.length}`;
+  if (qs[0].isScreening !== true) return 'q1 must be isScreening=true';
+  const expectedStages = [
+    'screener', 'recall', 'exposure', 'recall', 'attribution', 'message',
+    'likeability', 'stopping', 'distinctiveness', 'emotional', 'persuasion',
+  ];
+  if (hasMessage) expectedStages.push('message_match');
+  expectedStages.push('sharing');
+  for (let i = 0; i < expectedStages.length; i++) {
+    if (qs[i].funnel_stage !== expectedStages[i]) {
+      return `q${i + 1} expected funnel_stage="${expectedStages[i]}", got "${qs[i].funnel_stage}"`;
+    }
+  }
+  return null;
+}
+
+function buildMarketingUserPrompt({ description, clarify }) {
+  const c = clarify || {};
+  const lines = [
+    'Mission Goal: marketing',
+    `Brief: "${description}"`,
+    `Creative URL: ${c.creative_media_url || '<not provided>'}`,
+    `Creative type: ${c.creative_media_type || 'image'}`,
+    `Campaign channel: ${c.campaign_channel || 'social'}`,
+    `Campaign format: ${c.campaign_format || 'static_image'}`,
+    `Campaign objective: ${c.campaign_objective || 'awareness'}`,
+  ];
+  if (c.intended_message) lines.push(`Intended message: "${c.intended_message}"`);
+  if (c.category) lines.push(`Category: ${c.category}`);
+  if (c.brand_name) lines.push(`Brand: ${c.brand_name}`);
+  lines.push('');
+  lines.push('Generate the screener (q1) + 11 ad-effectiveness questions, plus q12 message-match if intended_message was supplied, plus q13 sharing.');
+  return lines.join('\n');
+}
+
+async function generateMarketingSurvey({ description, clarify }) {
+  const userPrompt = buildMarketingUserPrompt({ description, clarify });
+  const hasMessage = !!(clarify && clarify.intended_message && clarify.intended_message.trim());
+
+  const firstResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: MARKETING_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }],
+    maxTokens: 3000,
+    enablePromptCache: true,
+  });
+  let parsed;
+  try { parsed = extractJSON(firstResp.text); }
+  catch (err) { parsed = null; logger.warn('marketing survey: parse failed', { err: err.message }); }
+  let validationErr = parsed ? validateMarketingSurvey(parsed, hasMessage) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.info('marketing survey: retry on validation failure', { reason: validationErr });
+  const retryResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: MARKETING_SURVEY_GEN_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
+    }],
+    maxTokens: 3000,
+    enablePromptCache: true,
+  });
+  try { parsed = extractJSON(retryResp.text); }
+  catch (err) { parsed = null; logger.warn('marketing survey: retry parse failed', { err: err.message }); }
+  validationErr = parsed ? validateMarketingSurvey(parsed, hasMessage) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.warn('marketing survey: both attempts failed validation', {
     reason: validationErr,
     questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
   });

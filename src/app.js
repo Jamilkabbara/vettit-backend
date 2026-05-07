@@ -167,13 +167,32 @@ app.get('/health', (req, res) => {
 // platform's auto-deploy hook silently skipped the build. This lets
 // us prove what's running without dashboard access. Railway auto-sets
 // RAILWAY_GIT_COMMIT_SHA on every build.
+// Pass 30 A4 — /version metadata refreshed. Pass 23 era flags
+// (bug23_79 / bug23_80) removed. Replaced with the current Pass + the
+// methodologies array so prospects/partners can hit /version and see
+// what VETT actually ships methodology-wise without scraping the
+// /methodologies marketing page.
 app.get('/version', (req, res) => {
   res.json({
-    sha:       process.env.RAILWAY_GIT_COMMIT_SHA || 'unknown',
-    branch:    process.env.RAILWAY_GIT_BRANCH || 'unknown',
+    sha:        process.env.RAILWAY_GIT_COMMIT_SHA || 'unknown',
+    branch:     process.env.RAILWAY_GIT_BRANCH || 'unknown',
     deployedAt: process.env.RAILWAY_DEPLOYMENT_CREATED_AT || 'unknown',
-    bug23_79:  'magic-byte detection',
-    bug23_80:  'auto-refund on pipeline failure',
+    pass:       30,
+    methodologies: [
+      'brand_lift',
+      'creative_attention',
+      'pricing',                 // Van Westendorp + Gabor-Granger
+      'feature_roadmap',         // MaxDiff + Kano
+      'customer_satisfaction',   // NPS + CSAT + CES
+      'concept_test',            // Pass 30 B1
+      'sequential_monadic',      // Pass 30 B3
+      'ad_effectiveness',        // Pass 30 B5
+      'brand_health_tracker',    // Pass 30 B7
+      'segmentation',            // Pass 30 B9
+      'naming_monadic',          // Pass 30 B11
+      'market_entry',            // Pass 30 B13
+      'churn_driver',            // Pass 30 B15
+    ],
   });
 });
 
