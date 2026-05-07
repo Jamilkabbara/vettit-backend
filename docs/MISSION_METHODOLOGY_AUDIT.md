@@ -1,6 +1,6 @@
 # Mission Methodology Audit
 
-**Last updated:** 2026-05-07 (Pass 30 closure update)
+**Last updated:** 2026-05-08 (Pass 31 closure — 11 of 13 shipped)
 
 A read-only inventory of where each of the 14 canonical mission types
 sits on the methodology-rigor scale. Each section follows the same
@@ -12,22 +12,29 @@ for types shipped in earlier passes).
 The 14 ids match `src/data/missionGoals.ts` and the
 `missions.goal_type` column.
 
-| # | id (`missions.goal_type`) | Label | Pass 30 status |
+| # | id (`missions.goal_type`) | Label | Pass 31 status |
 |---|---|---|---|
-| 1 | `validate` | Validate Product | ✅ Pass 30 B1 + B2 ship Concept Test |
-| 2 | `compare` | Compare Concepts | ✅ Pass 30 B3 + B4 ship Sequential Monadic |
-| 3 | `marketing` | Test Marketing / Ads | ✅ Pass 30 B5 ships Ad Effectiveness backend; results page deferred to Pass 31 |
-| 4 | `satisfaction` | Customer Satisfaction | ✅ Pass 29 B8 + B9 |
-| 5 | `pricing` | Pricing Research | ✅ Pass 29 B4 + B5 |
-| 6 | `roadmap` | Feature Roadmap | ✅ Pass 29 B6 + B7 |
+| 1 | `validate` | Validate Product | ✅ Pass 30 B1 + B2 (Concept Test) |
+| 2 | `compare` | Compare Concepts | ✅ Pass 30 B3 + B4 (Sequential Monadic) |
+| 3 | `marketing` | Test Marketing / Ads | ✅ Pass 30 B5 backend + Pass 31 A1 results page (Ad Effectiveness) |
+| 4 | `satisfaction` | Customer Satisfaction | ✅ Pass 29 B8 + B9 (NPS+CSAT+CES) |
+| 5 | `pricing` | Pricing Research | ✅ Pass 29 B4 + B5 (Van Westendorp + Gabor-Granger) |
+| 6 | `roadmap` | Feature Roadmap | ✅ Pass 29 B6 + B7 (MaxDiff + Kano) |
 | 7 | `research` | General Research | Stays open-ended (no methodology lock) |
-| 8 | `competitor` | Competitor Analysis | ⏸ Deferred to Pass 31 |
-| 9 | `audience_profiling` | Audience Profiling | ⏸ Deferred to Pass 31 |
-| 10 | `naming_messaging` | Naming & Messaging | ⏸ Deferred to Pass 31 |
-| 11 | `market_entry` | Market Entry | ⏸ Deferred to Pass 31 |
-| 12 | `churn_research` | Churn Research | ⏸ Deferred to Pass 31 |
+| 8 | `competitor` | Competitor Analysis | ✅ Pass 31 B1 + B2 (Brand Health Tracker) |
+| 9 | `audience_profiling` | Audience Profiling | ⏸ Deferred to Pass 32 (segmentation + K-means is heavier scope) |
+| 10 | `naming_messaging` | Naming & Messaging | ✅ Pass 31 B3 + B4 (Monadic + Paired + TURF) |
+| 11 | `market_entry` | Market Entry | ⏸ Deferred to Pass 32 (per-market routing is heavier scope) |
+| 12 | `churn_research` | Churn Research | ✅ Pass 31 B5 + B6 (Driver Tree + Win-Back) |
 | 13 | `brand_lift` | Brand Lift Study | ✅ Already best-in-class (Pass 28) |
 | 14 | `creative_attention` | Creative Attention | ✅ Already best-in-class (Pass 25–26) |
+
+**Pass 31 status: 11 of 13 methodology-bound types fully shipped.**
+Audience Profiling and Market Entry remain in Pass 32 because both
+involve heavier scope (server-side K-means clustering for
+segmentation; per-market question routing for Market Entry) that
+benefits from a dedicated pass rather than rushing under context
+pressure at the tail of Pass 31.
 
 **Pass 30 ships methodology-correct backends + setup collectors for
 3 new mission types** (Validate Product, Compare Concepts, Test
@@ -290,7 +297,11 @@ considered = strong loyalty.
 
 **Sample size.** Min 200, best 400+.
 
-**Pass 29 commit.** ⏸ Deferred to Pass 30.
+**Pass 31 commit.** ✅ Shipped in Pass 31 B1 + B2
+(`CompetitorAnalysisInputs.tsx`, `generateCompetitorSurvey`,
+`CompetitorAnalysisResultsPage.tsx`). 5-stage funnel + attribute
+matrix; per-competitor attribute cells + per-brand NPS extension
+deferred to a follow-up.
 
 ---
 
@@ -320,7 +331,11 @@ unstable; need ≥3 distinguishing attributes per segment.
 
 **Sample size.** Min 300 (clusters unstable below), best 500+.
 
-**Pass 29 commit.** ⏸ Deferred to Pass 30.
+**Pass 31 commit.** ⏸ Deferred to Pass 32. Segmentation requires
+server-side K-means cluster analysis on the response matrix plus an
+Anthropic-call to AI-name each cluster — heavier scope than the
+other Pass 31 mission types fit into the remaining context budget.
+Audit row + plan stays here; Pass 32 picks up directly.
 
 ---
 
@@ -348,7 +363,10 @@ paired win rate ≥60% = clear preference.
 
 **Sample size.** Min 80 per candidate, best 150 per candidate.
 
-**Pass 29 commit.** ⏸ Deferred to Pass 30.
+**Pass 31 commit.** ✅ Shipped in Pass 31 B3 + B4
+(`NamingInputs.tsx`, `generateNamingSurvey`, `NamingResultsPage.tsx`).
+Monadic per-candidate + paired comparisons + TURF (when test_type
+includes taglines).
 
 ---
 
@@ -376,7 +394,12 @@ candidate; <40 = defer or rethink positioning.
 
 **Sample size.** Min 100 per target market, best 200+ per market.
 
-**Pass 29 commit.** ⏸ Deferred to Pass 30.
+**Pass 31 commit.** ⏸ Deferred to Pass 32. Per-market question
+routing + per-market Van Westendorp curves require the simulator
+to emit a market_code-aware question set, plus a results page with
+multi-market overlay. Heavier scope than fits at the tail of
+Pass 31; Pass 32 picks up directly with the audit row + plan
+already populated here.
 
 ---
 
@@ -406,7 +429,12 @@ churn often >50% winnable; competitor switch <20%.
 
 **Sample size.** Min 100, best 200+.
 
-**Pass 29 commit.** ⏸ Deferred to Pass 30.
+**Pass 31 commit.** ✅ Shipped in Pass 31 B5 + B6
+(`ChurnInputs.tsx`, `generateChurnSurvey`, `ChurnResultsPage.tsx`).
+11-question driver tree + win-back potential with reason
+categories, satisfaction at churn, NPS at churn, win-back
+triggers heatmap, CES at exit, warning-signs verbatim themes,
+and tenure-at-churn distribution.
 
 ---
 

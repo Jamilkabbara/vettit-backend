@@ -8,7 +8,7 @@
 
 This is the engine behind Vettit.ai. It handles:
 - **AI survey generation** using Claude (Anthropic) — methodology-aware
-  (8 industry-standard methodologies as of Pass 30; see
+  (11 industry-standard methodologies as of Pass 31; see
   [docs/METHODOLOGY_GUIDE.md](./docs/METHODOLOGY_GUIDE.md))
 - **Real-time pricing** calculated server-side (you never lose margin)
 - **Stripe payments** — collects payment before launching surveys

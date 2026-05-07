@@ -1,6 +1,6 @@
 # Methodology Guide
 
-**Last updated:** 2026-05-07 (Pass 30 C4)
+**Last updated:** 2026-05-08 (Pass 31 C4)
 
 VETT ships industry-standard research methodologies on synthetic
 respondents. Each methodology has a setup-page input collector, a
@@ -11,7 +11,7 @@ This file is the index. Each methodology links to the audit row in
 [MISSION_METHODOLOGY_AUDIT.md](./MISSION_METHODOLOGY_AUDIT.md) and to the
 relevant code paths.
 
-## Shipped methodologies (Pass 30 + earlier)
+## Shipped methodologies (Pass 31 + earlier)
 
 | Methodology | Mission `goal_type` | Sample size (min / best) | Setup component | Backend dispatch | Results page | Pass |
 |---|---|---|---|---|---|---|
@@ -22,7 +22,16 @@ relevant code paths.
 | NPS + CSAT + CES | `satisfaction` | 100 / 200 | `CSATInputs.tsx` | `generateCSATSurvey` | `CSATResultsPage.tsx` | 29 B8–B9 |
 | Concept Test | `validate` | 100 / 200 | `ConceptCollector.tsx` | `generateValidateSurvey` | `ValidateResultsPage.tsx` | 30 B1–B2 |
 | Sequential Monadic | `compare` | 80 / 150 (per concept) | `ConceptListCollector.tsx` | `generateCompareSurvey` | `CompareResultsPage.tsx` | 30 B3–B4 |
-| Ad Effectiveness | `marketing` | 100 / 200 | `AdTestingInputs.tsx` | `generateMarketingSurvey` | _(generic ResultsPage — bespoke deferred to Pass 31)_ | 30 B5 |
+| Ad Effectiveness | `marketing` | 100 / 200 | `AdTestingInputs.tsx` | `generateMarketingSurvey` | `AdTestingResultsPage.tsx` | 30 B5 + 31 A1 |
+| Brand Health Tracker | `competitor` | 200 / 400 | `CompetitorAnalysisInputs.tsx` | `generateCompetitorSurvey` | `CompetitorAnalysisResultsPage.tsx` | 31 B1–B2 |
+| Monadic + Paired + TURF | `naming_messaging` | 80 / 150 (per candidate) | `NamingInputs.tsx` | `generateNamingSurvey` | `NamingResultsPage.tsx` | 31 B3–B4 |
+| Driver Tree + Win-Back | `churn_research` | 100 / 200 | `ChurnInputs.tsx` | `generateChurnSurvey` | `ChurnResultsPage.tsx` | 31 B5–B6 |
+
+**Pass 31 closure status: 11 of 13 methodologies fully shipped.**
+Audience Profiling (segmentation + K-means) and Market Entry
+(combined demand + pricing + cultural per-market) are deferred to
+Pass 32 with the Pass 31 audit doc carrying the full template
+already populated.
 
 Cross-cutting components ship in Pass 29 B2–B3:
 
