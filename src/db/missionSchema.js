@@ -150,6 +150,8 @@ const ALLOWED_COLUMNS = new Set([
   // Pass 32 X1 — delivered_respondent_count records actual delivered
   // count (may differ from contract for Brand Lift paired splits etc).
   'delivered_respondent_count',
+  // Pass 32 X2 — delivery_unit ∈ {respondent, creative_asset}.
+  'delivery_unit',
 ]);
 
 /**
