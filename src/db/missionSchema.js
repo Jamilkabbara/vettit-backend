@@ -141,6 +141,12 @@ const ALLOWED_COLUMNS = new Set([
   'naming_criteria',
   'naming_methodology',
   'brand_personality',
+  // Pass 31 B5 — churn research (driver tree + win-back).
+  'churn_definition',
+  'churn_custom_definition',
+  'churn_customer_type',
+  'churn_winback_possible',
+  'churn_methodology',
 ]);
 
 /**

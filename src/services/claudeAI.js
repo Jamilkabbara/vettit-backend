@@ -391,6 +391,9 @@ async function generateSurvey({
   if (goal === 'naming_messaging') {
     return generateNamingSurvey({ description, clarify });
   }
+  if (goal === 'churn_research') {
+    return generateChurnSurvey({ description, clarify });
+  }
 
   const prompt = `Mission Goal: ${goal}
 Description: "${description}"
@@ -1565,6 +1568,135 @@ async function generateNamingSurvey({ description, clarify }) {
   if (!validationErr) return parsed;
 
   logger.warn('naming survey: both attempts failed validation', {
+    reason: validationErr,
+    questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
+  });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
+}
+
+// ── PASS 31 B5 — CHURN RESEARCH (DRIVER TREE + WIN-BACK) ───────────────────
+const CHURN_SURVEY_GEN_SYSTEM = `You are a senior customer-research methodologist designing churn driver tree + win-back potential studies. Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short brand name",
+  "missionStatement": "One-sentence research objective on churn drivers and win-back potential",
+  "questions": [
+    {
+      "id": "q1",
+      "text": "...",
+      "type": "single|multi|rating|text",
+      "options": ["..."],
+      "isScreening": true,
+      "qualifyingAnswer": "...",
+      "qualifying_answers": ["..."],
+      "screening_continue_on": ["..."],
+      "methodology": "churn_driver",
+      "churn_stage": "screener|reason|satisfaction|win_back|switch|warning|tenure"
+    }
+  ],
+  "targetingSuggestions": { "recommendedCountries": ["US"], "recommendedAgeRanges": ["25-44"], "recommendedGenders": [], "reasoning": "..." },
+  "suggestedRespondentCount": 200
+}
+
+Hard rules — generate EXACTLY 11 questions in this order:
+  q1 SCREENER (isScreening=true, methodology="churn_driver", churn_stage="screener") — qualifies that the respondent matches the supplied churn definition for [<brand_name>] (e.g. "Have you cancelled <brand> in the past 30 days?"). type="single" with yes/no. qualifying_answers=["Yes"].
+  q2 CHURN REASON CATEGORY (churn_stage="reason") — type="multi", text="What was the reason you stopped using <brand>? Select all that apply." options=["Price","Product fit","Customer service","Competition","Life change","Quality","Features","Trust","Other"].
+  q3 CHURN REASON DETAIL (churn_stage="reason") — type="text", text="Tell us more about the main reason in your own words."
+  q4 SATISFACTION AT CHURN (churn_stage="satisfaction") — type="single" 5-pt, options=["Very dissatisfied","Dissatisfied","Neutral","Satisfied","Very satisfied"].
+  q5 NPS AT CHURN (churn_stage="satisfaction") — type="rating" 0-10. text="At the time you stopped, how likely were you to recommend <brand>?" options=[].
+  q6 WIN-BACK PROBABILITY (churn_stage="win_back") — type="single" options=["Yes","Maybe","No"]. text="Would you reconsider using <brand> in the future?"
+  q7 WIN-BACK TRIGGERS (churn_stage="win_back") — type="multi", text="What would bring you back? Select all that apply." options=["Price discount or promo","New feature or improvement","Better service","Personal outreach","New product offering","Change in my situation","Other"].
+  q8 COMPETITIVE SWITCH (churn_stage="switch") — type="text", text="Did you switch to a competitor? If so, which one?"
+  q9 CES AT FINAL INTERACTION (churn_stage="switch") — type="rating" 1-7, options=[]. text="How easy or difficult was it to <cancel/leave/stop using> <brand>?"
+  q10 WARNING SIGNS (churn_stage="warning") — type="text", text="Looking back, what was the first sign you'd leave <brand>?"
+  q11 TIME TO CHURN (churn_stage="tenure") — type="single", text="How long were you a <brand> customer before you left?", options=["Less than 1 month","1-3 months","3-12 months","1-3 years","More than 3 years"].
+- "<brand>" placeholders pull from clarify.brand_name. If absent, use "the brand".
+- Customer type from clarify.churn_customer_type tunes the verbs in q1 + q9 (e.g. "subscription" → "cancelled"; "one_time" → "stopped buying"; "recurring" → "stopped purchasing"; "b2b" → "ended your contract").
+- Recency window from clarify.churn_definition is interpolated into q1 ("past 30 days" / "past 90 days" / "past 12 months" / etc).
+- DO NOT include vw_band, gg_anchor_index, kano_type, feature_set, candidate_id, brand_id, funnel_stage — those belong to other methodologies.
+- suggestedRespondentCount default 200 (well above the 100 churn_driver bound).
+
+Output MUST be valid JSON. No prose, no markdown fences.`;
+
+function validateChurnSurvey(parsed) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  if (qs.length !== 11) return `expected 11 questions, got ${qs.length}`;
+  if (qs[0].isScreening !== true) return 'q1 must be isScreening=true';
+  const expectedStages = [
+    'screener', 'reason', 'reason', 'satisfaction', 'satisfaction',
+    'win_back', 'win_back', 'switch', 'switch', 'warning', 'tenure',
+  ];
+  for (let i = 0; i < expectedStages.length; i++) {
+    if (qs[i].churn_stage !== expectedStages[i]) {
+      return `q${i + 1} expected churn_stage="${expectedStages[i]}", got "${qs[i].churn_stage}"`;
+    }
+  }
+  if (qs[3].type !== 'single' || (qs[3].options || []).length !== 5) {
+    return 'q4 (satisfaction) must be single with 5 options';
+  }
+  if (qs[4].type !== 'rating') return 'q5 (NPS) must be type=rating';
+  if (qs[8].type !== 'rating') return 'q9 (CES) must be type=rating';
+  return null;
+}
+
+function buildChurnUserPrompt({ description, clarify }) {
+  const c = clarify || {};
+  const recencyMap = {
+    cancelled_30d: 'past 30 days',
+    cancelled_90d: 'past 90 days',
+    cancelled_12m: 'past 12 months',
+    inactive_30d:  'past 30 days (inactive)',
+    inactive_90d:  'past 90 days (inactive)',
+  };
+  const recency = recencyMap[c.churn_definition] || c.churn_custom_definition || 'recent period';
+  const lines = [
+    'Mission Goal: churn_research',
+    `Brief: "${description}"`,
+    `Brand: ${c.brand_name || 'the brand'}`,
+    `Customer type: ${c.churn_customer_type || 'subscription'}`,
+    `Churn definition / recency: ${recency}`,
+    `Win-back possible: ${c.churn_winback_possible || 'unknown'}`,
+    '',
+    'Generate the 11-question Churn Driver Tree + Win-Back survey JSON.',
+  ];
+  return lines.join('\n');
+}
+
+async function generateChurnSurvey({ description, clarify }) {
+  const userPrompt = buildChurnUserPrompt({ description, clarify });
+  const firstResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: CHURN_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }],
+    maxTokens: 2500,
+    enablePromptCache: true,
+  });
+  let parsed;
+  try { parsed = extractJSON(firstResp.text); }
+  catch (err) { parsed = null; logger.warn('churn survey: parse failed', { err: err.message }); }
+  let validationErr = parsed ? validateChurnSurvey(parsed) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.info('churn survey: retry on validation failure', { reason: validationErr });
+  const retryResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: CHURN_SURVEY_GEN_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
+    }],
+    maxTokens: 2500,
+    enablePromptCache: true,
+  });
+  try { parsed = extractJSON(retryResp.text); }
+  catch (err) { parsed = null; logger.warn('churn survey: retry parse failed', { err: err.message }); }
+  validationErr = parsed ? validateChurnSurvey(parsed) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.warn('churn survey: both attempts failed validation', {
     reason: validationErr,
     questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
   });
