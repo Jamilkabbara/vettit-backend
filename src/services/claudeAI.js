@@ -385,6 +385,15 @@ async function generateSurvey({
   if (goal === 'marketing') {
     return generateMarketingSurvey({ description, clarify });
   }
+  if (goal === 'competitor') {
+    return generateCompetitorSurvey({ description, clarify });
+  }
+  if (goal === 'naming_messaging') {
+    return generateNamingSurvey({ description, clarify });
+  }
+  if (goal === 'churn_research') {
+    return generateChurnSurvey({ description, clarify });
+  }
 
   const prompt = `Mission Goal: ${goal}
 Description: "${description}"
@@ -1280,6 +1289,414 @@ async function generateMarketingSurvey({ description, clarify }) {
   if (!validationErr) return parsed;
 
   logger.warn('marketing survey: both attempts failed validation', {
+    reason: validationErr,
+    questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
+  });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
+}
+
+// ── PASS 31 B1 — COMPETITOR ANALYSIS (BRAND HEALTH TRACKER) ────────────────
+// 11-question 5-stage funnel (Awareness → Consideration → Preference →
+// Use → Recommendation) per published 2026 industry guidance from
+// YouGov BrandIndex / Hanover / Kantar.
+const COMPETITOR_SURVEY_GEN_SYSTEM = `You are a senior brand-research methodologist designing Brand Health Tracker studies (YouGov BrandIndex / Hanover / Kantar tradition). Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short focal brand name (2-5 words)",
+  "missionStatement": "One-sentence research objective on brand health vs competitors",
+  "questions": [
+    {
+      "id": "q1",
+      "text": "...",
+      "type": "single|multi|rating|text",
+      "options": ["..."],
+      "isScreening": true,
+      "qualifyingAnswer": "...",
+      "qualifying_answers": ["..."],
+      "screening_continue_on": ["..."],
+      "methodology": "brand_health_tracker",
+      "funnel_stage": "screener|awareness|consideration|preference|use|recommendation|switching|wom",
+      "brand_id": null
+    }
+  ],
+  "targetingSuggestions": { "recommendedCountries": ["US"], "recommendedAgeRanges": ["25-44"], "recommendedGenders": [], "reasoning": "..." },
+  "suggestedRespondentCount": 400
+}
+
+Hard rules — generate EXACTLY 11 questions in this order:
+  q1 SCREENER (isScreening=true, methodology="brand_health_tracker", funnel_stage="screener") — qualifies category buyers from the brief context. type="single", 2-3 options, qualify the most relevant.
+  q2 UNAIDED AWARENESS (funnel_stage="awareness") — "What <category> brands come to mind? List up to 5." type="text".
+  q3 AIDED AWARENESS (funnel_stage="awareness") — "Which of these brands have you heard of? Select all." type="multi", options = [<focal_brand>, ...<competitors>] in supplied order.
+  q4 CONSIDERATION (funnel_stage="consideration") — "Of the brands you've heard of, which would you consider buying next time you need a <category>?" type="multi", options = same as q3.
+  q5 PREFERENCE (funnel_stage="preference") — "Of the brands you'd consider, if you had to choose ONE, which would you pick?" type="single", options = same as q3.
+  q6 CURRENT USE (funnel_stage="use") — "Which of these brands do you use most often?" type="single", options = same as q3 + "None of these".
+  q7 NPS PER BRAND (funnel_stage="recommendation") — "How likely are you to recommend [<focal_brand>] to a friend or colleague?" type="rating" 0-10. brand_id=<focal_brand_id>.
+  q8 ATTRIBUTE MATRIX (funnel_stage="awareness") — "Which of these attributes apply to <focal_brand>? Select all that apply." type="multi", options = the supplied attribute battery (default 10 standard or user-specified).
+  q9 SWITCHING INTENT (funnel_stage="switching") — "How likely are you to switch from your current <category> brand to a different one in the next 6 months?" type="rating" 1-5.
+  q10 SWITCHING TARGET (funnel_stage="switching") — "If you were to switch, which brand would you most likely switch to?" type="single", options = competitor list.
+  q11 WORD-OF-MOUTH (funnel_stage="wom") — "In the past 2 weeks, have you talked about <focal_brand> with friends, family, or colleagues?" type="single", options=["Yes - positively","Yes - negatively","No, but I've thought about them","No, not at all"].
+- Per-brand questions (q7) carry brand_id; the simulator runs the question per aware brand. For now, emit q7 once with brand_id set to the focal brand id; downstream aggregator extends to competitors.
+- DO NOT include vw_band, gg_anchor_index, kano_type, feature_set, concept_id — those belong to other methodologies.
+- suggestedRespondentCount default 400 (well above the 200 brand_health_tracker bound). Per-brand cells get small below 200.
+
+Output MUST be valid JSON. No prose, no markdown fences.`;
+
+function validateCompetitorSurvey(parsed) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  if (qs.length !== 11) return `expected 11 questions, got ${qs.length}`;
+  if (qs[0].isScreening !== true) return 'q1 must be isScreening=true';
+  const expectedStages = [
+    'screener', 'awareness', 'awareness', 'consideration', 'preference',
+    'use', 'recommendation', 'awareness', 'switching', 'switching', 'wom',
+  ];
+  for (let i = 0; i < expectedStages.length; i++) {
+    if (qs[i].funnel_stage !== expectedStages[i]) {
+      return `q${i + 1} expected funnel_stage="${expectedStages[i]}", got "${qs[i].funnel_stage}"`;
+    }
+  }
+  if (qs[6].type !== 'rating') return 'q7 (NPS) must be type=rating';
+  return null;
+}
+
+function buildCompetitorUserPrompt({ description, clarify }) {
+  const c = clarify || {};
+  let competitors = [];
+  try { competitors = JSON.parse(c.competitor_brands || '[]'); } catch { /* ignore */ }
+  if (typeof c.competitors === 'string' && c.competitors) {
+    competitors = c.competitors.split('|').filter(Boolean);
+  }
+  let attrs = [];
+  try { attrs = JSON.parse(c.attribute_battery || '[]'); } catch { /* ignore */ }
+  if (!attrs.length && typeof c.attribute_battery === 'string') {
+    attrs = c.attribute_battery.split(',').filter(Boolean);
+  }
+  const lines = [
+    'Mission Goal: competitor',
+    `Brief: "${description}"`,
+    `Focal brand: ${c.brand_name || '<unknown>'}`,
+    `Category: ${c.category || '<unknown>'}`,
+    `Competitors (${competitors.length}): ${competitors.join(', ')}`,
+    `Attribute battery (${attrs.length}): ${attrs.join(', ')}`,
+    '',
+    'Generate the 11-question Brand Health Tracker survey JSON.',
+  ];
+  return lines.join('\n');
+}
+
+async function generateCompetitorSurvey({ description, clarify }) {
+  const userPrompt = buildCompetitorUserPrompt({ description, clarify });
+  const firstResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: COMPETITOR_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }],
+    maxTokens: 3000,
+    enablePromptCache: true,
+  });
+  let parsed;
+  try { parsed = extractJSON(firstResp.text); }
+  catch (err) { parsed = null; logger.warn('competitor survey: parse failed', { err: err.message }); }
+  let validationErr = parsed ? validateCompetitorSurvey(parsed) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.info('competitor survey: retry on validation failure', { reason: validationErr });
+  const retryResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: COMPETITOR_SURVEY_GEN_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
+    }],
+    maxTokens: 3000,
+    enablePromptCache: true,
+  });
+  try { parsed = extractJSON(retryResp.text); }
+  catch (err) { parsed = null; logger.warn('competitor survey: retry parse failed', { err: err.message }); }
+  validationErr = parsed ? validateCompetitorSurvey(parsed) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.warn('competitor survey: both attempts failed validation', {
+    reason: validationErr,
+    questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
+  });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
+}
+
+// ── PASS 31 B3 — NAMING & MESSAGING (MONADIC + PAIRED + TURF) ──────────────
+const NAMING_SURVEY_GEN_SYSTEM = `You are a senior naming-research methodologist designing monadic-evaluation + paired-comparison + (for taglines) TURF surveys. Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short brand/category name",
+  "missionStatement": "One-sentence research objective",
+  "questions": [
+    {
+      "id": "q1",
+      "text": "...",
+      "type": "single|multi|rating|text",
+      "options": ["..."],
+      "isScreening": true,
+      "qualifyingAnswer": "...",
+      "qualifying_answers": ["..."],
+      "screening_continue_on": ["..."],
+      "methodology": "monadic|paired_comparison|turf|monadic_plus_paired",
+      "candidate_id": "n1",
+      "criterion": "memorable",
+      "is_paired_comparison": false,
+      "is_turf": false
+    }
+  ],
+  "targetingSuggestions": { "recommendedCountries": ["US"], "recommendedAgeRanges": ["25-44"], "recommendedGenders": [], "reasoning": "..." },
+  "suggestedRespondentCount": 240
+}
+
+Hard rules (per-candidate count = N supplied; criteria count = M supplied):
+- q1 SCREENER (methodology="monadic_plus_paired", isScreening=true) — qualifies category buyers from the brief context. type="single", 2-3 options.
+- For each candidate (use the supplied id and text verbatim) emit (M+1) questions in this order:
+  - For each criterion in the supplied criteria list: rating 1-7 type="rating", options=[]. text="On a 1-7 scale, how <criterion-label> is [<candidate text>]?" The criterion field carries the slug.
+  - WORD ASSOCIATION (criterion="word_association"): type="text", text="What does [<candidate text>] make you think of? Up to 5 words."
+  - All these per-candidate Qs share methodology="monadic" and candidate_id=<id>.
+- After all candidates:
+  - FORCED CHOICE (methodology="monadic_plus_paired"): "Which candidate did you find most appealing overall?" type="single", options=[<each candidate text>]. is_paired_comparison=false. candidate_id=null.
+  - WHY (methodology="monadic_plus_paired"): "Why?" type="text". candidate_id=null.
+  - PAIRED COMPARISONS: emit ceil(N/2) paired Qs (between 1 and 4). For each, methodology="paired_comparison", text="Which would you choose: [<candidate A text>] OR [<candidate B text>]?" type="single", options=[<A text>, <B text>]. is_paired_comparison=true. candidate_id=null.
+- If test_type includes 'taglines' (test_type === 'taglines' OR test_type === 'both'): emit one final TURF question. methodology="turf", type="multi", text="Which of these taglines do you find compelling? Select all that apply.", options=[<each candidate text>]. is_turf=true. candidate_id=null.
+- Total Q count: 1 + N*(M+1) + 2 + ceil(N/2) + (test_type==='names'?0:1).
+- Criterion slug → label mapping:
+    memorable → "memorable"
+    distinctive → "distinctive"
+    relevant → "relevant to the category"
+    positive → "positive in feeling"
+    easy_to_pronounce → "easy to pronounce"
+    modern → "modern"
+- DO NOT include vw_band, gg_anchor_index, kano_type, feature_set, brand_id, funnel_stage — those belong to other methodologies.
+- suggestedRespondentCount: 80 × N min, 150 × N best.
+
+Output MUST be valid JSON. No prose, no markdown fences.`;
+
+function validateNamingSurvey(parsed, candidateCount, criteriaCount, testType) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  // Per spec: 1 screener + N*(M+1) + 2 + ceil(N/2) + (taglines? 1 : 0)
+  const includesTaglines = testType === 'taglines' || testType === 'both';
+  const expected = 1 + candidateCount * (criteriaCount + 1) + 2 + Math.ceil(candidateCount / 2) + (includesTaglines ? 1 : 0);
+  if (qs.length !== expected) return `expected ${expected} questions for ${candidateCount} candidates × ${criteriaCount} criteria${includesTaglines ? ' + TURF' : ''}, got ${qs.length}`;
+  if (qs[0].isScreening !== true) return 'q1 must be isScreening=true';
+  const monadicCount = qs.filter((q) => q.methodology === 'monadic').length;
+  if (monadicCount !== candidateCount * (criteriaCount + 1)) {
+    return `expected ${candidateCount * (criteriaCount + 1)} monadic Qs, got ${monadicCount}`;
+  }
+  const pairedCount = qs.filter((q) => q.methodology === 'paired_comparison').length;
+  const expectedPaired = Math.ceil(candidateCount / 2);
+  if (pairedCount !== expectedPaired) return `expected ${expectedPaired} paired comparisons, got ${pairedCount}`;
+  if (includesTaglines) {
+    const turfCount = qs.filter((q) => q.methodology === 'turf').length;
+    if (turfCount !== 1) return `expected 1 TURF Q, got ${turfCount}`;
+  }
+  return null;
+}
+
+function buildNamingUserPrompt({ description, clarify }) {
+  const c = clarify || {};
+  let candidates = [];
+  try { candidates = JSON.parse(c.naming_candidates || '[]'); } catch { /* ignore */ }
+  let criteria = [];
+  try { criteria = JSON.parse(c.naming_criteria || '[]'); } catch { /* ignore */ }
+  if (!criteria.length && typeof c.naming_criteria === 'string') {
+    criteria = c.naming_criteria.split(',').filter(Boolean);
+  }
+  const testType = c.naming_test_type || 'names';
+  const lines = [
+    'Mission Goal: naming_messaging',
+    `Brief: "${description}"`,
+    `Test type: ${testType}`,
+    `Brand personality: "${c.brand_personality || ''}"`,
+    `Candidates (${candidates.length}):`,
+  ];
+  for (const x of candidates) {
+    lines.push(`- id=${x.id} text="${x.text || x.name}"${x.description ? ` desc="${x.description}"` : ''}`);
+  }
+  lines.push(`Criteria (${criteria.length}): ${criteria.join(', ')}`);
+  lines.push('');
+  lines.push('Generate the naming survey JSON per the system rules.');
+  return lines.join('\n');
+}
+
+async function generateNamingSurvey({ description, clarify }) {
+  const userPrompt = buildNamingUserPrompt({ description, clarify });
+  let candidates = [];
+  try { candidates = JSON.parse(clarify?.naming_candidates || '[]'); } catch { /* ignore */ }
+  let criteria = [];
+  try { criteria = JSON.parse(clarify?.naming_criteria || '[]'); } catch { /* ignore */ }
+  if (!criteria.length && typeof clarify?.naming_criteria === 'string') {
+    criteria = clarify.naming_criteria.split(',').filter(Boolean);
+  }
+  const candidateCount = candidates.length || 3;
+  const criteriaCount = criteria.length || 5;
+  const testType = clarify?.naming_test_type || 'names';
+
+  const firstResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: NAMING_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }],
+    maxTokens: 6000,
+    enablePromptCache: true,
+  });
+  let parsed;
+  try { parsed = extractJSON(firstResp.text); }
+  catch (err) { parsed = null; logger.warn('naming survey: parse failed', { err: err.message }); }
+  let validationErr = parsed ? validateNamingSurvey(parsed, candidateCount, criteriaCount, testType) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.info('naming survey: retry on validation failure', { reason: validationErr });
+  const retryResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: NAMING_SURVEY_GEN_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
+    }],
+    maxTokens: 6000,
+    enablePromptCache: true,
+  });
+  try { parsed = extractJSON(retryResp.text); }
+  catch (err) { parsed = null; logger.warn('naming survey: retry parse failed', { err: err.message }); }
+  validationErr = parsed ? validateNamingSurvey(parsed, candidateCount, criteriaCount, testType) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.warn('naming survey: both attempts failed validation', {
+    reason: validationErr,
+    questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
+  });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
+}
+
+// ── PASS 31 B5 — CHURN RESEARCH (DRIVER TREE + WIN-BACK) ───────────────────
+const CHURN_SURVEY_GEN_SYSTEM = `You are a senior customer-research methodologist designing churn driver tree + win-back potential studies. Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short brand name",
+  "missionStatement": "One-sentence research objective on churn drivers and win-back potential",
+  "questions": [
+    {
+      "id": "q1",
+      "text": "...",
+      "type": "single|multi|rating|text",
+      "options": ["..."],
+      "isScreening": true,
+      "qualifyingAnswer": "...",
+      "qualifying_answers": ["..."],
+      "screening_continue_on": ["..."],
+      "methodology": "churn_driver",
+      "churn_stage": "screener|reason|satisfaction|win_back|switch|warning|tenure"
+    }
+  ],
+  "targetingSuggestions": { "recommendedCountries": ["US"], "recommendedAgeRanges": ["25-44"], "recommendedGenders": [], "reasoning": "..." },
+  "suggestedRespondentCount": 200
+}
+
+Hard rules — generate EXACTLY 11 questions in this order:
+  q1 SCREENER (isScreening=true, methodology="churn_driver", churn_stage="screener") — qualifies that the respondent matches the supplied churn definition for [<brand_name>] (e.g. "Have you cancelled <brand> in the past 30 days?"). type="single" with yes/no. qualifying_answers=["Yes"].
+  q2 CHURN REASON CATEGORY (churn_stage="reason") — type="multi", text="What was the reason you stopped using <brand>? Select all that apply." options=["Price","Product fit","Customer service","Competition","Life change","Quality","Features","Trust","Other"].
+  q3 CHURN REASON DETAIL (churn_stage="reason") — type="text", text="Tell us more about the main reason in your own words."
+  q4 SATISFACTION AT CHURN (churn_stage="satisfaction") — type="single" 5-pt, options=["Very dissatisfied","Dissatisfied","Neutral","Satisfied","Very satisfied"].
+  q5 NPS AT CHURN (churn_stage="satisfaction") — type="rating" 0-10. text="At the time you stopped, how likely were you to recommend <brand>?" options=[].
+  q6 WIN-BACK PROBABILITY (churn_stage="win_back") — type="single" options=["Yes","Maybe","No"]. text="Would you reconsider using <brand> in the future?"
+  q7 WIN-BACK TRIGGERS (churn_stage="win_back") — type="multi", text="What would bring you back? Select all that apply." options=["Price discount or promo","New feature or improvement","Better service","Personal outreach","New product offering","Change in my situation","Other"].
+  q8 COMPETITIVE SWITCH (churn_stage="switch") — type="text", text="Did you switch to a competitor? If so, which one?"
+  q9 CES AT FINAL INTERACTION (churn_stage="switch") — type="rating" 1-7, options=[]. text="How easy or difficult was it to <cancel/leave/stop using> <brand>?"
+  q10 WARNING SIGNS (churn_stage="warning") — type="text", text="Looking back, what was the first sign you'd leave <brand>?"
+  q11 TIME TO CHURN (churn_stage="tenure") — type="single", text="How long were you a <brand> customer before you left?", options=["Less than 1 month","1-3 months","3-12 months","1-3 years","More than 3 years"].
+- "<brand>" placeholders pull from clarify.brand_name. If absent, use "the brand".
+- Customer type from clarify.churn_customer_type tunes the verbs in q1 + q9 (e.g. "subscription" → "cancelled"; "one_time" → "stopped buying"; "recurring" → "stopped purchasing"; "b2b" → "ended your contract").
+- Recency window from clarify.churn_definition is interpolated into q1 ("past 30 days" / "past 90 days" / "past 12 months" / etc).
+- DO NOT include vw_band, gg_anchor_index, kano_type, feature_set, candidate_id, brand_id, funnel_stage — those belong to other methodologies.
+- suggestedRespondentCount default 200 (well above the 100 churn_driver bound).
+
+Output MUST be valid JSON. No prose, no markdown fences.`;
+
+function validateChurnSurvey(parsed) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  if (qs.length !== 11) return `expected 11 questions, got ${qs.length}`;
+  if (qs[0].isScreening !== true) return 'q1 must be isScreening=true';
+  const expectedStages = [
+    'screener', 'reason', 'reason', 'satisfaction', 'satisfaction',
+    'win_back', 'win_back', 'switch', 'switch', 'warning', 'tenure',
+  ];
+  for (let i = 0; i < expectedStages.length; i++) {
+    if (qs[i].churn_stage !== expectedStages[i]) {
+      return `q${i + 1} expected churn_stage="${expectedStages[i]}", got "${qs[i].churn_stage}"`;
+    }
+  }
+  if (qs[3].type !== 'single' || (qs[3].options || []).length !== 5) {
+    return 'q4 (satisfaction) must be single with 5 options';
+  }
+  if (qs[4].type !== 'rating') return 'q5 (NPS) must be type=rating';
+  if (qs[8].type !== 'rating') return 'q9 (CES) must be type=rating';
+  return null;
+}
+
+function buildChurnUserPrompt({ description, clarify }) {
+  const c = clarify || {};
+  const recencyMap = {
+    cancelled_30d: 'past 30 days',
+    cancelled_90d: 'past 90 days',
+    cancelled_12m: 'past 12 months',
+    inactive_30d:  'past 30 days (inactive)',
+    inactive_90d:  'past 90 days (inactive)',
+  };
+  const recency = recencyMap[c.churn_definition] || c.churn_custom_definition || 'recent period';
+  const lines = [
+    'Mission Goal: churn_research',
+    `Brief: "${description}"`,
+    `Brand: ${c.brand_name || 'the brand'}`,
+    `Customer type: ${c.churn_customer_type || 'subscription'}`,
+    `Churn definition / recency: ${recency}`,
+    `Win-back possible: ${c.churn_winback_possible || 'unknown'}`,
+    '',
+    'Generate the 11-question Churn Driver Tree + Win-Back survey JSON.',
+  ];
+  return lines.join('\n');
+}
+
+async function generateChurnSurvey({ description, clarify }) {
+  const userPrompt = buildChurnUserPrompt({ description, clarify });
+  const firstResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: CHURN_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }],
+    maxTokens: 2500,
+    enablePromptCache: true,
+  });
+  let parsed;
+  try { parsed = extractJSON(firstResp.text); }
+  catch (err) { parsed = null; logger.warn('churn survey: parse failed', { err: err.message }); }
+  let validationErr = parsed ? validateChurnSurvey(parsed) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.info('churn survey: retry on validation failure', { reason: validationErr });
+  const retryResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: CHURN_SURVEY_GEN_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
+    }],
+    maxTokens: 2500,
+    enablePromptCache: true,
+  });
+  try { parsed = extractJSON(retryResp.text); }
+  catch (err) { parsed = null; logger.warn('churn survey: retry parse failed', { err: err.message }); }
+  validationErr = parsed ? validateChurnSurvey(parsed) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.warn('churn survey: both attempts failed validation', {
     reason: validationErr,
     questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
   });

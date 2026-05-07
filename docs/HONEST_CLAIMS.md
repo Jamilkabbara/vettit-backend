@@ -1,6 +1,49 @@
 # Honest Claims
 
-**Last updated:** 2026-05-07 (Pass 30 C4)
+**Last updated:** 2026-05-08 (Pass 31 C4 — Z1/Z2 audit ref added)
+
+## Pass 31 Z1 + Z2 audit
+
+A live audit of vettit.ai/about (Pass 30 production) surfaced two
+FALSE claims that directly contradicted this doc:
+
+1. **About page body**: "We use AI to formulate the strategy, but
+   we use real, verified humans to give the answers." — FALSE.
+   Rewritten in `vett-platform/src/pages/AboutPage.tsx` (Pass 31 Z1)
+   to: "We use AI to build methodology-correct surveys and to
+   simulate audience responses through synthetic respondents
+   calibrated to real demographic patterns."
+2. **About page "Real Humans" card**: "Every response comes from
+   verified humans, not bots. We combine AI strategy with human
+   insight for unbeatable accuracy." — FALSE on both counts.
+   Replaced with "Methodology First" card whose body leads with
+   the actual methodologies (Van Westendorp / MaxDiff / NPS /
+   brand-health funnel) and ends with "The methodology is what
+   makes the output trustworthy, not the panel."
+
+**Z2 site-wide grep audit** (Pass 31) checked `src/`+`public/` for:
+- "real human" / "verified human" / "human respondent" / "human
+  panel" / "human insight" / "unbeatable accuracy" / "guaranteed
+  accuracy" / "100% accurate" / "peer-reviewed" / "ISO certified"
+
+Two false-positives surfaced and were rewritten:
+- `ApiPage.tsx` hero subtitle: "Programmatic access to our panel
+  of real humans." → "Programmatic access to methodology-correct
+  synthetic research."
+- `ApiPage.tsx` body: "...analyze sentiment from our verified
+  human panel" → "...analyze sentiment using the same industry-
+  standard methodologies (Van Westendorp, MaxDiff, NPS, brand-
+  health funnel, ad effectiveness)..."
+
+All other hits on `vs/*` / `terms-of-service.md` / blog drafts
+were defensible — they accurately describe competitors as
+human-panel and VETT as synthetic.
+
+**Going forward**: any PR that adds a "human" / "real" /
+"verified" / "100%" / "ISO" / "peer-reviewed" claim about VETT's
+respondents triggers a code-review block. The Pass 31 Z1 fix is
+the canonical example of how to rewrite for honesty without
+losing the marketing punch.
 
 Source-of-truth document for marketing copy, sales conversations,
 investor materials, and any external content describing what VETT

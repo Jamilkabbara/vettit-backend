@@ -131,6 +131,22 @@ const ALLOWED_COLUMNS = new Set([
   'campaign_objective',
   'intended_message',
   'ad_methodology',
+  // Pass 31 B1 — competitor analysis (brand health tracker).
+  // competitor_brands JSONB already exists from Pass 28.
+  'attribute_battery',
+  'competitor_methodology',
+  // Pass 31 B3 — naming & messaging (monadic + paired + TURF).
+  'naming_test_type',
+  'naming_candidates',
+  'naming_criteria',
+  'naming_methodology',
+  'brand_personality',
+  // Pass 31 B5 — churn research (driver tree + win-back).
+  'churn_definition',
+  'churn_custom_definition',
+  'churn_customer_type',
+  'churn_winback_possible',
+  'churn_methodology',
 ]);
 
 /**

@@ -167,32 +167,84 @@ app.get('/health', (req, res) => {
 // platform's auto-deploy hook silently skipped the build. This lets
 // us prove what's running without dashboard access. Railway auto-sets
 // RAILWAY_GIT_COMMIT_SHA on every build.
-// Pass 30 A4 — /version metadata refreshed. Pass 23 era flags
-// (bug23_79 / bug23_80) removed. Replaced with the current Pass + the
-// methodologies array so prospects/partners can hit /version and see
-// what VETT actually ships methodology-wise without scraping the
-// /methodologies marketing page.
+// Pass 31 A2 — /version methodologies array now reflects ACTUAL
+// shipped state by inspecting the question-gen dispatcher at module
+// load. The Pass 30 hardcoded list was aspirational (13 entries; only
+// 8 actually shipped). HONEST_CLAIMS.md explicitly forbids overstating
+// the surface, so /version must match reality.
+//
+// Detection: read services/claudeAI.js source once at startup and
+// match `if (goal === '<id>')` lines in generateSurvey. The 5 Pass
+// 30 + earlier branches are auto-detected; new branches added in
+// Pass 31+ are picked up automatically with no /version edit needed.
+//
+// Falls back to a conservative hardcoded list on read failure so
+// /version never returns 500.
+const fs = require('fs');
+const path = require('path');
+
+function detectMethodologies() {
+  try {
+    const claudeAIPath = path.join(__dirname, 'services', 'claudeAI.js');
+    const src = fs.readFileSync(claudeAIPath, 'utf8');
+    // Match the dispatcher: `if (goal === '<id>')` inside generateSurvey.
+    const goalRe = /if \(goal === '([a-z_]+)'\)/g;
+    const goals = new Set();
+    let m;
+    while ((m = goalRe.exec(src)) !== null) goals.add(m[1]);
+    // Map the dispatcher goal_type to the methodology slug used in
+    // public docs (METHODOLOGY_GUIDE.md). brand_lift / pricing etc
+    // pass through; some have rename mappings.
+    const goalToMethodology = {
+      brand_lift:        'brand_lift',
+      pricing:           'pricing',                 // Van Westendorp + GG
+      roadmap:           'feature_roadmap',         // MaxDiff + Kano
+      satisfaction:      'customer_satisfaction',   // NPS + CSAT + CES
+      validate:          'concept_test',
+      compare:           'sequential_monadic',
+      marketing:         'ad_effectiveness',
+      // Pass 31+ additions land here as new dispatcher branches ship.
+      competitor:        'brand_health_tracker',     // Pass 31 B1
+      naming_messaging:  'naming_monadic',           // Pass 31 B3
+      churn_research:    'churn_driver',             // Pass 31 B5
+      audience_profiling:'segmentation',
+      market_entry:      'market_entry',
+    };
+    const methodologies = [];
+    // Always include brand_lift + creative_attention (special paths
+    // not gated by the dispatcher: brand_lift dispatches in
+    // generateSurvey but creative_attention runs through a separate
+    // CA pipeline in services/ai/creativeAttention.js).
+    methodologies.push('creative_attention');
+    for (const g of goals) {
+      const slug = goalToMethodology[g];
+      if (slug && !methodologies.includes(slug)) methodologies.push(slug);
+    }
+    return methodologies.sort();
+  } catch (err) {
+    // Fall back to the conservative known-shipped list (Pass 30 state).
+    return [
+      'ad_effectiveness',
+      'brand_lift',
+      'concept_test',
+      'creative_attention',
+      'customer_satisfaction',
+      'feature_roadmap',
+      'pricing',
+      'sequential_monadic',
+    ];
+  }
+}
+
+const SHIPPED_METHODOLOGIES = detectMethodologies();
+
 app.get('/version', (req, res) => {
   res.json({
     sha:        process.env.RAILWAY_GIT_COMMIT_SHA || 'unknown',
     branch:     process.env.RAILWAY_GIT_BRANCH || 'unknown',
     deployedAt: process.env.RAILWAY_DEPLOYMENT_CREATED_AT || 'unknown',
-    pass:       30,
-    methodologies: [
-      'brand_lift',
-      'creative_attention',
-      'pricing',                 // Van Westendorp + Gabor-Granger
-      'feature_roadmap',         // MaxDiff + Kano
-      'customer_satisfaction',   // NPS + CSAT + CES
-      'concept_test',            // Pass 30 B1
-      'sequential_monadic',      // Pass 30 B3
-      'ad_effectiveness',        // Pass 30 B5
-      'brand_health_tracker',    // Pass 30 B7
-      'segmentation',            // Pass 30 B9
-      'naming_monadic',          // Pass 30 B11
-      'market_entry',            // Pass 30 B13
-      'churn_driver',            // Pass 30 B15
-    ],
+    pass:       31,
+    methodologies: SHIPPED_METHODOLOGIES,
   });
 });
 
