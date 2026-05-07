@@ -329,6 +329,14 @@ async function runMission(missionId) {
       ? Number((qualifiedRespondent / totalSimulated).toFixed(4))
       : null;
 
+    // Pass 32 X1 — delivered_respondent_count = distinct personas who
+    // actually contributed responses. For most goal types this equals
+    // targetCount; for Brand Lift it's 2x (exposed + control split);
+    // for sequential monadic it's targetCount (rotation, not staffing).
+    const deliveredRespondentCount = new Set(
+      responses.map((r) => r.persona_id).filter(Boolean),
+    ).size;
+
     await updateMission(supabase, missionId, {
       status: 'completed',
       completed_at: new Date().toISOString(),
@@ -337,6 +345,7 @@ async function runMission(missionId) {
       total_simulated_count:        totalSimulated,
       qualified_respondent_count:   qualifiedRespondent,
       qualification_rate:           qualificationRate,
+      delivered_respondent_count:   deliveredRespondentCount,
       delivery_status:              'full',
       delivery_check_at:            new Date().toISOString(),
       // partial_refund_id and partial_refund_amount_cents stay NULL —

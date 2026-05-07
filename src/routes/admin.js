@@ -177,11 +177,18 @@ router.get('/missions', async (req, res, next) => {
     const offset    = parseInt(req.query.offset) || 0;
     const { search, status, goal_type } = req.query;
 
+    // Pass 32 X5 — column names had drifted. The legacy SELECT asked
+    // for `target_countries` (plural) and `promo_discount_usd`; the
+    // missions table actually has `country` (singular) and
+    // `discount_usd`. PostgREST returned a 400 on the select, the
+    // whole row array came back empty, and AdminMissions surfaced
+    // "Failed to load missions". Aligning with missionSchema.js
+    // ALLOWED_COLUMNS so the query stays in sync with the schema.
     let q = supabase
       .from('missions')
       .select(
         `id, user_id, status, goal_type, brief, total_price_usd, ai_cost_usd,
-         respondent_count, target_countries, promo_code, promo_discount_usd,
+         respondent_count, country, promo_code, discount_usd,
          created_at, paid_at, completed_at, executive_summary`,
         { count: 'exact' }
       )
@@ -280,9 +287,14 @@ router.get('/ai-costs', async (req, res, next) => {
     const s  = summary.data      || {};
     const ps = priorSummary.data || {};
 
+    // Pass 32 X7 — admin_ai_cost_summary RPC returns the cost field as
+    // `total_ai_cost_usd` (see migrations/pass-22/02_bug_22_6_*.sql line
+    // 118). The route was reading `s.total_cost_usd`, which silently
+    // resolved to undefined → frontend showed "$0.00 total" even with
+    // 244 ai_calls rows present. Aligning the read to match the RPC.
     res.json({
       summary: {
-        total_cost_usd:       { value: s.total_cost_usd,       delta_pct: calcDelta(s.total_cost_usd,       ps.total_cost_usd)       },
+        total_cost_usd:       { value: s.total_ai_cost_usd,    delta_pct: calcDelta(s.total_ai_cost_usd,    ps.total_ai_cost_usd)    },
         total_revenue_usd:    { value: s.total_revenue_usd,    delta_pct: calcDelta(s.total_revenue_usd,    ps.total_revenue_usd)    },
         gross_margin_pct:     { value: s.gross_margin_pct,     delta_pct: calcDelta(s.gross_margin_pct,     ps.gross_margin_pct)     },
         total_calls:          { value: s.total_calls,          delta_pct: calcDelta(s.total_calls,          ps.total_calls)          },
