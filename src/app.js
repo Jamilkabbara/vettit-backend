@@ -196,19 +196,19 @@ function detectMethodologies() {
     // public docs (METHODOLOGY_GUIDE.md). brand_lift / pricing etc
     // pass through; some have rename mappings.
     const goalToMethodology = {
-      brand_lift:    'brand_lift',
-      pricing:       'pricing',                 // Van Westendorp + GG
-      roadmap:       'feature_roadmap',         // MaxDiff + Kano
-      satisfaction:  'customer_satisfaction',   // NPS + CSAT + CES
-      validate:      'concept_test',
-      compare:       'sequential_monadic',
-      marketing:     'ad_effectiveness',
+      brand_lift:        'brand_lift',
+      pricing:           'pricing',                 // Van Westendorp + GG
+      roadmap:           'feature_roadmap',         // MaxDiff + Kano
+      satisfaction:      'customer_satisfaction',   // NPS + CSAT + CES
+      validate:          'concept_test',
+      compare:           'sequential_monadic',
+      marketing:         'ad_effectiveness',
       // Pass 31+ additions land here as new dispatcher branches ship.
-      competitor:    'brand_health_tracker',
-      naming:        'naming_monadic',
-      churn:         'churn_driver',
-      audience:      'segmentation',
-      market_entry:  'market_entry',
+      competitor:        'brand_health_tracker',     // Pass 31 B1
+      naming_messaging:  'naming_monadic',           // Pass 31 B3
+      churn_research:    'churn_driver',             // Pass 31 B5
+      audience_profiling:'segmentation',
+      market_entry:      'market_entry',
     };
     const methodologies = [];
     // Always include brand_lift + creative_attention (special paths

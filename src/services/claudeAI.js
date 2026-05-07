@@ -388,6 +388,9 @@ async function generateSurvey({
   if (goal === 'competitor') {
     return generateCompetitorSurvey({ description, clarify });
   }
+  if (goal === 'naming_messaging') {
+    return generateNamingSurvey({ description, clarify });
+  }
 
   const prompt = `Mission Goal: ${goal}
 Description: "${description}"
@@ -1412,6 +1415,156 @@ async function generateCompetitorSurvey({ description, clarify }) {
   if (!validationErr) return parsed;
 
   logger.warn('competitor survey: both attempts failed validation', {
+    reason: validationErr,
+    questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
+  });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
+}
+
+// ── PASS 31 B3 — NAMING & MESSAGING (MONADIC + PAIRED + TURF) ──────────────
+const NAMING_SURVEY_GEN_SYSTEM = `You are a senior naming-research methodologist designing monadic-evaluation + paired-comparison + (for taglines) TURF surveys. Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short brand/category name",
+  "missionStatement": "One-sentence research objective",
+  "questions": [
+    {
+      "id": "q1",
+      "text": "...",
+      "type": "single|multi|rating|text",
+      "options": ["..."],
+      "isScreening": true,
+      "qualifyingAnswer": "...",
+      "qualifying_answers": ["..."],
+      "screening_continue_on": ["..."],
+      "methodology": "monadic|paired_comparison|turf|monadic_plus_paired",
+      "candidate_id": "n1",
+      "criterion": "memorable",
+      "is_paired_comparison": false,
+      "is_turf": false
+    }
+  ],
+  "targetingSuggestions": { "recommendedCountries": ["US"], "recommendedAgeRanges": ["25-44"], "recommendedGenders": [], "reasoning": "..." },
+  "suggestedRespondentCount": 240
+}
+
+Hard rules (per-candidate count = N supplied; criteria count = M supplied):
+- q1 SCREENER (methodology="monadic_plus_paired", isScreening=true) — qualifies category buyers from the brief context. type="single", 2-3 options.
+- For each candidate (use the supplied id and text verbatim) emit (M+1) questions in this order:
+  - For each criterion in the supplied criteria list: rating 1-7 type="rating", options=[]. text="On a 1-7 scale, how <criterion-label> is [<candidate text>]?" The criterion field carries the slug.
+  - WORD ASSOCIATION (criterion="word_association"): type="text", text="What does [<candidate text>] make you think of? Up to 5 words."
+  - All these per-candidate Qs share methodology="monadic" and candidate_id=<id>.
+- After all candidates:
+  - FORCED CHOICE (methodology="monadic_plus_paired"): "Which candidate did you find most appealing overall?" type="single", options=[<each candidate text>]. is_paired_comparison=false. candidate_id=null.
+  - WHY (methodology="monadic_plus_paired"): "Why?" type="text". candidate_id=null.
+  - PAIRED COMPARISONS: emit ceil(N/2) paired Qs (between 1 and 4). For each, methodology="paired_comparison", text="Which would you choose: [<candidate A text>] OR [<candidate B text>]?" type="single", options=[<A text>, <B text>]. is_paired_comparison=true. candidate_id=null.
+- If test_type includes 'taglines' (test_type === 'taglines' OR test_type === 'both'): emit one final TURF question. methodology="turf", type="multi", text="Which of these taglines do you find compelling? Select all that apply.", options=[<each candidate text>]. is_turf=true. candidate_id=null.
+- Total Q count: 1 + N*(M+1) + 2 + ceil(N/2) + (test_type==='names'?0:1).
+- Criterion slug → label mapping:
+    memorable → "memorable"
+    distinctive → "distinctive"
+    relevant → "relevant to the category"
+    positive → "positive in feeling"
+    easy_to_pronounce → "easy to pronounce"
+    modern → "modern"
+- DO NOT include vw_band, gg_anchor_index, kano_type, feature_set, brand_id, funnel_stage — those belong to other methodologies.
+- suggestedRespondentCount: 80 × N min, 150 × N best.
+
+Output MUST be valid JSON. No prose, no markdown fences.`;
+
+function validateNamingSurvey(parsed, candidateCount, criteriaCount, testType) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  // Per spec: 1 screener + N*(M+1) + 2 + ceil(N/2) + (taglines? 1 : 0)
+  const includesTaglines = testType === 'taglines' || testType === 'both';
+  const expected = 1 + candidateCount * (criteriaCount + 1) + 2 + Math.ceil(candidateCount / 2) + (includesTaglines ? 1 : 0);
+  if (qs.length !== expected) return `expected ${expected} questions for ${candidateCount} candidates × ${criteriaCount} criteria${includesTaglines ? ' + TURF' : ''}, got ${qs.length}`;
+  if (qs[0].isScreening !== true) return 'q1 must be isScreening=true';
+  const monadicCount = qs.filter((q) => q.methodology === 'monadic').length;
+  if (monadicCount !== candidateCount * (criteriaCount + 1)) {
+    return `expected ${candidateCount * (criteriaCount + 1)} monadic Qs, got ${monadicCount}`;
+  }
+  const pairedCount = qs.filter((q) => q.methodology === 'paired_comparison').length;
+  const expectedPaired = Math.ceil(candidateCount / 2);
+  if (pairedCount !== expectedPaired) return `expected ${expectedPaired} paired comparisons, got ${pairedCount}`;
+  if (includesTaglines) {
+    const turfCount = qs.filter((q) => q.methodology === 'turf').length;
+    if (turfCount !== 1) return `expected 1 TURF Q, got ${turfCount}`;
+  }
+  return null;
+}
+
+function buildNamingUserPrompt({ description, clarify }) {
+  const c = clarify || {};
+  let candidates = [];
+  try { candidates = JSON.parse(c.naming_candidates || '[]'); } catch { /* ignore */ }
+  let criteria = [];
+  try { criteria = JSON.parse(c.naming_criteria || '[]'); } catch { /* ignore */ }
+  if (!criteria.length && typeof c.naming_criteria === 'string') {
+    criteria = c.naming_criteria.split(',').filter(Boolean);
+  }
+  const testType = c.naming_test_type || 'names';
+  const lines = [
+    'Mission Goal: naming_messaging',
+    `Brief: "${description}"`,
+    `Test type: ${testType}`,
+    `Brand personality: "${c.brand_personality || ''}"`,
+    `Candidates (${candidates.length}):`,
+  ];
+  for (const x of candidates) {
+    lines.push(`- id=${x.id} text="${x.text || x.name}"${x.description ? ` desc="${x.description}"` : ''}`);
+  }
+  lines.push(`Criteria (${criteria.length}): ${criteria.join(', ')}`);
+  lines.push('');
+  lines.push('Generate the naming survey JSON per the system rules.');
+  return lines.join('\n');
+}
+
+async function generateNamingSurvey({ description, clarify }) {
+  const userPrompt = buildNamingUserPrompt({ description, clarify });
+  let candidates = [];
+  try { candidates = JSON.parse(clarify?.naming_candidates || '[]'); } catch { /* ignore */ }
+  let criteria = [];
+  try { criteria = JSON.parse(clarify?.naming_criteria || '[]'); } catch { /* ignore */ }
+  if (!criteria.length && typeof clarify?.naming_criteria === 'string') {
+    criteria = clarify.naming_criteria.split(',').filter(Boolean);
+  }
+  const candidateCount = candidates.length || 3;
+  const criteriaCount = criteria.length || 5;
+  const testType = clarify?.naming_test_type || 'names';
+
+  const firstResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: NAMING_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }],
+    maxTokens: 6000,
+    enablePromptCache: true,
+  });
+  let parsed;
+  try { parsed = extractJSON(firstResp.text); }
+  catch (err) { parsed = null; logger.warn('naming survey: parse failed', { err: err.message }); }
+  let validationErr = parsed ? validateNamingSurvey(parsed, candidateCount, criteriaCount, testType) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.info('naming survey: retry on validation failure', { reason: validationErr });
+  const retryResp = await callClaude({
+    callType: 'survey_gen',
+    systemPrompt: NAMING_SURVEY_GEN_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
+    }],
+    maxTokens: 6000,
+    enablePromptCache: true,
+  });
+  try { parsed = extractJSON(retryResp.text); }
+  catch (err) { parsed = null; logger.warn('naming survey: retry parse failed', { err: err.message }); }
+  validationErr = parsed ? validateNamingSurvey(parsed, candidateCount, criteriaCount, testType) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+
+  logger.warn('naming survey: both attempts failed validation', {
     reason: validationErr,
     questionCount: Array.isArray(parsed?.questions) ? parsed.questions.length : 0,
   });

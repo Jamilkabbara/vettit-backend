@@ -135,6 +135,12 @@ const ALLOWED_COLUMNS = new Set([
   // competitor_brands JSONB already exists from Pass 28.
   'attribute_battery',
   'competitor_methodology',
+  // Pass 31 B3 — naming & messaging (monadic + paired + TURF).
+  'naming_test_type',
+  'naming_candidates',
+  'naming_criteria',
+  'naming_methodology',
+  'brand_personality',
 ]);
 
 /**
