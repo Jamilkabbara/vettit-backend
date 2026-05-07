@@ -210,11 +210,38 @@ router.get('/missions', async (req, res, next) => {
     const profileMap = {};
     for (const p of profiles || []) profileMap[p.id] = p;
 
-    const enriched = (data || []).map(m => ({
-      ...m,
-      user:       profileMap[m.user_id] || null,
-      margin_usd: Number(m.total_price_usd || 0) - Number(m.ai_cost_usd || 0),
-    }));
+    // Pass 33 W3 — per-mission ai_cost_usd rollup. The missions.ai_cost_usd
+    // column is incremented by the increment_mission_ai_cost RPC after
+    // every Anthropic call (anthropic.js:108). When that path errors or
+    // when calls happen outside the rollup hook (e.g. failed-call retries
+    // that bypass the rollup), missions.ai_cost_usd drifts low and the
+    // admin Missions tab shows $0.00 even on completed missions that
+    // burned real spend. Truth source is ai_calls.cost_usd summed by
+    // mission_id (Pass 32 X7 verified $1.89 aggregate from this path).
+    const missionIds = (data || []).map(m => m.id).filter(Boolean);
+    const { data: aiCalls } = missionIds.length
+      ? await supabase.from('ai_calls').select('mission_id, cost_usd').in('mission_id', missionIds)
+      : { data: [] };
+    const aiCostByMission = {};
+    for (const c of (aiCalls || [])) {
+      if (!c.mission_id) continue;
+      aiCostByMission[c.mission_id] = (aiCostByMission[c.mission_id] || 0) + Number(c.cost_usd || 0);
+    }
+
+    const enriched = (data || []).map(m => {
+      // Use the live ai_calls rollup as truth; fall back to the stored
+      // column only when there are no ai_calls rows (legacy missions
+      // pre-rollup or test fixtures).
+      const liveAiCost = aiCostByMission[m.id] != null
+        ? Math.round(aiCostByMission[m.id] * 10000) / 10000
+        : Number(m.ai_cost_usd || 0);
+      return {
+        ...m,
+        ai_cost_usd: liveAiCost,
+        user:        profileMap[m.user_id] || null,
+        margin_usd:  Number(m.total_price_usd || 0) - liveAiCost,
+      };
+    });
 
     res.json({ data: enriched, total: count, limit, offset });
   } catch (err) { next(err); }
