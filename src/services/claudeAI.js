@@ -322,10 +322,15 @@ function buildBrandLiftUserPrompt({ description, clarify, missionAssets }) {
   const waveMode = c.wave_mode || 'single_wave';
   const creativeUrl = c.creative_url || (missionAssets && missionAssets[0]?.url) || '';
   const creativeMime = c.creative_mime || (missionAssets && missionAssets[0]?.mimeType) || '';
+  const brandName = (c.brand_name || '').trim();
 
   const lines = [
     `Mission Goal: brand_lift`,
     `Brief: "${description}"`,
+    // Pass 34 B2 — focal brand name now passed in explicitly so the
+    // generator substitutes it into the funnel questions instead of
+    // falling back to "this concept" / "the brand".
+    `Focal brand name: ${brandName || '<missing — refuse to generate>'}`,
     `KPI Template: ${template}`,
     `Wave Mode: ${waveMode}`,
   ];
@@ -337,8 +342,10 @@ function buildBrandLiftUserPrompt({ description, clarify, missionAssets }) {
   if (creativeUrl) lines.push(`Creative: ${creativeUrl} (${creativeMime || 'unknown mime'})`);
 
   lines.push('');
-  lines.push('First extract a SHORT brand name (2-5 words) from the brief.');
-  lines.push('Then generate the brand-lift survey JSON as specified.');
+  lines.push(
+    `Use the focal brand name "${brandName}" verbatim everywhere a funnel question references the brand. NEVER use "this concept" or "the brand" placeholders.`,
+  );
+  lines.push('Generate the brand-lift survey JSON as specified.');
   return lines.join('\n');
 }
 
@@ -414,6 +421,22 @@ Then generate the survey JSON as specified in your instructions.`;
 }
 
 async function generateBrandLiftSurvey({ description, clarify, missionAssets }) {
+  // Pass 34 B2 — refuse if focal brand_name is missing. Production
+  // audit (DRAFT a912f5ab) had brand_name=null and the generator emitted
+  // 5 questions all using "this concept" because Claude had no brand
+  // to substitute. The setup form now requires brand_name; this is
+  // the defense-in-depth check.
+  const brand = (clarify?.brand_name || '').trim();
+  if (!brand) {
+    const err = new Error(
+      'brand_lift: focal brand_name is required (received empty). ' +
+      'Add a brand name in the Brand Lift setup section before generating.',
+    );
+    err.code = 'BRAND_LIFT_MISSING_BRAND_NAME';
+    err.statusCode = 400;
+    throw err;
+  }
+
   const userPrompt = buildBrandLiftUserPrompt({ description, clarify, missionAssets });
 
   const firstResp = await callClaude({
