@@ -158,7 +158,16 @@ router.get('/overview', async (req, res, next) => {
         },
       },
       funnel:           funnel.data,
-      segments:         segments.data,
+      // Pass 35 A2 — admin_user_segments RPC returns column `user_count`
+      // but the frontend rendering reads `count`. Remap so the new
+      // 4-bucket segmentation (Power / Active / Trial / Signed up only)
+      // surfaces in the widget instead of "Unknown 0".
+      segments: (segments.data || []).map((s) => ({
+        segment: s.segment,
+        count:   Number(s.user_count ?? s.count ?? 0),
+        avg_ltv: Number(s.avg_ltv ?? 0),
+        total_ltv: Number(s.total_ltv ?? 0),
+      })),
       activity:         activity.data,
       missionTypeMix,
       gross_margin_pct: s.gross_margin_pct || 0,
