@@ -158,7 +158,16 @@ router.get('/overview', async (req, res, next) => {
         },
       },
       funnel:           funnel.data,
-      segments:         segments.data,
+      // Pass 35 A2 — admin_user_segments RPC returns column `user_count`
+      // but the frontend rendering reads `count`. Remap so the new
+      // 4-bucket segmentation (Power / Active / Trial / Signed up only)
+      // surfaces in the widget instead of "Unknown 0".
+      segments: (segments.data || []).map((s) => ({
+        segment: s.segment,
+        count:   Number(s.user_count ?? s.count ?? 0),
+        avg_ltv: Number(s.avg_ltv ?? 0),
+        total_ltv: Number(s.total_ltv ?? 0),
+      })),
       activity:         activity.data,
       missionTypeMix,
       gross_margin_pct: s.gross_margin_pct || 0,
@@ -473,6 +482,34 @@ router.get('/support', async (req, res, next) => {
     let q = supabase.from('support_tickets').select('*').order('created_at', { ascending: false });
     if (status) q = q.eq('status', status);
     const { data, error } = await q;
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
+/**
+ * PATCH /api/admin/support/:id — update status / priority / admin_notes.
+ *
+ * Pass 35 A6 — admin UI needs this for the status/priority dropdowns
+ * + Mark Resolved button. Auto-stamps resolved_at when status flips
+ * to 'resolved' or 'closed'.
+ */
+router.patch('/support/:id', async (req, res, next) => {
+  try {
+    const { status, priority, admin_notes } = req.body || {};
+    const patch = {};
+    if (status     !== undefined) patch.status = status;
+    if (priority   !== undefined) patch.priority = priority;
+    if (admin_notes !== undefined) patch.admin_notes = admin_notes;
+    if (status === 'resolved' || status === 'closed') {
+      patch.resolved_at = new Date().toISOString();
+    }
+    const { data, error } = await supabase
+      .from('support_tickets')
+      .update(patch)
+      .eq('id', req.params.id)
+      .select()
+      .single();
     if (error) throw error;
     res.json(data);
   } catch (err) { next(err); }
