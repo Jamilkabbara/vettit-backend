@@ -468,6 +468,14 @@ async function runMission(missionId) {
       });
     }
 
+    // Pass 34 C1 — failed_full_refund tells the admin / dashboard /
+    // refund-runner sweepers that this mission's refund was issued
+    // automatically. The CHECK constraint on delivery_status was
+    // extended in migrations/pass-34/01_c1_*.sql to allow this value.
+    const failedDeliveryStatus = refundResult
+      ? 'failed_full_refund'
+      : (mission.paid_at ? null : null);
+
     await updateMission(supabase, missionId, {
       status: 'failed',
       failure_reason: failureReason,
@@ -478,6 +486,7 @@ async function runMission(missionId) {
       // the schema works.)
       partial_refund_id: refundResult?.id || null,
       partial_refund_amount_cents: refundResult?.amountCents || null,
+      ...(failedDeliveryStatus ? { delivery_status: failedDeliveryStatus } : {}),
     }, { caller: 'runMission: fatal' });
 
     // Admin alert so ops can see hard-failure missions without paging
