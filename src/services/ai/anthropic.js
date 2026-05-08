@@ -16,6 +16,39 @@ const MODEL_PRICING = {
   'claude-opus-4-7':     { input: 15.00, output: 75.00 },
 };
 
+// Pass 34 C3 — call_type → purpose bucket. Mirrors the SQL CASE in
+// migrations/pass-34/03_c3_*.sql. Used at write time so every new
+// ai_calls row carries `purpose` even when mission_id is null.
+const CALL_TYPE_TO_PURPOSE = {
+  // Mission-pipeline: usually paired with mission_id, but the tag
+  // also covers transit gaps where the mission row hasn't linked yet.
+  survey_gen:                   'mission_pipeline',
+  persona_gen:                  'mission_pipeline',
+  response_sim:                 'mission_pipeline',
+  insight_synth:                'mission_pipeline',
+  brand_lift_benchmarks:        'mission_pipeline',
+  creative_attention_frame:     'mission_pipeline',
+  creative_attention_synthesis: 'mission_pipeline',
+  results_analysis:             'mission_pipeline',
+  // Chatbot surfaces.
+  chat_setup:      'chatbot_setup',
+  chat_results:    'chatbot_results',
+  chat_dashboard:  'chatbot_dashboard',
+  chat_admin_crm:  'chatbot_admin',
+  // Brief / targeting helpers (run pre-mission or unbound).
+  brief_clarify:      'clarify',
+  adaptive_clarify:   'clarify',
+  question_refine:    'clarify',
+  targeting_suggest:  'targeting_brief',
+  targeting_brief:    'targeting_brief',
+  // Editorial.
+  blog_gen: 'blog_gen',
+};
+
+function purposeForCallType(callType) {
+  return CALL_TYPE_TO_PURPOSE[callType] || 'unknown_legacy';
+}
+
 // callType → model routing. Haiku for high-volume/simple; Sonnet for reasoning; Opus reserved for enterprise.
 const MODEL_ROUTING = {
   brief_clarify:  'claude-sonnet-4-6',
@@ -94,6 +127,9 @@ async function callClaude({
       mission_id: missionId,
       user_id:    userId,
       call_type:  callType,
+      // Pass 34 C3 — purpose tag bucketed from call_type so non-mission
+      // calls (chatbot, clarify, targeting) stay attributable.
+      purpose:    purposeForCallType(callType),
       model,
       input_tokens:  inputTokens,
       output_tokens: outputTokens,
@@ -126,6 +162,9 @@ async function callClaude({
       mission_id: missionId,
       user_id:    userId,
       call_type:  callType,
+      // Pass 34 C3 — purpose tag also written on failed-call rows so
+      // failure rates can be bucketed by surface (chatbot vs pipeline).
+      purpose:    purposeForCallType(callType),
       model,
       input_tokens:  0,
       output_tokens: 0,
@@ -190,6 +229,8 @@ async function streamClaude({
       mission_id: missionId,
       user_id:    userId,
       call_type:  callType,
+      // Pass 34 C3 — purpose tag for streamed calls (chat copilots).
+      purpose:    purposeForCallType(callType),
       model,
       input_tokens:  inputTokens,
       output_tokens: outputTokens,

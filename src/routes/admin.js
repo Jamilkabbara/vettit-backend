@@ -345,6 +345,30 @@ router.get('/ai-costs', async (req, res, next) => {
       revenue_usd: Math.round((revByDay[day] || 0) * 100) / 100,
     }));
 
+    // Pass 34 C3 — bucket non-mission calls by purpose so the admin
+    // Operations Breakdown surfaces chatbot / clarify / targeting
+    // spend that previously hid under "unattributed" (33.6% of calls).
+    const { data: purposeRows } = await supabase
+      .from('ai_calls')
+      .select('purpose, cost_usd, mission_id')
+      .gte('created_at', start.toISOString())
+      .lt('created_at', end.toISOString());
+    const byPurposeAgg = {};
+    for (const r of (purposeRows || [])) {
+      const key = r.purpose || 'unknown_legacy';
+      if (!byPurposeAgg[key]) byPurposeAgg[key] = { calls: 0, cost: 0, mission_bound: 0 };
+      byPurposeAgg[key].calls += 1;
+      byPurposeAgg[key].cost  += Number(r.cost_usd || 0);
+      if (r.mission_id) byPurposeAgg[key].mission_bound += 1;
+    }
+    const byPurpose = Object.entries(byPurposeAgg).map(([purpose, v]) => ({
+      purpose,
+      calls:       v.calls,
+      total_cost_usd: Math.round(v.cost * 10000) / 10000,
+      avg_cost_usd:   v.calls > 0 ? Math.round((v.cost / v.calls) * 10000) / 10000 : 0,
+      mission_bound: v.mission_bound,
+    })).sort((a, b) => b.total_cost_usd - a.total_cost_usd);
+
     const s  = summary.data      || {};
     const ps = priorSummary.data || {};
 
@@ -363,6 +387,9 @@ router.get('/ai-costs', async (req, res, next) => {
         tiering_savings_usd:  s.tiering_savings_usd || 0,
       },
       by_operation:    byOperation.data || [],
+      // Pass 34 C3 — non-mission calls bucketed by purpose so admin
+      // can see chatbot / clarify / targeting spend separately.
+      by_purpose:      byPurpose,
       model_mix:       modelMix.data    || [],
       mission_margins: margins.data     || [],
       daily_buckets:   dailyBuckets,
