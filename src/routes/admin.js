@@ -488,6 +488,34 @@ router.get('/support', async (req, res, next) => {
 });
 
 /**
+ * PATCH /api/admin/support/:id — update status / priority / admin_notes.
+ *
+ * Pass 35 A6 — admin UI needs this for the status/priority dropdowns
+ * + Mark Resolved button. Auto-stamps resolved_at when status flips
+ * to 'resolved' or 'closed'.
+ */
+router.patch('/support/:id', async (req, res, next) => {
+  try {
+    const { status, priority, admin_notes } = req.body || {};
+    const patch = {};
+    if (status     !== undefined) patch.status = status;
+    if (priority   !== undefined) patch.priority = priority;
+    if (admin_notes !== undefined) patch.admin_notes = admin_notes;
+    if (status === 'resolved' || status === 'closed') {
+      patch.resolved_at = new Date().toISOString();
+    }
+    const { data, error } = await supabase
+      .from('support_tickets')
+      .update(patch)
+      .eq('id', req.params.id)
+      .select()
+      .single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
+/**
  * POST /api/admin/support/:id/ai-draft — generate an AI response draft for a ticket.
  */
 router.post('/support/:id/ai-draft', async (req, res, next) => {
