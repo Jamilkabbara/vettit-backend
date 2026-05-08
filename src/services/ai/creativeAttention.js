@@ -193,10 +193,13 @@ All numeric scores: 0 to 100 integers. Score every emotion (most will be 0-20; o
   const latencyMs = Date.now() - start;
 
   // Log cost (non-blocking)
+  // Pass 34 C3 — purpose tag added directly here since this writer
+  // bypasses the anthropic.js callClaude wrapper.
   supabase.from('ai_calls').insert({
     mission_id:   mission.id,
     user_id:      mission.user_id,
     call_type:    'creative_attention_frame',
+    purpose:      'mission_pipeline',
     model:        VISION_MODEL,
     input_tokens:  inputTokens,
     output_tokens: outputTokens,

@@ -322,10 +322,15 @@ function buildBrandLiftUserPrompt({ description, clarify, missionAssets }) {
   const waveMode = c.wave_mode || 'single_wave';
   const creativeUrl = c.creative_url || (missionAssets && missionAssets[0]?.url) || '';
   const creativeMime = c.creative_mime || (missionAssets && missionAssets[0]?.mimeType) || '';
+  const brandName = (c.brand_name || '').trim();
 
   const lines = [
     `Mission Goal: brand_lift`,
     `Brief: "${description}"`,
+    // Pass 34 B2 — focal brand name now passed in explicitly so the
+    // generator substitutes it into the funnel questions instead of
+    // falling back to "this concept" / "the brand".
+    `Focal brand name: ${brandName || '<missing — refuse to generate>'}`,
     `KPI Template: ${template}`,
     `Wave Mode: ${waveMode}`,
   ];
@@ -337,8 +342,10 @@ function buildBrandLiftUserPrompt({ description, clarify, missionAssets }) {
   if (creativeUrl) lines.push(`Creative: ${creativeUrl} (${creativeMime || 'unknown mime'})`);
 
   lines.push('');
-  lines.push('First extract a SHORT brand name (2-5 words) from the brief.');
-  lines.push('Then generate the brand-lift survey JSON as specified.');
+  lines.push(
+    `Use the focal brand name "${brandName}" verbatim everywhere a funnel question references the brand. NEVER use "this concept" or "the brand" placeholders.`,
+  );
+  lines.push('Generate the brand-lift survey JSON as specified.');
   return lines.join('\n');
 }
 
@@ -414,6 +421,22 @@ Then generate the survey JSON as specified in your instructions.`;
 }
 
 async function generateBrandLiftSurvey({ description, clarify, missionAssets }) {
+  // Pass 34 B2 — refuse if focal brand_name is missing. Production
+  // audit (DRAFT a912f5ab) had brand_name=null and the generator emitted
+  // 5 questions all using "this concept" because Claude had no brand
+  // to substitute. The setup form now requires brand_name; this is
+  // the defense-in-depth check.
+  const brand = (clarify?.brand_name || '').trim();
+  if (!brand) {
+    const err = new Error(
+      'brand_lift: focal brand_name is required (received empty). ' +
+      'Add a brand name in the Brand Lift setup section before generating.',
+    );
+    err.code = 'BRAND_LIFT_MISSING_BRAND_NAME';
+    err.statusCode = 400;
+    throw err;
+  }
+
   const userPrompt = buildBrandLiftUserPrompt({ description, clarify, missionAssets });
 
   const firstResp = await callClaude({
@@ -1464,6 +1487,10 @@ Hard rules (per-candidate count = N supplied; criteria count = M supplied):
   - PAIRED COMPARISONS: emit ceil(N/2) paired Qs (between 1 and 4). For each, methodology="paired_comparison", text="Which would you choose: [<candidate A text>] OR [<candidate B text>]?" type="single", options=[<A text>, <B text>]. is_paired_comparison=true. candidate_id=null.
 - If test_type includes 'taglines' (test_type === 'taglines' OR test_type === 'both'): emit one final TURF question. methodology="turf", type="multi", text="Which of these taglines do you find compelling? Select all that apply.", options=[<each candidate text>]. is_turf=true. candidate_id=null.
 - Total Q count: 1 + N*(M+1) + 2 + ceil(N/2) + (test_type==='names'?0:1).
+- NEVER emit placeholder candidate names like "Name A", "Name B",
+  "Tagline 1", or "Candidate X". If the supplied list is empty or
+  has fewer than 2 entries, return {"error":"missing_candidates"}
+  instead of a survey. Real candidate text only.
 - Criterion slug → label mapping:
     memorable → "memorable"
     distinctive → "distinctive"
@@ -1526,7 +1553,6 @@ function buildNamingUserPrompt({ description, clarify }) {
 }
 
 async function generateNamingSurvey({ description, clarify }) {
-  const userPrompt = buildNamingUserPrompt({ description, clarify });
   let candidates = [];
   try { candidates = JSON.parse(clarify?.naming_candidates || '[]'); } catch { /* ignore */ }
   let criteria = [];
@@ -1534,8 +1560,36 @@ async function generateNamingSurvey({ description, clarify }) {
   if (!criteria.length && typeof clarify?.naming_criteria === 'string') {
     criteria = clarify.naming_criteria.split(',').filter(Boolean);
   }
-  const candidateCount = candidates.length || 3;
-  const criteriaCount = criteria.length || 5;
+
+  // Pass 34 B1 — refuse empty candidate list. Production audit found
+  // DRAFT fd10f13d had naming_candidates=[] and the generator emitted
+  // placeholder "Name A / Name B / Name C" because Claude had nothing
+  // to substitute. Better to fail loudly here so the setup form
+  // surfaces the missing input rather than ship a broken survey.
+  const validCandidates = candidates.filter(
+    (c) => c && typeof (c.text || c.name) === 'string' && (c.text || c.name).trim(),
+  );
+  if (validCandidates.length < 2) {
+    const err = new Error(
+      'naming_messaging: at least 2 named candidates required (received ' +
+      `${validCandidates.length}). Add candidate names in setup before generating.`,
+    );
+    err.code = 'NAMING_MISSING_CANDIDATES';
+    err.statusCode = 400;
+    throw err;
+  }
+  if (criteria.length < 1) {
+    const err = new Error(
+      'naming_messaging: at least 1 evaluation criterion required.',
+    );
+    err.code = 'NAMING_MISSING_CRITERIA';
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const userPrompt = buildNamingUserPrompt({ description, clarify });
+  const candidateCount = validCandidates.length;
+  const criteriaCount = criteria.length;
   const testType = clarify?.naming_test_type || 'names';
 
   const firstResp = await callClaude({
