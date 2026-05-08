@@ -883,20 +883,37 @@ function buildCSATUserPrompt({ description, clarify }) {
   const customTp = c.csat_custom_touchpoint || '';
   const customerType = c.csat_customer_type || 'all';
   const recency = c.csat_recency_window || '90 days';
+  const brandName = (c.brand_name || '').trim();
   const lines = [
     'Mission Goal: satisfaction',
     `Brief: "${description}"`,
+    // Pass 35 B3 — focal brand name forwarded explicitly so the
+    // generator substitutes it into NPS/CSAT/CES + driver questions
+    // instead of guessing from the brief.
+    `Focal brand name: ${brandName || '<missing — refuse to generate>'}`,
     `Touchpoint: ${touchpoint}${touchpoint === 'custom' && customTp ? ` (${customTp})` : ''}`,
     `Customer type: ${customerType}`,
     `Recency window: ${recency}`,
     '',
-    'First extract the SHORT brand/product name (2-5 words) from the brief.',
-    'Then generate the 10-question NPS + CSAT + CES survey JSON.',
+    `Use the focal brand name "${brandName}" verbatim everywhere a question references the brand. NEVER use a guessed alternative or "the brand" placeholder.`,
+    'Generate the 10-question NPS + CSAT + CES survey JSON.',
   ];
   return lines.join('\n');
 }
 
 async function generateCSATSurvey({ description, clarify }) {
+  // Pass 35 B3 — refuse if brand_name missing (mirrors brand_lift B2).
+  const brand = (clarify?.brand_name || '').trim();
+  if (!brand) {
+    const err = new Error(
+      'satisfaction (CSAT): focal brand_name is required (received empty). ' +
+      'Add a brand name in the CSAT setup section before generating.',
+    );
+    err.code = 'CSAT_MISSING_BRAND_NAME';
+    err.statusCode = 400;
+    throw err;
+  }
+
   const userPrompt = buildCSATUserPrompt({ description, clarify });
   const firstResp = await callClaude({
     callType: 'survey_gen',
@@ -1706,20 +1723,37 @@ function buildChurnUserPrompt({ description, clarify }) {
     inactive_90d:  'past 90 days (inactive)',
   };
   const recency = recencyMap[c.churn_definition] || c.churn_custom_definition || 'recent period';
+  const brandName = (c.brand_name || '').trim();
   const lines = [
     'Mission Goal: churn_research',
     `Brief: "${description}"`,
-    `Brand: ${c.brand_name || 'the brand'}`,
+    // Pass 35 B4 — brand name explicit. The system prompt template
+    // uses "<brand>" placeholder; we replace at prompt-build time
+    // rather than relying on Claude to extract from the brief.
+    `Focal brand name: ${brandName || '<missing — refuse to generate>'}`,
     `Customer type: ${c.churn_customer_type || 'subscription'}`,
     `Churn definition / recency: ${recency}`,
     `Win-back possible: ${c.churn_winback_possible || 'unknown'}`,
     '',
+    `Use the focal brand name "${brandName}" verbatim everywhere a question references the brand. NEVER use "the brand" placeholder.`,
     'Generate the 11-question Churn Driver Tree + Win-Back survey JSON.',
   ];
   return lines.join('\n');
 }
 
 async function generateChurnSurvey({ description, clarify }) {
+  // Pass 35 B4 — refuse if brand_name missing.
+  const brand = (clarify?.brand_name || '').trim();
+  if (!brand) {
+    const err = new Error(
+      'churn_research: focal brand_name is required (received empty). ' +
+      'Add a brand name in the Churn setup section before generating.',
+    );
+    err.code = 'CHURN_MISSING_BRAND_NAME';
+    err.statusCode = 400;
+    throw err;
+  }
+
   const userPrompt = buildChurnUserPrompt({ description, clarify });
   const firstResp = await callClaude({
     callType: 'survey_gen',
