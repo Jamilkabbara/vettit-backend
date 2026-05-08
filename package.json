@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
-    "test": "jest"
+    "test": "jest",
+    "test:methodologies:dryrun": "node scripts/test-all-methodologies.js",
+    "test:methodologies:full": "node scripts/test-all-methodologies.js --run-all"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.20.0",
