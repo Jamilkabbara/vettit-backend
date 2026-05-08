@@ -1,15 +1,43 @@
 # Methodology Guide
 
-**Last updated:** 2026-05-08 (Pass 31 C4)
+**Last updated:** 2026-05-08 (Pass 33 C4 — post-Track-W audit closure)
 
-VETT ships industry-standard research methodologies on synthetic
-respondents. Each methodology has a setup-page input collector, a
+VETT ships industry-standard research frameworks on synthetic
+respondents. Each framework has a setup-page input collector, a
 backend question generator, a results-page visualization, and a sample
 size minimum the setup page surfaces inline.
+
+The frameworks themselves (Van Westendorp, MaxDiff, NPS,
+brand-health funnel, etc.) are peer-reviewed in the academic
+literature; VETT outputs are synthetic-respondent simulations of
+those frameworks. See [HONEST_CLAIMS.md](./HONEST_CLAIMS.md) for
+the forward policy on how to talk about this distinction in copy
+and PR descriptions.
 
 This file is the index. Each methodology links to the audit row in
 [MISSION_METHODOLOGY_AUDIT.md](./MISSION_METHODOLOGY_AUDIT.md) and to the
 relevant code paths.
+
+## Pass 33 status
+
+Track W closed 10 post-Pass-32 production audit findings: honesty
+regression on /methodologies, Admin AI Costs daily chart wiring,
+per-mission cost rollup, delivered_respondent_count backfill,
+/version pass bump, /methodologies discoverability, site-wide
+Ask VETT mount, HONEST_CLAIMS forward policy, Creative Attention
+export rebuild (PDF/PPTX/XLSX with VETT brand tokens + full data
+coverage), and mission list perf via column-list select.
+
+Track Y (Audience Profiling + Market Entry) deferred to Pass 34
+— each methodology is a full setup + question generator + simulator
+hook + results page lift; partial progress with honest deferrals
+matches the pacing spec.
+
+Track C marketing rollout: footer dead social icons removed;
+/methodologies discoverability shipped in W6; 5 new /vs/* pages
+(yabble / synthetic-users / conjointly / aaru / quantilope)
+deferred to Pass 34 — each requires careful per-competitor
+research and one wrong claim damages credibility.
 
 ## Shipped methodologies (Pass 31 + earlier)
 

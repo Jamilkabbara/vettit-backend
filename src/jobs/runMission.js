@@ -329,13 +329,16 @@ async function runMission(missionId) {
       ? Number((qualifiedRespondent / totalSimulated).toFixed(4))
       : null;
 
-    // Pass 32 X1 — delivered_respondent_count = distinct personas who
-    // actually contributed responses. For most goal types this equals
-    // targetCount; for Brand Lift it's 2x (exposed + control split);
-    // for sequential monadic it's targetCount (rotation, not staffing).
-    const deliveredRespondentCount = new Set(
-      responses.map((r) => r.persona_id).filter(Boolean),
-    ).size;
+    // Pass 32 X1 → Pass 33 W4 — delivered_respondent_count = total
+    // mission_responses row count. The X1 semantics (distinct personas)
+    // lined up with paid_for and silently masked overshoot — a Brand
+    // Lift mission paid for 5 personas could end up with 37 rows on
+    // disk and the column still read 10. The new semantics expose the
+    // actual delivered work; CA missions stay at 0 (delivery_unit is
+    // creative_asset, no respondent rows).
+    const deliveredRespondentCount = mission.goal_type === 'creative_attention'
+      ? 0
+      : responses.length;
 
     await updateMission(supabase, missionId, {
       status: 'completed',

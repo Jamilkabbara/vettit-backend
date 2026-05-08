@@ -1,6 +1,45 @@
 # Honest Claims
 
-**Last updated:** 2026-05-08 (Pass 31 C4 — Z1/Z2 audit ref added)
+**Last updated:** 2026-05-08 (Pass 33 W8 — peer-reviewed forward policy)
+
+## Pass 33 W audit
+
+A live audit of vettit.ai/methodologies (Pass 32 C1 production) surfaced
+a NEW honesty regression that directly contradicted this doc:
+
+**MethodologiesPage hero**: "Every VETT mission binds to a peer-reviewed
+research methodology." — FALSE as worded. The frameworks (Van Westendorp,
+MaxDiff, NPS, brand-health funnel, etc.) ARE peer-reviewed in the
+academic literature. VETT outputs are synthetic-respondent simulations
+of those frameworks; the simulation pipeline is not itself peer-reviewed.
+
+Rewritten in Pass 33 W1 to:
+> "Every VETT mission runs an industry-standard research framework. The
+> methodologies themselves — Van Westendorp pricing, MaxDiff feature
+> prioritization, NPS, brand-health funnel — are peer-reviewed in the
+> academic literature. VETT outputs are synthetic-respondent simulations
+> of those frameworks, not panel-grade truth."
+
+Same correction pattern applied to `HelpPage.tsx` methodology answer
+and `public/llms.txt` summary block.
+
+**Forward policy (Pass 33+)**: any PR that applies "peer-reviewed" to
+VETT outputs (vs. describing the framework itself) triggers a code-review
+block. Same shape as the Pass 31 "real humans" forward policy. The
+correct pattern is:
+
+✅ "Van Westendorp is a peer-reviewed methodology"
+✅ "VETT runs the peer-reviewed Van Westendorp battery"
+✅ "MaxDiff is peer-reviewed in the academic literature; VETT
+    simulates it with synthetic respondents"
+❌ "VETT missions bind to peer-reviewed methodology"
+❌ "VETT delivers peer-reviewed research"
+❌ "Our peer-reviewed AI panel"
+
+VETT does not produce peer-reviewed research. VETT runs frameworks
+that are themselves peer-reviewed in the academic literature. The
+output is a synthetic-respondent simulation of that framework's
+instrument.
 
 ## Pass 31 Z1 + Z2 audit
 
