@@ -360,18 +360,37 @@ async function runMission(missionId) {
     });
 
     // Funnel event.
-    supabase.from('funnel_events').insert({
-      user_id:    mission.user_id,
-      event_type: 'mission_completed',
-      mission_id: missionId,
-      metadata:   {
-        goal_type: mission.goal_type,
-        delivery_status: 'full',
-        qualified: qualifiedRespondent,
-        paid_for: targetCount,
-        total_simulated: totalSimulated,
-      },
-    }).then(() => {}).catch(() => {});
+    // Pass 34 C4 — was fire-and-forget with silent .catch(() => {});
+    // production audit found 25/29 paid-completed missions never fired
+    // mission_completed because failures were silently swallowed. Now
+    // awaited + logged so transient failures surface in Railway logs
+    // and the row gets retried on the next runMission attempt if the
+    // worker is re-invoked (idempotent insert on the next pass via
+    // the C4 backfill SQL — duplicates would no-op since the dedup
+    // join uses event_type + mission_id).
+    try {
+      const { error: feErr } = await supabase.from('funnel_events').insert({
+        user_id:    mission.user_id,
+        event_type: 'mission_completed',
+        mission_id: missionId,
+        metadata:   {
+          goal_type: mission.goal_type,
+          delivery_status: 'full',
+          qualified: qualifiedRespondent,
+          paid_for: targetCount,
+          total_simulated: totalSimulated,
+        },
+      });
+      if (feErr) {
+        logger.error('Mission run: funnel_events insert failed', {
+          missionId, err: feErr.message, code: feErr.code,
+        });
+      }
+    } catch (feCatch) {
+      logger.error('Mission run: funnel_events insert threw', {
+        missionId, err: feCatch?.message || 'unknown',
+      });
+    }
 
     // Notification — single 'mission_complete' branch (no partial branch v2).
     try {
