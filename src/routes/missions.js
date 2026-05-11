@@ -93,16 +93,44 @@ router.get('/', authenticate, async (req, res, next) => {
 
 /**
  * GET /api/missions/:id — single mission, user-scoped.
+ *
+ * Pass 36 A1 — distinct status codes for failure modes:
+ *   - 200 + body for owner or admin
+ *   - 401 if not authenticated (handled by `authenticate` middleware)
+ *   - 403 if authenticated but not owner / admin
+ *   - 404 only for genuinely nonexistent UUIDs
+ *
+ * Previous behavior returned 404 for "not owned" missions which made
+ * the legitimate "deep link to your own mission" case look like a
+ * dead URL (and made the ResultsPage flash "Mission not found" during
+ * the auth-race window before user state settled).
  */
 router.get('/:id', authenticate, async (req, res, next) => {
   try {
+    // First probe: does this UUID exist at all? (Independent of ownership.)
+    const { data: probe } = await supabase
+      .from('missions')
+      .select('id, user_id')
+      .eq('id', req.params.id)
+      .maybeSingle();
+    if (!probe) return res.status(404).json({ error: 'Mission not found' });
+
+    // Ownership / admin gate.
+    const isOwner = probe.user_id === req.user.id;
+    const isAdmin = req.user.is_admin === true;
+    if (!isOwner && !isAdmin) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    // Owner / admin — return the full row.
     const { data, error } = await supabase
       .from('missions')
       .select('*')
       .eq('id', req.params.id)
-      .eq('user_id', req.user.id)
-      .single();
-    if (error || !data) return res.status(404).json({ error: 'Mission not found' });
+      .maybeSingle();
+    if (error || !data) {
+      return res.status(404).json({ error: 'Mission not found' });
+    }
     res.json(data);
   } catch (err) {
     next(err);
