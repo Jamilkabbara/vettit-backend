@@ -339,9 +339,33 @@ async function runMission(missionId) {
     //
     // CA missions stay at 0 (delivery_unit='creative_asset', no
     // respondent rows by design).
-    const deliveredRespondentCount = mission.goal_type === 'creative_attention'
+    //
+    // Pass 41 BUG3 — additionally cap at targetCount. Live audit caught
+    // brand_lift mission af36a36d with respondent_count=5 but
+    // delivered_respondent_count=10. Root cause: the retry path
+    // (screener constraint replacements) can leave the original
+    // screened-out personas alongside the qualifying replacements in
+    // the `responses` array if the swap-out filter doesn't catch
+    // every screened-out persona_id. From the customer's view they
+    // paid for 5; the column saying 10 created confusion ("did I get
+    // double-charged? why does it say 10 if I requested 5?"). The
+    // cap is a customer-trust safeguard: delivered ≤ requested
+    // always. Over-delivery is a positive technical side-effect that
+    // doesn't need to leak into the displayed number.
+    const distinctPersonaCount = mission.goal_type === 'creative_attention'
       ? 0
       : new Set(responses.map((r) => r.persona_id).filter(Boolean)).size;
+    const deliveredRespondentCount = mission.goal_type === 'creative_attention'
+      ? 0
+      : Math.min(distinctPersonaCount, targetCount);
+    if (distinctPersonaCount > targetCount) {
+      logger.info('Mission run: capping delivered_respondent_count at targetCount', {
+        missionId,
+        targetCount,
+        distinctPersonaCount,
+        goalType: mission.goal_type,
+      });
+    }
 
     await updateMission(supabase, missionId, {
       status: 'completed',
