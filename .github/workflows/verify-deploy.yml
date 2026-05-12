@@ -1,0 +1,83 @@
+# Pass 37 A10 — post-merge deploy verification.
+#
+# Doctrine #17 (Pass 37): "Shipped" = deployed in production, NOT merged
+# to main. Pass 36 was reported "shipped" with 14 commits but live
+# /version still returned pass:35 — Railway never auto-deployed and
+# nobody noticed until the next pass's audit.
+#
+# This workflow runs on every merge to main and verifies that the live
+# /version endpoint reports the same `pass` number as the freshly-merged
+# code in src/app.js. If the numbers don't match within DEPLOY_WAIT_S,
+# the run fails and emits an explicit "deploy did not propagate"
+# message, which surfaces in GitHub's commit-status indicator so we
+# catch silent deploy failures immediately.
+
+name: Verify Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  verify-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out merged code
+        uses: actions/checkout@v4
+
+      - name: Extract expected pass from src/app.js
+        id: expected
+        run: |
+          # Pass 37 A0.0 — /version reports a numeric `pass:` field. Grep
+          # the literal `pass: <N>,` line in src/app.js and capture the
+          # integer. Falls back to 0 (which will always mismatch) so a
+          # missing or malformed source file is loud, not silent.
+          PASS=$(grep -E "^\s*pass:\s*[0-9]+," src/app.js | head -1 | sed -E 's/[^0-9]//g')
+          if [ -z "$PASS" ]; then
+            echo "::error::Could not parse pass number from src/app.js"
+            exit 1
+          fi
+          echo "expected_pass=$PASS" >> "$GITHUB_OUTPUT"
+          echo "Expected pass: $PASS"
+
+      - name: Poll /version until deploy propagates
+        env:
+          EXPECTED_PASS: ${{ steps.expected.outputs.expected_pass }}
+          # Production /version endpoint. Override via repo Secrets if
+          # the backend hostname changes; default is the canonical
+          # Railway production URL.
+          VERSION_URL: ${{ secrets.PROD_VERSION_URL || 'https://vettit-backend-production.up.railway.app/version' }}
+          # 5 min wait window matches Railway's typical auto-deploy
+          # latency (build + boot ~90s p50, 4 min p99).
+          DEPLOY_WAIT_S: 300
+          POLL_EVERY_S: 15
+        run: |
+          set -euo pipefail
+          elapsed=0
+          last_live=""
+          while [ "$elapsed" -lt "$DEPLOY_WAIT_S" ]; do
+            # -fsS = fail on HTTP error, silent progress, show errors.
+            # 10s connect/read timeout each iteration so we never camp
+            # on a hung connection for more than a single poll cycle.
+            if response=$(curl -fsS --max-time 10 "$VERSION_URL" 2>/dev/null); then
+              live_pass=$(echo "$response" | jq -r '.pass // empty')
+              last_live="$live_pass"
+              if [ "$live_pass" = "$EXPECTED_PASS" ]; then
+                echo "✅ Deploy propagated: /version reports pass=$live_pass"
+                exit 0
+              fi
+              echo "Live pass=$live_pass, expected=$EXPECTED_PASS — still waiting (elapsed ${elapsed}s)…"
+            else
+              echo "Could not reach $VERSION_URL — still waiting (elapsed ${elapsed}s)…"
+            fi
+            sleep "$POLL_EVERY_S"
+            elapsed=$((elapsed + POLL_EVERY_S))
+          done
+          echo "::error::Deploy did not propagate within ${DEPLOY_WAIT_S}s."
+          echo "::error::Last observed /version pass: ${last_live:-<unreachable>}"
+          echo "::error::Expected pass: $EXPECTED_PASS"
+          echo "::error::Possible causes: Railway auto-deploy failed, manual"
+          echo "::error::deploy needed via dashboard or 'railway up'."
+          exit 1
