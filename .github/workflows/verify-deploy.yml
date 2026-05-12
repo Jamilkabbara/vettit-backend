@@ -1,0 +1,134 @@
+# Pass 37 A10 — post-merge deploy verification.
+#
+# Doctrine #17 (Pass 37): "Shipped" = deployed in production, NOT merged
+# to main. Pass 36 was reported "shipped" with 14 commits but live
+# /version still returned pass:35 — Railway never auto-deployed and
+# nobody noticed until the next pass's audit.
+#
+# This workflow runs on every merge to main and verifies that the live
+# /version endpoint reports the same `pass` number as the freshly-merged
+# code in src/app.js. If the numbers don't match within DEPLOY_WAIT_S,
+# the run fails and emits an explicit "deploy did not propagate"
+# message, which surfaces in GitHub's commit-status indicator so we
+# catch silent deploy failures immediately.
+
+name: Verify Deploy
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, edited, reopened]
+  workflow_dispatch:
+
+jobs:
+  verify-backend-deploy:
+    # Pass 38 DEPLOY-4 — fail-fast on deploy mismatch. Post-merge only.
+    # PR-time check is the screenshot job below.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out merged code
+        uses: actions/checkout@v4
+
+      - name: Capture expected SHA + pass
+        id: expected
+        run: |
+          # The merge commit SHA on main. Production /version should
+          # report exactly this. github.sha on push events points
+          # exactly at the merged-into-main commit.
+          EXPECTED_SHA="${{ github.sha }}"
+          # Pass 37 A0.0 added `pass: <N>` to src/app.js. Grep + sed.
+          # Fall back to 0 (always mismatches) so a missing/malformed
+          # line is loud rather than silent.
+          PASS=$(grep -E "^\s*pass:\s*[0-9]+," src/app.js | head -1 | sed -E 's/[^0-9]//g')
+          if [ -z "$PASS" ]; then
+            echo "::error::Could not parse pass number from src/app.js"
+            exit 1
+          fi
+          echo "sha=$EXPECTED_SHA" >> "$GITHUB_OUTPUT"
+          echo "pass=$PASS"        >> "$GITHUB_OUTPUT"
+          echo "Expecting: sha=$EXPECTED_SHA, pass=$PASS"
+
+      - name: Poll /version until deploy propagates
+        env:
+          EXPECTED_SHA:  ${{ steps.expected.outputs.sha }}
+          EXPECTED_PASS: ${{ steps.expected.outputs.pass }}
+          VERSION_URL:   ${{ secrets.PROD_VERSION_URL || 'https://vettit-backend-production.up.railway.app/version' }}
+          DEPLOY_WAIT_S: 300
+          POLL_EVERY_S: 15
+        run: |
+          set -euo pipefail
+          elapsed=0
+          last_resp=""
+          while [ "$elapsed" -lt "$DEPLOY_WAIT_S" ]; do
+            if response=$(curl -fsS --max-time 10 "$VERSION_URL" 2>/dev/null); then
+              last_resp="$response"
+              live_sha=$(echo "$response" | jq -r '.sha // empty')
+              live_pass=$(echo "$response" | jq -r '.pass // empty')
+              # Pass 38 DEPLOY-4 — Pass >= expected catches the case
+              # where vettPass was bumped but Railway built an older
+              # commit; SHA equality is the strict gate. Both must
+              # hold for the deploy to be verified.
+              if [ "$live_sha" = "$EXPECTED_SHA" ] \
+                 && [ "$live_pass" -ge "$EXPECTED_PASS" ]; then
+                echo "✅ Backend deploy verified."
+                echo "    sha:  $live_sha"
+                echo "    pass: $live_pass"
+                exit 0
+              fi
+              echo "Deploy still propagating: live sha=$live_sha pass=$live_pass, expected sha=$EXPECTED_SHA pass>=$EXPECTED_PASS (elapsed ${elapsed}s)"
+            else
+              echo "Could not reach $VERSION_URL — still waiting (elapsed ${elapsed}s)"
+            fi
+            sleep "$POLL_EVERY_S"
+            elapsed=$((elapsed + POLL_EVERY_S))
+          done
+          echo "::error::Backend deploy did not propagate within ${DEPLOY_WAIT_S}s."
+          echo "::error::Last observed /version response: ${last_resp:-<unreachable>}"
+          echo "::error::Expected: sha=$EXPECTED_SHA, pass>=$EXPECTED_PASS"
+          echo "::error::Doctrine #17: shipped means deployed. Manual fix:"
+          echo "::error::  1. Railway dashboard -> vettit-backend service ->"
+          echo "::error::     Deployments — confirm latest shows main + merge SHA"
+          echo "::error::  2. If auto-deploy didn't fire: check Settings -> Service"
+          echo "::error::     Source — main branch must be selected with auto-deploy on"
+          echo "::error::  3. Manual fallback: cd backend repo && railway up"
+          exit 1
+
+  require-screenshot-in-pr:
+    # Pass 38 A10 — Doctrine #19: PR description must include a
+    # production screenshot link. Enforced on PR open / synchronize.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR description for screenshot link
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) return;
+            const body = pr.body || '';
+            const patterns = [
+              /screenshot/i,
+              /prnt\.sc/i,
+              /imgur\.com/i,
+              /cleanshot\.com/i,
+              /d\.pr\//i,
+              /dropbox\.com/i,
+              /github\.com\/.*\.(png|jpg|jpeg)/i,
+              /user-images\.githubusercontent\.com/i,
+              /private-user-images\.githubusercontent\.com/i,
+            ];
+            const hasScreenshot = patterns.some((re) => re.test(body));
+            if (!hasScreenshot) {
+              core.setFailed(
+                'Doctrine #19 — PR description must include a production ' +
+                'screenshot link (post-deploy, not localhost). Acceptable ' +
+                'hosts: GitHub attachment, prnt.sc, imgur, cleanshot, d.pr, ' +
+                'or a direct .png/.jpg URL.'
+              );
+            } else {
+              core.info('✅ Production screenshot link found in PR description.');
+            }

@@ -136,7 +136,13 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
       pricingBreakdown:   pricing,
       productName:        mission.title || 'Research Mission',
       productDescription: `${mission.respondent_count || 0} qualified respondents`,
-      successUrl:         `${FRONTEND_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+      // Pass 36 A0d — redirect to /processing/{id} immediately so the
+      // customer sees their mission booting up rather than being
+      // bounced to a generic /payment-success or /setup. /processing
+      // polls mission status and auto-redirects to /results when
+      // status='completed'. May 11 demo went to /setup after pay,
+      // which was the wrong page entirely.
+      successUrl:         `${FRONTEND_URL}/processing/${missionId}?session_id={CHECKOUT_SESSION_ID}`,
       // Pass 23 Bug 23.71 — flow-aware cancel URL. Was hardcoded to
       // /payment-cancel which then bounced to a generic setup page; user
       // lost their CA upload + form state. Cancel-URL now takes the user

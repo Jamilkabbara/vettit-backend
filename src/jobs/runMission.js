@@ -329,16 +329,19 @@ async function runMission(missionId) {
       ? Number((qualifiedRespondent / totalSimulated).toFixed(4))
       : null;
 
-    // Pass 32 X1 → Pass 33 W4 — delivered_respondent_count = total
-    // mission_responses row count. The X1 semantics (distinct personas)
-    // lined up with paid_for and silently masked overshoot — a Brand
-    // Lift mission paid for 5 personas could end up with 37 rows on
-    // disk and the column still read 10. The new semantics expose the
-    // actual delivered work; CA missions stay at 0 (delivery_unit is
-    // creative_asset, no respondent rows).
+    // Pass 32 X1 → Pass 33 W4 → Pass 36 A0 — delivered_respondent_count
+    // = COUNT(DISTINCT persona_id) from responses. The Pass 33 W4
+    // semantics counted ROWS (personas × questions) and the W4
+    // verification was tautological (compared the lying column to its
+    // own derivation). May 11 2026 demo failed because every paid
+    // mission overstated respondents by 2-10x. Doctrine #16: SQL
+    // invariants must compare to GROUND TRUTH not derived columns.
+    //
+    // CA missions stay at 0 (delivery_unit='creative_asset', no
+    // respondent rows by design).
     const deliveredRespondentCount = mission.goal_type === 'creative_attention'
       ? 0
-      : responses.length;
+      : new Set(responses.map((r) => r.persona_id).filter(Boolean)).size;
 
     await updateMission(supabase, missionId, {
       status: 'completed',
