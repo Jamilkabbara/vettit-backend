@@ -228,6 +228,18 @@ router.post('/', authenticate, async (req, res, next) => {
           ? { targeted_markets: req.body.targetedMarkets || req.body.targeted_markets } : {}),
       ...(resolvedGoal === 'brand_lift' && (req.body.campaignChannels || req.body.campaign_channels)
           ? { campaign_channels: req.body.campaignChannels || req.body.campaign_channels } : {}),
+      // Pass 42 A.1 — populate recruitment loop columns at insert.
+      // target_qualified_count == respondent_count (semantic rename:
+      // what the customer paid for is qualified completes).
+      // ai_spend_ceiling_usd = total_price * 0.30 (70% margin floor).
+      // Without these the recruitLoop gate (shouldUseRecruitLoop)
+      // returns false on every new mission and the legacy batch
+      // flow runs — Track A code path becomes dead. Verified on
+      // production mission 29716bfb-c958-4912-9bae-b1451150fd36
+      // (both columns null, processed via legacy).
+      target_qualified_count:  respCount,
+      ai_spend_ceiling_usd:    Math.round(pricing.total * 0.30 * 10000) / 10000,
+      recruitment_status:      'pending',
     });
     if (rejected.length) logger.warn('POST /missions: dropped cols', { rejected });
 
@@ -279,6 +291,15 @@ router.post('/draft', authenticate, async (req, res, next) => {
       extra_questions_cost_usd: pricing.extraQuestionsCost,
       total_price_usd:   pricing.total,
       status:            'draft',
+      // Pass 42 A.1 — same recruitment-loop columns on the draft
+      // path. The Setup page hits this endpoint on autosave; the
+      // checkout endpoint at /missions promotes the draft to paid.
+      // Both must populate target_qualified_count + ceiling so the
+      // recruitment loop engages regardless of which path created
+      // the mission.
+      target_qualified_count: respCount,
+      ai_spend_ceiling_usd:   Math.round(pricing.total * 0.30 * 10000) / 10000,
+      recruitment_status:     'pending',
     });
     if (rejected.length) logger.warn('POST /missions/draft: dropped cols', { rejected });
 
@@ -460,6 +481,12 @@ router.patch('/:id', authenticate, async (req, res, next) => {
       updates.base_cost_usd = pricing.baseCost;
       updates.targeting_surcharge_usd = pricing.targetingSurcharge;
       updates.extra_questions_cost_usd = pricing.extraQuestionsCost;
+      // Pass 42 A.1 — keep the recruitment columns in sync when the
+      // customer edits respondent_count or anything that re-prices.
+      // target_qualified_count must equal what they paid for;
+      // ai_spend_ceiling_usd must equal that price × 0.30.
+      updates.target_qualified_count = respCount;
+      updates.ai_spend_ceiling_usd = Math.round(pricing.total * 0.30 * 10000) / 10000;
     }
 
     // Map client field names → column names; phantom columns are dropped by
@@ -481,6 +508,11 @@ router.patch('/:id', authenticate, async (req, res, next) => {
     if (updates.targeting_surcharge_usd != null) mapped.targeting_surcharge_usd = updates.targeting_surcharge_usd;
     if (updates.extra_questions_cost_usd != null) mapped.extra_questions_cost_usd = updates.extra_questions_cost_usd;
     if (updates.status) mapped.status = updates.status;
+    // Pass 42 A.1 — propagate recomputed recruitment columns through
+    // the PATCH path so a respondent_count edit keeps target +
+    // ceiling in lockstep with total_price_usd.
+    if (updates.target_qualified_count != null) mapped.target_qualified_count = updates.target_qualified_count;
+    if (updates.ai_spend_ceiling_usd != null) mapped.ai_spend_ceiling_usd = updates.ai_spend_ceiling_usd;
 
     const { patch: dbUpdates, rejected } = sanitizeMissionPatch(mapped);
     if (rejected.length) logger.warn('PATCH /missions: dropped cols', { rejected });
