@@ -173,7 +173,22 @@ async function synthesizeInsights(mission, responses) {
     personaSummaries.push(summary);
   }
 
-  const userPrompt = `Mission brief: ${mission.brief || mission.mission_statement || ''}
+  // Pass 42 A4 — partial-delivery acknowledgement. When the recruit
+  // loop terminated via the 70% margin ceiling (recruitment_status
+  // === 'ceiling_hit'), tell the synthesis model so the Executive
+  // Summary opens honestly. NO REFUNDS policy means we cannot offer
+  // a re-run, but we also can't ignore the under-delivery — the
+  // synthesis pretending it's a normal full sample would be a lie.
+  const targetCount = mission.target_qualified_count
+    || mission.respondent_count
+    || 0;
+  const isPartial = mission.recruitment_status === 'ceiling_hit'
+    || (targetCount > 0 && completedCount > 0 && completedCount < targetCount);
+  const partialNotice = isPartial
+    ? `\nIMPORTANT — PARTIAL DELIVERY: This mission was paid for ${targetCount} qualified respondents but only ${completedCount} qualified within the customer's screener constraints. Open the Executive Summary with one honest sentence acknowledging this (e.g. "Your screener was strict — we surfaced N qualified responses out of the M you requested."). Do not apologize. Do not recommend a re-run — the customer agreed at checkout that strict screeners may produce partial delivery. Frame the remaining insights as the directional signal they are.\n`
+    : '';
+
+  const userPrompt = `${partialNotice}Mission brief: ${mission.brief || mission.mission_statement || ''}
 Goal: ${mission.goal_type || 'general research'}
 
 SAMPLE METRICS (use ONLY these for any dropout or completion statements):

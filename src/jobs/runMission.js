@@ -30,6 +30,11 @@ const { synthesizeInsights } = require('../services/ai/insights');
 const { generateTargetingBrief } = require('../services/ai/targetingBrief');
 const { analyzeCreative }       = require('../services/ai/creativeAttention');
 const { updateMission } = require('../db/missionSchema');
+// Pass 42 A2 — recruit-until-qualified loop (env-gated). When
+// RECRUIT_LOOP_ENABLED=true the new flow replaces the batch
+// generate+simulate+retry path with a streaming per-persona loop
+// that respects the 70% margin ceiling.
+const { runRecruitmentLoop, shouldUseRecruitLoop } = require('../services/ai/recruitLoop');
 const emailService = require('../services/email');
 
 // Pass 23 Bug 23.12 — notification copy templates. Truncate long mission
@@ -125,8 +130,41 @@ async function runMission(missionId) {
     // ─── Survey path — Pass 23 Bug 23.25 v2 constraint-based generation ────
     const targetCount = mission.respondent_count || 100;
 
-    // Round 1: generate exactly N with screener constraints baked in.
-    let personas = await generatePersonas(mission, targetCount);
+    // Pass 42 A2 — env-gated streaming recruitment loop. When
+    // RECRUIT_LOOP_ENABLED=true and the mission has the Pass 42 A1
+    // columns populated (target_qualified_count + ai_spend_ceiling_usd),
+    // the new flow runs persona-by-persona until target qualified
+    // reached OR the 70% margin ceiling is hit. Otherwise, falls
+    // through to the legacy batch flow below.
+    let personas;
+    let responses;
+    let recruitmentPartial = false;
+    if (shouldUseRecruitLoop(mission)) {
+      logger.info('Mission run: using Pass 42 A2 recruit loop', {
+        missionId,
+        target: mission.target_qualified_count,
+        ceilingUsd: mission.ai_spend_ceiling_usd,
+      });
+      const loopResult = await runRecruitmentLoop(mission, supabase);
+      personas  = loopResult.personas;
+      responses = loopResult.responses;
+      recruitmentPartial = loopResult.partial;
+      // Brand Lift exposure split still applies — tag exposed/control
+      // by order of qualification.
+      if (mission.goal_type === 'brand_lift' && personas.length > 0) {
+        const exposedCount = Math.ceil(personas.length / 2);
+        personas = personas.map((p, i) => ({
+          ...p,
+          _exposure_status: i < exposedCount ? 'exposed' : 'control',
+        }));
+        logger.info('Mission run: brand_lift exposure split (recruit-loop path)', {
+          missionId, exposed: exposedCount, control: personas.length - exposedCount,
+        });
+      }
+    } else {
+      // ── Legacy batch flow (pre-Pass-42 behaviour) ──────────────────────
+      // Round 1: generate exactly N with screener constraints baked in.
+      personas = await generatePersonas(mission, targetCount);
 
     // Pass 27 — Brand Lift incrementality. Split ~50/50 exposed vs control
     // and tag each persona so the simulator prompt can shift answers
@@ -143,7 +181,7 @@ async function runMission(missionId) {
         missionId, exposed: exposedCount, control: personas.length - exposedCount,
       });
     }
-    let responses = await simulateAllResponses(
+    responses = await simulateAllResponses(
       personas,
       mission.questions || [],
       mission,
@@ -240,6 +278,7 @@ async function runMission(missionId) {
         missionId, residualMisses: screenedOutPersonaIds.size, rounds: retryRound,
       });
     }
+    } // close Pass 42 A2 `else` (legacy batch flow)
 
     // Pass 27 — propagate exposure_status from persona to its responses
     // for brand_lift missions. Lookup map is small (≤ targetCount) so a
@@ -367,6 +406,11 @@ async function runMission(missionId) {
       });
     }
 
+    // Pass 42 A2 — delivery_status reflects whether the recruitment
+    // loop hit its target. recruitmentPartial=true only when the new
+    // loop was used AND ceiling_hit terminated it. Legacy batch path
+    // always reports 'full' per pre-Pass-42 semantics.
+    const deliveryStatusFinal = recruitmentPartial ? 'partial' : 'full';
     await updateMission(supabase, missionId, {
       status: 'completed',
       completed_at: new Date().toISOString(),
@@ -376,10 +420,13 @@ async function runMission(missionId) {
       qualified_respondent_count:   qualifiedRespondent,
       qualification_rate:           qualificationRate,
       delivered_respondent_count:   deliveredRespondentCount,
-      delivery_status:              'full',
+      delivery_status:              deliveryStatusFinal,
       delivery_check_at:            new Date().toISOString(),
       // partial_refund_id and partial_refund_amount_cents stay NULL —
       // never populated for new missions under v2.
+      // NOTE: Pass 42 policy — NO REFUNDS, EVER. partial delivery from
+      // a hit margin ceiling is not a refundable event; customer
+      // agreed to this at checkout (Pass 42 G4 microcopy).
     }, { caller: 'runMission: complete' });
 
     logger.info('Mission run: complete', {

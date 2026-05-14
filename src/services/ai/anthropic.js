@@ -139,19 +139,39 @@ async function callClaude({
       success:       true,
     }).then(() => {}).catch(err => logger.warn('ai_calls insert failed', err));
 
-    // Roll cost up to the mission for fast margin dashboards
+    // Pass 42 A3 — roll cost up to the mission for fast margin
+    // dashboards AND for the recruit-loop's ceiling check. The new
+    // increment_mission_ai_spend RPC (Pass 42 A3 migration) atomically
+    // updates BOTH ai_cost_usd (legacy, admin dashboards) and
+    // ai_spend_usd_actual (new, recruit-loop reads this). Falls back
+    // to the manual SELECT+UPDATE only if the RPC fails so writes
+    // continue even during a migration gap.
     if (missionId) {
-      supabase.rpc('increment_mission_ai_cost', { p_mission_id: missionId, p_cost: costUsd })
-        .then(() => {})
-        .catch(() => {
-          // Fallback: manual update if RPC not present
-          supabase.from('missions').select('ai_cost_usd').eq('id', missionId).single()
-            .then(({ data }) => {
-              if (data) {
-                supabase.from('missions')
-                  .update({ ai_cost_usd: (Number(data.ai_cost_usd) || 0) + costUsd })
-                  .eq('id', missionId).then(() => {}).catch(() => {});
-              }
+      supabase.rpc('increment_mission_ai_spend', { p_mission_id: missionId, p_cost: costUsd })
+        .then(({ error: rpcErr }) => {
+          if (!rpcErr) return;
+          // RPC error path: try the legacy single-column RPC
+          supabase.rpc('increment_mission_ai_cost', { p_mission_id: missionId, p_cost: costUsd })
+            .then(({ error: legacyErr }) => {
+              if (!legacyErr) return;
+              // Final fallback: manual SELECT+UPDATE on both columns.
+              // Racy under high concurrency but better than dropping
+              // the cost entirely.
+              supabase.from('missions')
+                .select('ai_cost_usd, ai_spend_usd_actual')
+                .eq('id', missionId)
+                .single()
+                .then(({ data }) => {
+                  if (!data) return;
+                  supabase.from('missions')
+                    .update({
+                      ai_cost_usd:         (Number(data.ai_cost_usd) || 0) + costUsd,
+                      ai_spend_usd_actual: (Number(data.ai_spend_usd_actual) || 0) + costUsd,
+                    })
+                    .eq('id', missionId)
+                    .then(() => {})
+                    .catch((err) => logger.warn('ai cost manual fallback update failed', { missionId, err: err.message }));
+                });
             });
         });
     }
