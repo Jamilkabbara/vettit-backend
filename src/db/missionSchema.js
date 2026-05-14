@@ -152,6 +152,20 @@ const ALLOWED_COLUMNS = new Set([
   'delivered_respondent_count',
   // Pass 32 X2 — delivery_unit ∈ {respondent, creative_asset}.
   'delivery_unit',
+  // Pass 42 A1 — recruit-until-qualified semantics.
+  // target_qualified_count is the customer-paid count (recruit loop
+  // runs until reached); recruited_persona_count is the running
+  // total of personas generated (pass + fail); ai_spend_usd_actual
+  // is the accumulated AI cost; ai_spend_ceiling_usd is the hard
+  // 30%-of-mission-price cap protecting the 70% margin floor;
+  // recruitment_status ∈ {pending|recruiting|ceiling_hit|target_hit};
+  // recruitment_completed_at is the loop-exit timestamp.
+  'target_qualified_count',
+  'recruited_persona_count',
+  'ai_spend_usd_actual',
+  'ai_spend_ceiling_usd',
+  'recruitment_status',
+  'recruitment_completed_at',
 ]);
 
 /**
