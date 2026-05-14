@@ -237,4 +237,7 @@ async function simulateAllResponses(personas, questions, mission, onProgress) {
   return out;
 }
 
-module.exports = { simulateResponses, simulateAllResponses };
+// Pass 42 A2 — passesScreening exported so the recruitment loop in
+// services/ai/recruitLoop.js can apply the same screening logic
+// without duplicating it.
+module.exports = { simulateResponses, simulateAllResponses, passesScreening };
