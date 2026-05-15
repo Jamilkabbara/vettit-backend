@@ -4,6 +4,9 @@ const { authenticate } = require('../middleware/auth');
 const { adminOnly } = require('../middleware/adminOnly');
 const supabase = require('../db/supabase'); // service-role client for all admin queries (RPC + tables)
 const logger = require('../utils/logger');
+// Pass 42 F2 — Stripe promo sync. Lazy fail at call time so a
+// missing STRIPE_SECRET_KEY doesn't crash the route module load.
+const { createPromoOnStripe, updateStripePromoActive } = require('../services/stripe');
 
 // All routes are gated: authenticate → adminOnly
 router.use(authenticate, adminOnly);
@@ -1066,21 +1069,57 @@ router.get('/promos', async (req, res, next) => {
 /** POST /api/admin/promos — create a promo code */
 router.post('/promos', async (req, res, next) => {
   try {
-    const { code, type, value, description, active, max_uses, expires_at } = req.body;
+    const { code, type, value, description, active, max_uses, expires_at, sync_to_stripe } = req.body;
     if (!code || !type) return res.status(400).json({ error: 'code and type are required' });
     const validTypes = ['percentage', 'flat', 'free'];
     if (!validTypes.includes(type)) return res.status(400).json({ error: `type must be one of: ${validTypes.join(', ')}` });
 
+    const normCode = code.toUpperCase().trim();
+
+    // Pass 42 F2 — Sync to Stripe before inserting so we can store
+    // the IDs on the row. Default sync_to_stripe=true; admin can opt
+    // out for internal-only codes (VETT100, etc.).
+    let stripeIds = { stripe_coupon_id: null, stripe_promotion_code_id: null };
+    const shouldSync = sync_to_stripe !== false;
+    if (shouldSync) {
+      try {
+        const synced = await createPromoOnStripe({
+          code: normCode,
+          type,
+          value: Number(value || 0),
+          description,
+          max_uses,
+          expires_at,
+          active: active !== false,
+        });
+        stripeIds = {
+          stripe_coupon_id: synced.coupon_id,
+          stripe_promotion_code_id: synced.promotion_code_id,
+        };
+      } catch (stripeErr) {
+        logger.error('Stripe promo sync failed', { code: normCode, err: stripeErr.message });
+        // Don't insert a half-state row — fail fast so admin can retry.
+        return res.status(502).json({
+          error: 'stripe_sync_failed',
+          message: stripeErr.message,
+          hint: 'Verify STRIPE_SECRET_KEY env var on Railway, or set sync_to_stripe=false to skip.',
+        });
+      }
+    }
+
     const { data, error } = await supabase
       .from('promo_codes')
       .insert({
-        code: code.toUpperCase().trim(),
+        code: normCode,
         type,
         value: Number(value || 0),
         description: description || null,
         active: active !== false,
         max_uses: max_uses || null,
         expires_at: expires_at || null,
+        sync_to_stripe: shouldSync,
+        stripe_coupon_id: stripeIds.stripe_coupon_id,
+        stripe_promotion_code_id: stripeIds.stripe_promotion_code_id,
       })
       .select()
       .single();
@@ -1101,6 +1140,32 @@ router.patch('/promos/:code', async (req, res, next) => {
     if (req.body.value       !== undefined) updates.value       = Number(req.body.value);
     if (req.body.type        !== undefined) updates.type        = req.body.type;
 
+    // Pass 42 F2 — when toggling active, mirror to Stripe so the
+    // promo code on customer-facing Checkout matches admin state.
+    if (req.body.active !== undefined) {
+      const { data: existing } = await supabase
+        .from('promo_codes')
+        .select('stripe_promotion_code_id, sync_to_stripe')
+        .eq('code', code.toUpperCase())
+        .single();
+      if (existing?.sync_to_stripe && existing.stripe_promotion_code_id) {
+        try {
+          await updateStripePromoActive(existing.stripe_promotion_code_id, !!req.body.active);
+        } catch (stripeErr) {
+          logger.error('Stripe promo active-toggle failed', {
+            code, err: stripeErr.message,
+          });
+          // Non-fatal: the DB update still proceeds. Surface in
+          // response as a partial-success warning.
+          updates._stripe_sync_warning = stripeErr.message;
+        }
+      }
+    }
+
+    // Strip the warning marker (not a real column).
+    const stripeWarning = updates._stripe_sync_warning;
+    delete updates._stripe_sync_warning;
+
     const { data, error } = await supabase
       .from('promo_codes')
       .update(updates)
@@ -1108,7 +1173,7 @@ router.patch('/promos/:code', async (req, res, next) => {
       .select()
       .single();
     if (error) throw error;
-    res.json(data);
+    res.json(stripeWarning ? { ...data, _stripe_sync_warning: stripeWarning } : data);
   } catch (err) { next(err); }
 });
 

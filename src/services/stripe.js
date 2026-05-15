@@ -318,6 +318,66 @@ async function retrieveCheckoutSession(sessionId) {
   }
 }
 
+/**
+ * Pass 42 F2 — Sync admin promo to Stripe.
+ *
+ * Creates a Stripe coupon + promotion code pair so customers can
+ * enter the promo on Stripe Checkout's native promo field. Stripe
+ * applies the discount automatically; backend doesn't need to
+ * pre-discount the price.
+ *
+ * Returns { coupon_id, promotion_code_id } so the caller can persist
+ * the IDs back onto the promo_codes row.
+ *
+ * Type mapping (vett promo_codes.type → Stripe):
+ *   'percentage' → percent_off
+ *   'flat'       → amount_off (cents, usd)
+ *   'free'       → percent_off: 100
+ */
+async function createPromoOnStripe({ code, type, value, description, max_uses, expires_at, active }) {
+  const couponParams = { duration: 'once' };
+  if (type === 'free') {
+    couponParams.percent_off = 100;
+  } else if (type === 'percentage') {
+    couponParams.percent_off = Number(value);
+  } else if (type === 'flat') {
+    couponParams.amount_off = Math.round(Number(value) * 100);
+    couponParams.currency = 'usd';
+  } else {
+    throw new Error(`Unsupported promo type for Stripe sync: ${type}`);
+  }
+  if (description) couponParams.name = `${code} — ${description}`;
+  if (max_uses) couponParams.max_redemptions = Number(max_uses);
+
+  const coupon = await stripe.coupons.create(couponParams);
+
+  const promoParams = {
+    coupon: coupon.id,
+    code,
+    active: active !== false,
+  };
+  if (expires_at) {
+    promoParams.expires_at = Math.floor(new Date(expires_at).getTime() / 1000);
+  }
+  const promo = await stripe.promotionCodes.create(promoParams);
+
+  logger.info('Stripe promo synced', { code, couponId: coupon.id, promoId: promo.id });
+  return { coupon_id: coupon.id, promotion_code_id: promo.id };
+}
+
+/**
+ * Pass 42 F2 — toggle a Stripe promotion code's active state. Used
+ * by PATCH /api/admin/promos/:code when active is being flipped.
+ *
+ * Stripe coupons themselves can't be deactivated — only their
+ * associated promotion code can. So we update the promotion code's
+ * `active` flag, leaving the coupon alone.
+ */
+async function updateStripePromoActive(promotionCodeId, active) {
+  if (!promotionCodeId) return null;
+  return stripe.promotionCodes.update(promotionCodeId, { active: !!active });
+}
+
 module.exports = {
   createPaymentIntent,
   verifyPayment,
@@ -330,4 +390,7 @@ module.exports = {
   // Pass 23 Bug 23.0e v2 — Checkout Session migration
   createCheckoutSession,
   retrieveCheckoutSession,
+  // Pass 42 F2 — admin promo sync
+  createPromoOnStripe,
+  updateStripePromoActive,
 };
