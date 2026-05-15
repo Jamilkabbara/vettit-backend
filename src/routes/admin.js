@@ -641,6 +641,88 @@ router.patch('/missions/:id/force-complete', async (req, res, next) => {
 });
 
 /**
+ * Pass 42 F1 — POST /api/admin/missions/:id/mark-paid
+ *
+ * Admin override that promotes a `pending_payment` mission to `paid`
+ * without involving Stripe. Used for internal / demo / comp missions.
+ *
+ * Body: { reason: string }  (required, logged to admin_actions)
+ *
+ * Side effects:
+ *   - missions.paid_at = NOW()
+ *   - missions.payment_method = 'admin_override'
+ *   - missions.status = 'paid' (so the recruitment loop picks it up)
+ *   - admin_actions row inserted with action_type='mark_mission_paid'
+ *
+ * NO REFUNDS, EVER. This endpoint moves a mission FORWARD (pending →
+ * paid). There is no inverse endpoint that calls Stripe.refunds.
+ */
+router.post('/missions/:id/mark-paid', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const reason = (req.body?.reason || '').trim();
+    if (!reason) {
+      return res.status(400).json({ error: 'reason_required', message: 'Reason is required for the audit log.' });
+    }
+
+    // Confirm the mission exists + is in a state where override makes sense.
+    const { data: mission, error: fetchErr } = await supabase
+      .from('missions')
+      .select('id, user_id, status, paid_at, total_price_usd')
+      .eq('id', id)
+      .single();
+    if (fetchErr || !mission) return res.status(404).json({ error: 'mission_not_found' });
+    if (mission.status !== 'pending_payment' && mission.status !== 'draft') {
+      return res.status(409).json({
+        error: 'invalid_state',
+        message: `Mission status is '${mission.status}'; mark-paid only applies to draft or pending_payment.`,
+      });
+    }
+
+    const now = new Date().toISOString();
+    const { error: updErr } = await supabase
+      .from('missions')
+      .update({
+        status:         'paid',
+        paid_at:        now,
+        payment_method: 'admin_override',
+      })
+      .eq('id', id);
+    if (updErr) {
+      logger.error('Admin mark-paid update failed', { missionId: id, err: updErr.message });
+      return next(updErr);
+    }
+
+    const { error: auditErr } = await supabase
+      .from('admin_actions')
+      .insert({
+        admin_user_id: req.user.id,
+        action_type:   'mark_mission_paid',
+        target_type:   'mission',
+        target_id:     id,
+        reason,
+        metadata: {
+          previous_status:  mission.status,
+          total_price_usd:  mission.total_price_usd,
+          paid_at:          now,
+        },
+      });
+    if (auditErr) {
+      // Non-fatal: the override succeeded but audit logging failed. Log the
+      // failure prominently so we can backfill manually if needed.
+      logger.error('Admin mark-paid audit insert failed (non-fatal)', {
+        missionId: id, adminEmail: req.user.email, err: auditErr.message,
+      });
+    }
+
+    logger.info('Admin marked mission paid', {
+      missionId: id, adminEmail: req.user.email, reason,
+    });
+    res.json({ success: true, mission_id: id, paid_at: now });
+  } catch (err) { next(err); }
+});
+
+/**
  * POST /api/admin/missions/:id/reanalyze
  * Regenerate insights + executive_summary for an already-completed mission.
  *
