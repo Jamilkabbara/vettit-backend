@@ -842,4 +842,74 @@ router.get('/:id/chart_data', authenticate, async (req, res, next) => {
   }
 });
 
+/**
+ * Pass 42 E1 — live recruitment progress endpoint.
+ *
+ * Frontend polls this every 5s on the ProcessingPage while a
+ * mission is recruiting. Reads from the Pass 42 A1 columns
+ * populated by the recruitment loop:
+ *   recruited_persona_count, ai_spend_usd_actual,
+ *   target_qualified_count, ai_spend_ceiling_usd,
+ *   recruitment_status.
+ *
+ * For backwards compat with legacy missions that don't have
+ * recruitment_status populated, derives a 'recruiting' status
+ * from mission.status='processing'.
+ */
+router.get('/:id/progress', authenticate, async (req, res, next) => {
+  try {
+    const missionId = req.params.id;
+    const { data: mission, error } = await supabase
+      .from('missions')
+      .select([
+        'id', 'user_id',
+        'status',
+        'respondent_count',
+        'target_qualified_count',
+        'recruited_persona_count',
+        'recruitment_status',
+        'ai_spend_usd_actual',
+        'ai_spend_ceiling_usd',
+        'qualified_respondent_count',
+        'delivered_respondent_count',
+      ].join(', '))
+      .eq('id', missionId)
+      .single();
+    if (error || !mission) return res.status(404).json({ error: 'mission_not_found' });
+    if (mission.user_id !== req.user.id) return res.status(403).json({ error: 'forbidden' });
+
+    const target = Number(mission.target_qualified_count ?? mission.respondent_count ?? 0);
+    const recruited = Number(mission.recruited_persona_count ?? 0);
+    // Pass 42 E1 — qualified count: prefer delivered (Pass 36 A0 truth),
+    // fall back to qualified_respondent_count, then 0. Both can be
+    // populated mid-recruitment by the loop.
+    const qualified = Number(
+      mission.delivered_respondent_count ??
+      mission.qualified_respondent_count ??
+      0,
+    );
+
+    let status = mission.recruitment_status ?? null;
+    if (!status) {
+      // Legacy missions or pre-recruitment-loop rows: infer.
+      if (mission.status === 'completed') status = 'target_hit';
+      else if (mission.status === 'processing' || mission.status === 'paid') status = 'recruiting';
+      else status = 'pending';
+    }
+
+    res.json({
+      recruited,
+      qualified,
+      target,
+      status,
+      spent_usd:           Number(mission.ai_spend_usd_actual ?? 0),
+      spend_ceiling_usd:   Number(mission.ai_spend_ceiling_usd ?? 0),
+      mission_status:      mission.status,
+    });
+  } catch (err) {
+    logger.error('GET /missions/:id/progress failed', { err: err.message });
+    next(err);
+  }
+});
+
 module.exports = router;
