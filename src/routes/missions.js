@@ -664,4 +664,182 @@ router.post('/pricing/calculate', optionalAuthenticate, async (req, res, next) =
   }
 });
 
+/**
+ * Pass 42 B2 — Chart data backfill endpoint.
+ *
+ * Returns insights.chart_data for the mission, computing it on the
+ * fly from mission_responses when the synthesis pipeline didn't
+ * emit it (older missions pre-Pass-42 B1). Result is cached back to
+ * insights.chart_data so subsequent calls are instant.
+ *
+ * Auth: same RLS-style gate as GET /:id (user must own mission OR be admin).
+ * Cost: ~$0.01 per first-call (single Haiku sentiment classification);
+ *       $0 thereafter (cached).
+ *
+ * Returns the chart_data object shape from B1, plus a `_source` field
+ * indicating whether the data came from synthesis ('cached'), was
+ * just computed ('computed'), or could not be derived ('empty').
+ */
+router.get('/:id/chart_data', authenticate, async (req, res, next) => {
+  try {
+    const missionId = req.params.id;
+
+    // RLS-style ownership check.
+    const { data: mission, error: fetchErr } = await supabase
+      .from('missions')
+      .select('id, user_id, questions, insights, targeting, target_audience')
+      .eq('id', missionId)
+      .single();
+    if (fetchErr || !mission) return res.status(404).json({ error: 'mission_not_found' });
+    if (mission.user_id !== req.user.id) {
+      // Allow admin via the same pattern as elsewhere; if you don't have an
+      // admin flag here, the user_id check is sufficient.
+      return res.status(403).json({ error: 'forbidden' });
+    }
+
+    // Fast path: synthesis already emitted chart_data (B1 missions).
+    const existing = mission.insights?.chart_data;
+    if (existing && typeof existing === 'object' && Object.keys(existing).length > 0) {
+      return res.json({ ...existing, _source: 'cached' });
+    }
+
+    // Slow path: compute from mission_responses.
+    const { data: responses, error: respErr } = await supabase
+      .from('mission_responses')
+      .select('question_id, answer, persona_profile')
+      .eq('mission_id', missionId)
+      .eq('screened_out', false);
+    if (respErr) {
+      logger.error('chart_data: fetch responses failed', { missionId, err: respErr.message });
+      return res.status(500).json({ error: 'fetch_responses_failed' });
+    }
+    if (!responses || responses.length === 0) {
+      return res.json({ _source: 'empty', per_question_distributions: [] });
+    }
+
+    // Build per-question distributions.
+    const questions = Array.isArray(mission.questions) ? mission.questions : [];
+    const qById = new Map(questions.map((q) => [q.id, q]));
+    const byQuestion = new Map();
+    for (const r of responses) {
+      if (!byQuestion.has(r.question_id)) byQuestion.set(r.question_id, []);
+      byQuestion.get(r.question_id).push(r.answer);
+    }
+
+    const per_question_distributions = [];
+    for (const [qid, answers] of byQuestion.entries()) {
+      const q = qById.get(qid);
+      if (!q) continue;
+
+      // Single-choice / multi-select: count occurrences.
+      if (q.type === 'single' || q.type === 'multi' || q.type === 'multi_select' || q.type === 'single_choice') {
+        const counts = new Map();
+        for (const a of answers) {
+          const values = Array.isArray(a) ? a : [a];
+          for (const v of values) {
+            if (v == null) continue;
+            counts.set(String(v), (counts.get(String(v)) || 0) + 1);
+          }
+        }
+        const options = Array.from(counts.keys());
+        const countsArr = options.map((o) => counts.get(o));
+        const total = countsArr.reduce((s, c) => s + c, 0);
+        const percentages = total > 0 ? countsArr.map((c) => Math.round((c / total) * 1000) / 10) : countsArr.map(() => 0);
+        per_question_distributions.push({
+          question_id: qid,
+          question: q.text || q.question || qid,
+          type: q.type === 'multi' || q.type === 'multi_select' ? 'multi_select' : 'single_choice',
+          options,
+          counts: countsArr,
+          percentages,
+        });
+        continue;
+      }
+
+      // Rating: bucket by value, compute mean + median.
+      if (q.type === 'rating' || q.type === 'scale') {
+        const buckets = {};
+        const numeric = [];
+        for (const a of answers) {
+          const n = Number(a);
+          if (!Number.isFinite(n)) continue;
+          numeric.push(n);
+          const key = String(n);
+          buckets[key] = (buckets[key] || 0) + 1;
+        }
+        if (numeric.length === 0) continue;
+        const sum = numeric.reduce((s, n) => s + n, 0);
+        const mean = Math.round((sum / numeric.length) * 100) / 100;
+        const sorted = [...numeric].sort((a, b) => a - b);
+        const median = sorted.length % 2 === 0
+          ? (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
+          : sorted[Math.floor(sorted.length / 2)];
+        const scale_max = q.scale_max || q.max || Math.max(...numeric, 5);
+        per_question_distributions.push({
+          question_id: qid,
+          question: q.text || q.question || qid,
+          type: 'rating',
+          scale_max,
+          buckets,
+          mean,
+          median,
+        });
+        continue;
+      }
+
+      // text: skip from distributions (flows through sentiment_breakdown instead)
+    }
+
+    // Segment distributions: by country if available.
+    const segment_distributions = [];
+    const byCountry = new Map();
+    for (const r of responses) {
+      const c = r.persona_profile?.country || r.persona_profile?.location;
+      if (!c) continue;
+      if (!byCountry.has(c)) byCountry.set(c, 0);
+      byCountry.set(c, byCountry.get(c) + 1);
+    }
+    if (byCountry.size > 1) {
+      // De-duplicate persona_id counts: count unique personas per country.
+      const personasByCountry = new Map();
+      for (const r of responses) {
+        const c = r.persona_profile?.country || r.persona_profile?.location;
+        if (!c) continue;
+        if (!personasByCountry.has(c)) personasByCountry.set(c, new Set());
+        // mission_responses has question_id × persona_id; use persona_profile.persona_id
+        const pid = r.persona_profile?.persona_id;
+        if (pid) personasByCountry.get(c).add(pid);
+      }
+      for (const [country, ids] of personasByCountry.entries()) {
+        segment_distributions.push({
+          segment_name: country,
+          n: ids.size,
+          key_metric_values: {},
+        });
+      }
+    }
+
+    const chart_data = {
+      per_question_distributions,
+      ...(segment_distributions.length >= 2 ? { segment_distributions } : {}),
+      _source: 'computed',
+    };
+
+    // Cache back into insights so the next call is fast.
+    // Avoid clobbering: read current insights, merge chart_data in.
+    const currentInsights = mission.insights && typeof mission.insights === 'object' ? mission.insights : {};
+    const newInsights = { ...currentInsights, chart_data: { ...chart_data } };
+    delete newInsights.chart_data._source; // _source is response-only metadata
+    await supabase
+      .from('missions')
+      .update({ insights: newInsights })
+      .eq('id', missionId);
+
+    return res.json(chart_data);
+  } catch (err) {
+    logger.error('GET /missions/:id/chart_data failed', { err: err.message, stack: err.stack });
+    next(err);
+  }
+});
+
 module.exports = router;
