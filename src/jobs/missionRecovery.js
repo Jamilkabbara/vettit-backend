@@ -261,6 +261,26 @@ async function runJob2() {
     }
 
     try {
+      // Pass 42 H2 — auto-expire pending_payment missions older
+      // than 14 days. These are legacy / abandoned and were
+      // spamming the cron warn log every tick. After this UPDATE
+      // they fall out of the recoverable set.
+      const expireCutoff = new Date(Date.now() - 14 * 24 * 3600 * 1000).toISOString();
+      const { data: expired, error: expireErr } = await supabase
+        .from('missions')
+        .update({
+          status: 'expired',
+          failure_reason: 'legacy pre-payment-intent orphan (Pass 42 H2 auto-expire)',
+        })
+        .eq('status', 'pending_payment')
+        .lt('created_at', expireCutoff)
+        .select('id');
+      if (expireErr) {
+        logger.warn('[cron] job2 auto-expire failed (non-fatal, continuing)', { err: expireErr.message });
+      } else if (expired && expired.length > 0) {
+        logger.info('[cron] job2 auto-expired legacy pending_payment missions', { count: expired.length });
+      }
+
       const cutoff = new Date(Date.now() - JOB2_STUCK_AFTER_HOURS * 3600 * 1000).toISOString();
       const { data: stuck, error } = await supabase
         .from('missions')

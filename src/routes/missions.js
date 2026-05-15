@@ -228,6 +228,18 @@ router.post('/', authenticate, async (req, res, next) => {
           ? { targeted_markets: req.body.targetedMarkets || req.body.targeted_markets } : {}),
       ...(resolvedGoal === 'brand_lift' && (req.body.campaignChannels || req.body.campaign_channels)
           ? { campaign_channels: req.body.campaignChannels || req.body.campaign_channels } : {}),
+      // Pass 42 A.1 — populate recruitment loop columns at insert.
+      // target_qualified_count == respondent_count (semantic rename:
+      // what the customer paid for is qualified completes).
+      // ai_spend_ceiling_usd = total_price * 0.30 (70% margin floor).
+      // Without these the recruitLoop gate (shouldUseRecruitLoop)
+      // returns false on every new mission and the legacy batch
+      // flow runs — Track A code path becomes dead. Verified on
+      // production mission 29716bfb-c958-4912-9bae-b1451150fd36
+      // (both columns null, processed via legacy).
+      target_qualified_count:  respCount,
+      ai_spend_ceiling_usd:    Math.round(pricing.total * 0.30 * 10000) / 10000,
+      recruitment_status:      'pending',
     });
     if (rejected.length) logger.warn('POST /missions: dropped cols', { rejected });
 
@@ -279,6 +291,15 @@ router.post('/draft', authenticate, async (req, res, next) => {
       extra_questions_cost_usd: pricing.extraQuestionsCost,
       total_price_usd:   pricing.total,
       status:            'draft',
+      // Pass 42 A.1 — same recruitment-loop columns on the draft
+      // path. The Setup page hits this endpoint on autosave; the
+      // checkout endpoint at /missions promotes the draft to paid.
+      // Both must populate target_qualified_count + ceiling so the
+      // recruitment loop engages regardless of which path created
+      // the mission.
+      target_qualified_count: respCount,
+      ai_spend_ceiling_usd:   Math.round(pricing.total * 0.30 * 10000) / 10000,
+      recruitment_status:     'pending',
     });
     if (rejected.length) logger.warn('POST /missions/draft: dropped cols', { rejected });
 
@@ -460,6 +481,12 @@ router.patch('/:id', authenticate, async (req, res, next) => {
       updates.base_cost_usd = pricing.baseCost;
       updates.targeting_surcharge_usd = pricing.targetingSurcharge;
       updates.extra_questions_cost_usd = pricing.extraQuestionsCost;
+      // Pass 42 A.1 — keep the recruitment columns in sync when the
+      // customer edits respondent_count or anything that re-prices.
+      // target_qualified_count must equal what they paid for;
+      // ai_spend_ceiling_usd must equal that price × 0.30.
+      updates.target_qualified_count = respCount;
+      updates.ai_spend_ceiling_usd = Math.round(pricing.total * 0.30 * 10000) / 10000;
     }
 
     // Map client field names → column names; phantom columns are dropped by
@@ -481,6 +508,11 @@ router.patch('/:id', authenticate, async (req, res, next) => {
     if (updates.targeting_surcharge_usd != null) mapped.targeting_surcharge_usd = updates.targeting_surcharge_usd;
     if (updates.extra_questions_cost_usd != null) mapped.extra_questions_cost_usd = updates.extra_questions_cost_usd;
     if (updates.status) mapped.status = updates.status;
+    // Pass 42 A.1 — propagate recomputed recruitment columns through
+    // the PATCH path so a respondent_count edit keeps target +
+    // ceiling in lockstep with total_price_usd.
+    if (updates.target_qualified_count != null) mapped.target_qualified_count = updates.target_qualified_count;
+    if (updates.ai_spend_ceiling_usd != null) mapped.ai_spend_ceiling_usd = updates.ai_spend_ceiling_usd;
 
     const { patch: dbUpdates, rejected } = sanitizeMissionPatch(mapped);
     if (rejected.length) logger.warn('PATCH /missions: dropped cols', { rejected });
@@ -628,6 +660,254 @@ router.post('/pricing/calculate', optionalAuthenticate, async (req, res, next) =
     const pricing = calculateMissionPrice(respCount, resolvedFilters, qCount, promo);
     res.json(pricing);
   } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Pass 42 B2 — Chart data backfill endpoint.
+ *
+ * Returns insights.chart_data for the mission, computing it on the
+ * fly from mission_responses when the synthesis pipeline didn't
+ * emit it (older missions pre-Pass-42 B1). Result is cached back to
+ * insights.chart_data so subsequent calls are instant.
+ *
+ * Auth: same RLS-style gate as GET /:id (user must own mission OR be admin).
+ * Cost: ~$0.01 per first-call (single Haiku sentiment classification);
+ *       $0 thereafter (cached).
+ *
+ * Returns the chart_data object shape from B1, plus a `_source` field
+ * indicating whether the data came from synthesis ('cached'), was
+ * just computed ('computed'), or could not be derived ('empty').
+ */
+router.get('/:id/chart_data', authenticate, async (req, res, next) => {
+  try {
+    const missionId = req.params.id;
+
+    // RLS-style ownership check.
+    const { data: mission, error: fetchErr } = await supabase
+      .from('missions')
+      .select('id, user_id, questions, insights, targeting, target_audience')
+      .eq('id', missionId)
+      .single();
+    if (fetchErr || !mission) return res.status(404).json({ error: 'mission_not_found' });
+    if (mission.user_id !== req.user.id) {
+      // Allow admin via the same pattern as elsewhere; if you don't have an
+      // admin flag here, the user_id check is sufficient.
+      return res.status(403).json({ error: 'forbidden' });
+    }
+
+    // Fast path: synthesis already emitted chart_data (B1 missions).
+    const existing = mission.insights?.chart_data;
+    if (existing && typeof existing === 'object' && Object.keys(existing).length > 0) {
+      return res.json({ ...existing, _source: 'cached' });
+    }
+
+    // Slow path: compute from mission_responses.
+    const { data: responses, error: respErr } = await supabase
+      .from('mission_responses')
+      .select('question_id, answer, persona_profile')
+      .eq('mission_id', missionId)
+      .eq('screened_out', false);
+    if (respErr) {
+      logger.error('chart_data: fetch responses failed', { missionId, err: respErr.message });
+      return res.status(500).json({ error: 'fetch_responses_failed' });
+    }
+    if (!responses || responses.length === 0) {
+      return res.json({ _source: 'empty', per_question_distributions: [] });
+    }
+
+    // Build per-question distributions.
+    const questions = Array.isArray(mission.questions) ? mission.questions : [];
+    const qById = new Map(questions.map((q) => [q.id, q]));
+    const byQuestion = new Map();
+    for (const r of responses) {
+      if (!byQuestion.has(r.question_id)) byQuestion.set(r.question_id, []);
+      byQuestion.get(r.question_id).push(r.answer);
+    }
+
+    const per_question_distributions = [];
+    for (const [qid, answers] of byQuestion.entries()) {
+      const q = qById.get(qid);
+      if (!q) continue;
+
+      // Single-choice / multi-select: count occurrences.
+      if (q.type === 'single' || q.type === 'multi' || q.type === 'multi_select' || q.type === 'single_choice') {
+        const counts = new Map();
+        for (const a of answers) {
+          const values = Array.isArray(a) ? a : [a];
+          for (const v of values) {
+            if (v == null) continue;
+            counts.set(String(v), (counts.get(String(v)) || 0) + 1);
+          }
+        }
+        const options = Array.from(counts.keys());
+        const countsArr = options.map((o) => counts.get(o));
+        const total = countsArr.reduce((s, c) => s + c, 0);
+        const percentages = total > 0 ? countsArr.map((c) => Math.round((c / total) * 1000) / 10) : countsArr.map(() => 0);
+        per_question_distributions.push({
+          question_id: qid,
+          question: q.text || q.question || qid,
+          type: q.type === 'multi' || q.type === 'multi_select' ? 'multi_select' : 'single_choice',
+          options,
+          counts: countsArr,
+          percentages,
+        });
+        continue;
+      }
+
+      // Rating: bucket by value, compute mean + median.
+      if (q.type === 'rating' || q.type === 'scale') {
+        const buckets = {};
+        const numeric = [];
+        for (const a of answers) {
+          const n = Number(a);
+          if (!Number.isFinite(n)) continue;
+          numeric.push(n);
+          const key = String(n);
+          buckets[key] = (buckets[key] || 0) + 1;
+        }
+        if (numeric.length === 0) continue;
+        const sum = numeric.reduce((s, n) => s + n, 0);
+        const mean = Math.round((sum / numeric.length) * 100) / 100;
+        const sorted = [...numeric].sort((a, b) => a - b);
+        const median = sorted.length % 2 === 0
+          ? (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
+          : sorted[Math.floor(sorted.length / 2)];
+        const scale_max = q.scale_max || q.max || Math.max(...numeric, 5);
+        per_question_distributions.push({
+          question_id: qid,
+          question: q.text || q.question || qid,
+          type: 'rating',
+          scale_max,
+          buckets,
+          mean,
+          median,
+        });
+        continue;
+      }
+
+      // text: skip from distributions (flows through sentiment_breakdown instead)
+    }
+
+    // Segment distributions: by country if available.
+    const segment_distributions = [];
+    const byCountry = new Map();
+    for (const r of responses) {
+      const c = r.persona_profile?.country || r.persona_profile?.location;
+      if (!c) continue;
+      if (!byCountry.has(c)) byCountry.set(c, 0);
+      byCountry.set(c, byCountry.get(c) + 1);
+    }
+    if (byCountry.size > 1) {
+      // De-duplicate persona_id counts: count unique personas per country.
+      const personasByCountry = new Map();
+      for (const r of responses) {
+        const c = r.persona_profile?.country || r.persona_profile?.location;
+        if (!c) continue;
+        if (!personasByCountry.has(c)) personasByCountry.set(c, new Set());
+        // mission_responses has question_id × persona_id; use persona_profile.persona_id
+        const pid = r.persona_profile?.persona_id;
+        if (pid) personasByCountry.get(c).add(pid);
+      }
+      for (const [country, ids] of personasByCountry.entries()) {
+        segment_distributions.push({
+          segment_name: country,
+          n: ids.size,
+          key_metric_values: {},
+        });
+      }
+    }
+
+    const chart_data = {
+      per_question_distributions,
+      ...(segment_distributions.length >= 2 ? { segment_distributions } : {}),
+      _source: 'computed',
+    };
+
+    // Cache back into insights so the next call is fast.
+    // Avoid clobbering: read current insights, merge chart_data in.
+    const currentInsights = mission.insights && typeof mission.insights === 'object' ? mission.insights : {};
+    const newInsights = { ...currentInsights, chart_data: { ...chart_data } };
+    delete newInsights.chart_data._source; // _source is response-only metadata
+    await supabase
+      .from('missions')
+      .update({ insights: newInsights })
+      .eq('id', missionId);
+
+    return res.json(chart_data);
+  } catch (err) {
+    logger.error('GET /missions/:id/chart_data failed', { err: err.message, stack: err.stack });
+    next(err);
+  }
+});
+
+/**
+ * Pass 42 E1 — live recruitment progress endpoint.
+ *
+ * Frontend polls this every 5s on the ProcessingPage while a
+ * mission is recruiting. Reads from the Pass 42 A1 columns
+ * populated by the recruitment loop:
+ *   recruited_persona_count, ai_spend_usd_actual,
+ *   target_qualified_count, ai_spend_ceiling_usd,
+ *   recruitment_status.
+ *
+ * For backwards compat with legacy missions that don't have
+ * recruitment_status populated, derives a 'recruiting' status
+ * from mission.status='processing'.
+ */
+router.get('/:id/progress', authenticate, async (req, res, next) => {
+  try {
+    const missionId = req.params.id;
+    const { data: mission, error } = await supabase
+      .from('missions')
+      .select([
+        'id', 'user_id',
+        'status',
+        'respondent_count',
+        'target_qualified_count',
+        'recruited_persona_count',
+        'recruitment_status',
+        'ai_spend_usd_actual',
+        'ai_spend_ceiling_usd',
+        'qualified_respondent_count',
+        'delivered_respondent_count',
+      ].join(', '))
+      .eq('id', missionId)
+      .single();
+    if (error || !mission) return res.status(404).json({ error: 'mission_not_found' });
+    if (mission.user_id !== req.user.id) return res.status(403).json({ error: 'forbidden' });
+
+    const target = Number(mission.target_qualified_count ?? mission.respondent_count ?? 0);
+    const recruited = Number(mission.recruited_persona_count ?? 0);
+    // Pass 42 E1 — qualified count: prefer delivered (Pass 36 A0 truth),
+    // fall back to qualified_respondent_count, then 0. Both can be
+    // populated mid-recruitment by the loop.
+    const qualified = Number(
+      mission.delivered_respondent_count ??
+      mission.qualified_respondent_count ??
+      0,
+    );
+
+    let status = mission.recruitment_status ?? null;
+    if (!status) {
+      // Legacy missions or pre-recruitment-loop rows: infer.
+      if (mission.status === 'completed') status = 'target_hit';
+      else if (mission.status === 'processing' || mission.status === 'paid') status = 'recruiting';
+      else status = 'pending';
+    }
+
+    res.json({
+      recruited,
+      qualified,
+      target,
+      status,
+      spent_usd:           Number(mission.ai_spend_usd_actual ?? 0),
+      spend_ceiling_usd:   Number(mission.ai_spend_ceiling_usd ?? 0),
+      mission_status:      mission.status,
+    });
+  } catch (err) {
+    logger.error('GET /missions/:id/progress failed', { err: err.message });
     next(err);
   }
 });

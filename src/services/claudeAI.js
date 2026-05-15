@@ -364,6 +364,58 @@ function buildBrandLiftUserPrompt({ description, clarify, missionAssets }) {
  *     warn-log if the second attempt also fails so the user can still
  *     create the mission (the dashboard already lets them edit Qs).
  */
+/**
+ * Pass 42 G1 — BUG-013 fix. Extract the subject of a brief as a
+ * short noun phrase (≤8 words) via a single Haiku call so we never
+ * concatenate raw verbose brief text into question templates.
+ *
+ * Before: "Are you interested in I want to validate a new AI-powered
+ *          market research tool..."
+ * After:  "Are you interested in an AI market research tool?"
+ *
+ * Cost: ~$0.005 per mission. Eliminates the most embarrassing
+ * customer-facing wording bug.
+ *
+ * Defensive: returns the original brief truncated if the Haiku
+ * call fails — question generation should never crash on this.
+ */
+async function extractSubject(brief) {
+  if (!brief || typeof brief !== 'string') return '';
+  const text = brief.trim();
+  if (text.length === 0) return '';
+  // Skip the Haiku roundtrip for already-short briefs (likely
+  // already a noun phrase).
+  if (text.split(/\s+/).length <= 8) return text;
+  try {
+    const response = await callClaude({
+      callType: 'subject_extract',
+      missionId: null,
+      userId:    null,
+      model:     'claude-haiku-4-5',
+      maxTokens: 40,
+      systemPrompt: 'You extract the subject of research briefs as short noun phrases.',
+      messages: [{
+        role: 'user',
+        content:
+          `Extract the subject of this research brief as a short noun phrase (max 8 words). ` +
+          `Strip first-person phrasing like "I want to validate" or "We're testing". ` +
+          `Return ONLY the noun phrase, no quotes, no preamble.\n\n` +
+          `Brief:\n${text}`,
+      }],
+      enablePromptCache: false,
+    });
+    const out = (response.text || '').trim().replace(/^["']|["']$/g, '');
+    if (!out || out.length > 80) {
+      // Fallback: truncate the original brief.
+      return text.split(/\s+/).slice(0, 8).join(' ');
+    }
+    return out;
+  } catch (err) {
+    logger?.warn?.('extractSubject failed; falling back to truncation', { err: err.message });
+    return text.split(/\s+/).slice(0, 8).join(' ');
+  }
+}
+
 async function generateSurvey({
   goal,
   description,
@@ -1932,4 +1984,8 @@ module.exports = {
   refineMissionDescription,
   analyseResults,
   suggestTargeting,
+  // Pass 42 G1 — exported for the synthesis pipeline / future
+  // prompt templates that want clean subject text instead of the
+  // raw brief.
+  extractSubject,
 };

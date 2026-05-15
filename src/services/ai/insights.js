@@ -254,10 +254,52 @@ Return ONLY this JSON structure:
         }
       ]
     }
-  ]
+  ],
+  "chart_data": {
+    "per_question_distributions": [
+      {
+        "question_id": "q1",
+        "question": "Verbatim question text",
+        "type": "multi_select | single_choice | rating | text",
+        "options": ["Option A", "Option B"],
+        "counts": [3, 4],
+        "percentages": [42.9, 57.1]
+      },
+      {
+        "question_id": "q2",
+        "question": "Verbatim rating question",
+        "type": "rating",
+        "scale_max": 5,
+        "buckets": {"1": 1, "2": 2, "3": 4, "4": 2, "5": 1},
+        "mean": 3.0,
+        "median": 3
+      }
+    ],
+    "sentiment_breakdown": {
+      "positive": 4,
+      "neutral": 5,
+      "negative": 1
+    },
+    "segment_distributions": [
+      {
+        "segment_name": "18-29",
+        "n": 6,
+        "key_metric_values": {"purchase_intent_mean": 4.2}
+      }
+    ]
+  }
 }
 
-Identify the 2 to 3 most informative segmentation axes from the persona profiles. For each axis, return per-segment counts (n) and one to two sentences calling out where that segment diverges from the overall result. Skip axes that don't produce meaningful differentiation. If the sample is too small or homogeneous to segment usefully, return an empty array.`;
+Identify the 2 to 3 most informative segmentation axes from the persona profiles. For each axis, return per-segment counts (n) and one to two sentences calling out where that segment diverges from the overall result. Skip axes that don't produce meaningful differentiation. If the sample is too small or homogeneous to segment usefully, return an empty array.
+
+Pass 42 B1 — also emit the chart_data block. Frontend renders charts (distribution bars, sentiment donut, segment comparison) from this structure. Per-question rules:
+- For multi_select / single_choice questions: emit options[] (parallel arrays), counts[] of length(options), percentages[] of length(options). Percentages should sum to ~100 (rounding allowed).
+- For rating questions: emit scale_max (the top of the rating scale, usually 5 or 10), buckets (object keyed by string rating value -> count), mean, median.
+- For text questions: omit from per_question_distributions. They go through sentiment_breakdown instead.
+- sentiment_breakdown is a single aggregate across all open-text responses in the mission. If there are no text responses, omit this field entirely.
+- segment_distributions echoes segment_breakdowns but with a single key_metric_values object per segment (key = metric name like "purchase_intent_mean", value = numeric). If no good aggregable metric exists for a segment, omit that segment.
+
+If chart_data cannot be reliably emitted (very small sample, malformed responses), omit the whole chart_data block. Frontend treats absence as "no charts" not "broken charts".`;
 
   const response = await callClaude({
     callType: 'insight_synth',
@@ -274,6 +316,37 @@ Identify the 2 to 3 most informative segmentation axes from the persona profiles
     // Defensive defaults in case the model omits these optional fields.
     if (!Array.isArray(parsed.contradictions))     parsed.contradictions     = [];
     if (!Array.isArray(parsed.segment_breakdowns)) parsed.segment_breakdowns = [];
+    // Pass 42 B1 — chart_data validation. The block is optional. If
+    // present but malformed, log + discard rather than failing the
+    // whole synthesis (Doctrine #19: don't crash on schema drift).
+    if (parsed.chart_data && typeof parsed.chart_data === 'object') {
+      const cd = parsed.chart_data;
+      if (cd.per_question_distributions && !Array.isArray(cd.per_question_distributions)) {
+        logger.warn('Insight synthesis: chart_data.per_question_distributions not an array; dropping', {
+          missionId: mission.id,
+        });
+        delete cd.per_question_distributions;
+      }
+      if (cd.segment_distributions && !Array.isArray(cd.segment_distributions)) {
+        logger.warn('Insight synthesis: chart_data.segment_distributions not an array; dropping', {
+          missionId: mission.id,
+        });
+        delete cd.segment_distributions;
+      }
+      if (cd.sentiment_breakdown && typeof cd.sentiment_breakdown !== 'object') {
+        logger.warn('Insight synthesis: chart_data.sentiment_breakdown not an object; dropping', {
+          missionId: mission.id,
+        });
+        delete cd.sentiment_breakdown;
+      }
+      // If chart_data is now empty after pruning, drop the whole block
+      // so the frontend's "no chart_data" branch fires cleanly rather
+      // than an empty-object branch.
+      if (Object.keys(cd).length === 0) delete parsed.chart_data;
+    } else if (parsed.chart_data != null) {
+      logger.warn('Insight synthesis: chart_data not an object; dropping', { missionId: mission.id });
+      delete parsed.chart_data;
+    }
     // Pass 23 — em-dash sanitizer (post-generation). Pre-prompt swap was
     // insufficient: production audit found em-dashes on every page checked
     // (Bali, General Research, Recommended Next Step, AI Insights). The
