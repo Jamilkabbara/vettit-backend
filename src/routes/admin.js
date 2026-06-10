@@ -1489,4 +1489,151 @@ router.get('/payment-errors', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * Pass 43 T3a — POST /api/admin/backfill/chart-data
+ *
+ * Triggers the chart_data backfill across all completed missions
+ * without chart_data. Responds 202 immediately and runs async so the
+ * admin UI doesn't block. Logs an admin_actions row on start AND on
+ * completion (with counts). Idempotent — safe to call repeatedly.
+ *
+ * Replaces the need to run scripts/backfill-chart-data.js via Railway
+ * CLI (which isn't always available). One authenticated POST does it.
+ */
+router.post('/backfill/chart-data', async (req, res, next) => {
+  try {
+    const { runChartDataBackfill } = require('../services/backfills/chartData');
+
+    // Count candidates up front for the response.
+    const { data: completed, error: countErr } = await supabase
+      .from('missions')
+      .select('id, insights')
+      .eq('status', 'completed');
+    if (countErr) return next(countErr);
+    const pending = (completed || []).filter((m) => {
+      const cd = m.insights?.chart_data;
+      return !cd || typeof cd !== 'object' || Object.keys(cd).length === 0;
+    }).length;
+
+    // Audit: start.
+    await supabase.from('admin_actions').insert({
+      admin_user_id: req.user.id,
+      action_type:   'backfill_chart_data',
+      target_type:   'backfill',
+      target_id:     req.user.id, // no single target; use admin id
+      reason:        'admin-triggered chart_data backfill',
+      metadata:      { phase: 'start', pending_count: pending },
+    });
+
+    // Respond immediately; run async.
+    res.status(202).json({ started: true, pending_count: pending });
+
+    // Fire-and-forget (after response). Errors are logged + audited.
+    (async () => {
+      try {
+        const result = await runChartDataBackfill(supabase, {
+          onProgress: (done, total) =>
+            logger.info('[admin backfill chart_data] progress', { done, total }),
+        });
+        await supabase.from('admin_actions').insert({
+          admin_user_id: req.user.id,
+          action_type:   'backfill_chart_data',
+          target_type:   'backfill',
+          target_id:     req.user.id,
+          reason:        'admin-triggered chart_data backfill',
+          metadata:      { phase: 'complete', ...result },
+        });
+        logger.info('[admin backfill chart_data] done', result);
+      } catch (bgErr) {
+        logger.error('[admin backfill chart_data] failed', { err: bgErr.message });
+        await supabase.from('admin_actions').insert({
+          admin_user_id: req.user.id,
+          action_type:   'backfill_chart_data',
+          target_type:   'backfill',
+          target_id:     req.user.id,
+          reason:        'admin-triggered chart_data backfill',
+          metadata:      { phase: 'error', error: bgErr.message },
+        }).catch(() => {});
+      }
+    })();
+  } catch (err) { next(err); }
+});
+
+/**
+ * Pass 43 T3b — POST /api/admin/backfill/stripe-coupons
+ *
+ * Syncs every promo_codes row with sync_to_stripe=true AND
+ * stripe_coupon_id IS NULL to Stripe (coupon + promotion code),
+ * storing the IDs back. VETT100 is forced to sync_to_stripe=false
+ * (internal-only, must NEVER reach Stripe). Synchronous (small set);
+ * responds with per-code results.
+ *
+ * Requires STRIPE_SECRET_KEY. Idempotent — already-synced rows skip.
+ */
+router.post('/backfill/stripe-coupons', async (req, res, next) => {
+  try {
+    const { createPromoOnStripe } = require('../services/stripe');
+
+    // Force VETT100 internal-only before syncing anything else.
+    await supabase
+      .from('promo_codes')
+      .update({ sync_to_stripe: false })
+      .eq('code', 'VETT100');
+
+    const { data: rows, error } = await supabase
+      .from('promo_codes')
+      .select('code, type, value, description, active, max_uses, expires_at, sync_to_stripe, stripe_coupon_id');
+    if (error) return next(error);
+
+    const candidates = (rows || []).filter(
+      (r) => r.sync_to_stripe === true && !r.stripe_coupon_id && r.code !== 'VETT100',
+    );
+
+    const results = [];
+    for (const row of candidates) {
+      try {
+        const { coupon_id, promotion_code_id } = await createPromoOnStripe({
+          code: row.code,
+          type: row.type,
+          value: row.value,
+          description: row.description,
+          max_uses: row.max_uses,
+          expires_at: row.expires_at,
+          active: row.active,
+        });
+        const { error: updErr } = await supabase
+          .from('promo_codes')
+          .update({ stripe_coupon_id: coupon_id, stripe_promotion_code_id: promotion_code_id })
+          .eq('code', row.code);
+        if (updErr) {
+          results.push({ code: row.code, ok: false, error: updErr.message });
+        } else {
+          results.push({ code: row.code, ok: true, coupon_id, promotion_code_id });
+        }
+      } catch (stripeErr) {
+        results.push({ code: row.code, ok: false, error: stripeErr.message });
+      }
+    }
+
+    // Audit.
+    await supabase.from('admin_actions').insert({
+      admin_user_id: req.user.id,
+      action_type:   'backfill_stripe_coupons',
+      target_type:   'backfill',
+      target_id:     req.user.id,
+      reason:        'admin-triggered Stripe coupon backfill',
+      metadata:      { candidates: candidates.length, results },
+    });
+
+    const succeeded = results.filter((r) => r.ok).length;
+    logger.info('[admin backfill stripe-coupons] done', { candidates: candidates.length, succeeded });
+    res.json({
+      candidates: candidates.length,
+      succeeded,
+      vett100_forced_internal: true,
+      results,
+    });
+  } catch (err) { next(err); }
+});
+
 module.exports = router;
