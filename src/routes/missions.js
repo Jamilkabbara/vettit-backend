@@ -183,8 +183,20 @@ router.post('/', authenticate, async (req, res, next) => {
       }
     }
 
-    const filters = deriveFilters(finalTarget);
-    const pricing = calculateMissionPrice(respCount, filters, finalQs.length);
+    // Pass 44 P0 — calculateMissionPrice moved to an options-object
+    // signature (a7ff50a, Apr 23) and deriveFilters was deleted with it,
+    // but these call sites kept the old positional style. Every backend
+    // mission-create/price endpoint has thrown ReferenceError since.
+    // Unnoticed because the frontend creates missions client-side via
+    // supabase-js. Now: pass targeting directly; the engine derives
+    // surcharges itself.
+    const pricing = calculateMissionPrice({
+      respondentCount: respCount,
+      targeting:       finalTarget,
+      questionCount:   finalQs.length,
+      countries:       extractCountriesFromMission({ targeting: finalTarget }),
+      goalType:        resolvedGoal,
+    });
 
     // Pass 27 — recompute brand_lift total with market + channel uplifts;
     // backend stays canonical source of truth at payment time.
@@ -275,8 +287,14 @@ router.post('/draft', authenticate, async (req, res, next) => {
     const respCount   = respondentCount || 50;
     const finalTarget = targeting || {};
     const finalQs     = questions || [];
-    const filters     = deriveFilters(finalTarget);
-    const pricing     = calculateMissionPrice(respCount, filters, finalQs.length);
+    // Pass 44 P0 — object-signature call (see POST /missions above).
+    const pricing     = calculateMissionPrice({
+      respondentCount: respCount,
+      targeting:       finalTarget,
+      questionCount:   finalQs.length,
+      countries:       extractCountriesFromMission({ targeting: finalTarget }),
+      goalType:        goalType || 'general_research',
+    });
 
     // Filter phantom columns before hitting the DB (see missionSchema.js).
     const { patch: row, rejected } = sanitizeMissionPatch({
@@ -342,14 +360,12 @@ router.post('/draft', authenticate, async (req, res, next) => {
  */
 router.post('/calculate-price', optionalAuthenticate, async (req, res, next) => {
   try {
-    const { respondentCount, activeFilters, filters, targeting, questions, promoCode } = req.body;
+    const { respondentCount, targeting, questions, promoCode } = req.body;
 
     const respCount = respondentCount || 100;
-    const resolvedFilters = Array.isArray(activeFilters)
-      ? activeFilters
-      : Array.isArray(filters)
-        ? filters
-        : deriveFilters(targeting || {});
+    // Pass 44 P0 — legacy activeFilters/filters arrays dropped; the
+    // object-signature engine derives surcharges from `targeting`
+    // directly (activeFilters was only ever derived FROM targeting).
     const qCount = Array.isArray(questions) ? questions.length : (req.body.questionCount || 5);
 
     let promo = null;
@@ -363,7 +379,14 @@ router.post('/calculate-price', optionalAuthenticate, async (req, res, next) => 
       }
     }
 
-    const pricing = calculateMissionPrice(respCount, resolvedFilters, qCount, promo);
+    const pricing = calculateMissionPrice({
+      respondentCount: respCount,
+      targeting:       targeting || {},
+      questionCount:   qCount,
+      promoCode:       promo,
+      countries:       extractCountriesFromMission({ targeting: targeting || {} }),
+      goalType:        req.body.goalType || req.body.goal || 'validate',
+    });
     res.json(pricing);
   } catch (err) {
     next(err);
@@ -466,7 +489,7 @@ router.patch('/:id', authenticate, async (req, res, next) => {
     if (updates.respondentCount || updates.questions || updates.targeting || updates.targetingConfig) {
       const { data: existing } = await supabase
         .from('missions')
-        .select('questions, targeting, respondent_count')
+        .select('questions, targeting, respondent_count, goal_type')
         .eq('id', req.params.id)
         .eq('user_id', req.user.id)
         .single();
@@ -475,7 +498,15 @@ router.patch('/:id', authenticate, async (req, res, next) => {
       const respCount = updates.respondentCount || existing?.respondent_count || 50;
       const finalTarget = updates.targeting || updates.targetingConfig || existing?.targeting || {};
       const finalQs = updates.questions || existing?.questions || [];
-      const pricing = calculateMissionPrice(respCount, deriveFilters(finalTarget), finalQs.length);
+      // Pass 44 P0 — object-signature call; goal_type added to the
+      // select so the engine routes to the correct pricing ladder.
+      const pricing = calculateMissionPrice({
+        respondentCount: respCount,
+        targeting:       finalTarget,
+        questionCount:   finalQs.length,
+        countries:       extractCountriesFromMission({ targeting: finalTarget }),
+        goalType:        updates.goalType || existing?.goal_type || 'validate',
+      });
 
       updates.total_price_usd = pricing.total;
       updates.base_cost_usd = pricing.baseCost;
@@ -643,11 +674,10 @@ router.delete('/:id', authenticate, async (req, res, next) => {
 // Back-compat alias used by the current frontend client
 router.post('/pricing/calculate', optionalAuthenticate, async (req, res, next) => {
   try {
-    const { respondentCount, questions, targetingConfig, targeting, activeFilters, promoCode } = req.body;
+    const { respondentCount, questions, targetingConfig, targeting, promoCode } = req.body;
     const respCount = respondentCount || 100;
-    const resolvedFilters = Array.isArray(activeFilters)
-      ? activeFilters
-      : deriveFilters(targetingConfig || targeting || {});
+    // Pass 44 P0 — legacy activeFilters dropped; object-signature call.
+    const resolvedTargeting = targetingConfig || targeting || {};
     const qCount = Array.isArray(questions) ? questions.length : 5;
 
     let promo = null;
@@ -657,7 +687,14 @@ router.post('/pricing/calculate', optionalAuthenticate, async (req, res, next) =
       if (data) promo = data;
     }
 
-    const pricing = calculateMissionPrice(respCount, resolvedFilters, qCount, promo);
+    const pricing = calculateMissionPrice({
+      respondentCount: respCount,
+      targeting:       resolvedTargeting,
+      questionCount:   qCount,
+      promoCode:       promo,
+      countries:       extractCountriesFromMission({ targeting: resolvedTargeting }),
+      goalType:        req.body.goalType || req.body.goal || 'validate',
+    });
     res.json(pricing);
   } catch (err) {
     next(err);
