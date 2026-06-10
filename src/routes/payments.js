@@ -178,6 +178,18 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
       latest_payment_intent_id:  session.paymentIntentId,
       tier:                      resolvedTierId,
       media_type:                mission.media_type || null,
+      // Pass 43 T1a — recompute the authoritative recruitment-loop
+      // columns at checkout. The client-side Setup insert (Pass 43 T1a
+      // frontend) writes a PROVISIONAL ceiling from the pre-checkout
+      // price estimate; this is the first point we know the final
+      // total_price_usd (after promo / targeting / extra-Q surcharges),
+      // so we recompute. target_qualified_count == respondent_count.
+      // ceiling = 30% of final price (70% margin floor). Without this
+      // a mission that came through the client insert path with a NULL
+      // or stale ceiling silently bypasses the recruitment loop.
+      target_qualified_count:    mission.respondent_count,
+      ai_spend_ceiling_usd:      Math.round(pricing.total * 0.30 * 10000) / 10000,
+      recruitment_status:        'pending',
     }, { caller: 'POST /payments/create-checkout-session' });
 
     logger.info('Checkout Session created', {
