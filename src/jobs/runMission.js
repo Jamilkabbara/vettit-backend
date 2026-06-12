@@ -35,6 +35,8 @@ const { updateMission } = require('../db/missionSchema');
 // generate+simulate+retry path with a streaming per-persona loop
 // that respects the 70% margin ceiling.
 const { runRecruitmentLoop, shouldUseRecruitLoop } = require('../services/ai/recruitLoop');
+// Pass 46 Phase 2 — empty-survey guard (audit P0-5).
+const { ensureMissionQuestions } = require('../services/ai/ensureQuestions');
 const emailService = require('../services/email');
 
 // Pass 23 Bug 23.12 — notification copy templates. Truncate long mission
@@ -57,8 +59,14 @@ const RESPONSE_INSERT_CHUNK = 200;
  */
 const MAX_VIOLATION_RETRY_ROUNDS = 1;
 
-async function runMission(missionId) {
-  logger.info('Mission run: starting', { missionId });
+async function runMission(missionId, opts = {}) {
+  // Pass 46 Phase 2 — resume mode (audit P1-3). The boot-time sweep in
+  // missionRecovery re-enters missions stranded in status='processing'
+  // by a process restart. Resume bypasses the idempotency skip + claim
+  // (the mission is legitimately already claimed) and the recruit loop
+  // reconstructs its state from the incrementally-persisted rows.
+  const resume = opts.resume === true;
+  logger.info('Mission run: starting', { missionId, resume });
 
   // 1. Fetch mission
   const { data: mission, error } = await supabase
@@ -78,21 +86,27 @@ async function runMission(missionId) {
   // between the two paths (or two rapid webhook deliveries) would trigger
   // duplicate AI synthesis jobs, doubling cost for the same mission.
   const SKIP_STATUSES = ['processing', 'completed', 'failed'];
-  if (SKIP_STATUSES.includes(mission.status)) {
+  if (SKIP_STATUSES.includes(mission.status) && !(resume && mission.status === 'processing')) {
     logger.info('Mission run: idempotency skip', { missionId, status: mission.status });
     return { skipped: true, reason: `already ${mission.status}` };
   }
 
-  const { data: claimed, error: claimError } = await supabase
-    .from('missions')
-    .update({ status: 'processing', started_at: new Date().toISOString() })
-    .eq('id', missionId)
-    .eq('status', 'paid')
-    .select('id');
+  if (resume && mission.status === 'processing') {
+    logger.warn('Mission run: RESUMING stranded processing mission', {
+      missionId, started_at: mission.started_at,
+    });
+  } else {
+    const { data: claimed, error: claimError } = await supabase
+      .from('missions')
+      .update({ status: 'processing', started_at: new Date().toISOString() })
+      .eq('id', missionId)
+      .eq('status', 'paid')
+      .select('id');
 
-  if (claimError || !claimed || claimed.length === 0) {
-    logger.info('Mission run: idempotency claim lost', { missionId, claimError });
-    return { skipped: true, reason: 'claim failed — another worker got it' };
+    if (claimError || !claimed || claimed.length === 0) {
+      logger.info('Mission run: idempotency claim lost', { missionId, claimError });
+      return { skipped: true, reason: 'claim failed — another worker got it' };
+    }
   }
 
   try {
@@ -128,6 +142,39 @@ async function runMission(missionId) {
     }
 
     // ─── Survey path — Pass 23 Bug 23.25 v2 constraint-based generation ────
+
+    // Pass 46 Phase 2 — empty-survey guard (audit P0-5). A paid pipeline
+    // must NEVER run an empty survey: generate questions at run time
+    // (same generator as the UI) or fail the mission honestly.
+    if (!Array.isArray(mission.questions) || mission.questions.length === 0) {
+      try {
+        mission.questions = await ensureMissionQuestions(supabase, mission);
+      } catch (qErr) {
+        logger.error('Mission run: empty-survey guard tripped — failing mission', {
+          missionId, err: qErr.message,
+        });
+        await updateMission(supabase, missionId, {
+          status:         'failed',
+          failure_reason: `Mission has no survey questions and run-time generation failed: ${qErr.message}`,
+          completed_at:   new Date().toISOString(),
+        }, { caller: 'runMission: empty-survey guard' });
+        try {
+          await supabase.from('admin_alerts').insert({
+            alert_type: 'empty_survey_blocked',
+            mission_id: missionId,
+            user_id:    mission.user_id,
+            payload:    { error: qErr.message, goal_type: mission.goal_type },
+            resolved:   false,
+          });
+        } catch (alertErr) {
+          logger.warn('Mission run: empty_survey_blocked alert insert failed', {
+            missionId, err: alertErr.message,
+          });
+        }
+        return { failed: true, reason: 'empty_survey_blocked' };
+      }
+    }
+
     const targetCount = mission.respondent_count || 100;
 
     // Pass 42 A2 — env-gated streaming recruitment loop. When
@@ -145,6 +192,11 @@ async function runMission(missionId) {
     // rows like recruited=2 / qualified=5 on partial missions.
     let loopQualifiedCount = null;
     let loopRecruitedCount = null;
+    // Pass 46 Phase 2 — the recruit loop persists qualified rows
+    // incrementally (resume support); the completion insert below must
+    // not duplicate them. Legacy batch path keeps the bulk insert.
+    let responsesAlreadyPersisted = false;
+    let unpersistedLoopResponses = [];
     if (shouldUseRecruitLoop(mission)) {
       logger.info('Mission run: using Pass 42 A2 recruit loop', {
         missionId,
@@ -157,17 +209,18 @@ async function runMission(missionId) {
       recruitmentPartial = loopResult.partial;
       loopQualifiedCount = loopResult.qualifiedCount;
       loopRecruitedCount = loopResult.recruitedCount;
-      // Brand Lift exposure split still applies — tag exposed/control
-      // by order of qualification.
+      responsesAlreadyPersisted = loopResult.responsesAlreadyPersisted === true;
+      unpersistedLoopResponses  = loopResult.unpersistedResponses || [];
+      // Pass 46 Phase 2 — exposure is now tagged INSIDE the loop BEFORE
+      // simulation (the old post-loop split here tagged personas AFTER
+      // their answers were simulated, so simulate.js never saw
+      // _exposure_status and loop-path brand_lift missions had no real
+      // lift signal). Keep a fill-only-missing pass purely as a belt
+      // for personas that somehow arrive untagged.
       if (mission.goal_type === 'brand_lift' && personas.length > 0) {
-        const exposedCount = Math.ceil(personas.length / 2);
-        personas = personas.map((p, i) => ({
-          ...p,
-          _exposure_status: i < exposedCount ? 'exposed' : 'control',
-        }));
-        logger.info('Mission run: brand_lift exposure split (recruit-loop path)', {
-          missionId, exposed: exposedCount, control: personas.length - exposedCount,
-        });
+        personas = personas.map((p, i) => (
+          p._exposure_status ? p : { ...p, _exposure_status: i % 2 === 0 ? 'exposed' : 'control' }
+        ));
       }
     } else {
       // ── Legacy batch flow (pre-Pass-42 behaviour) ──────────────────────
@@ -298,7 +351,11 @@ async function runMission(missionId) {
     }
 
     // Persist responses (chunked).
-    const rows = responses.map((r) => ({
+    // Pass 46 Phase 2 — loop path already wrote each qualified persona's
+    // rows incrementally; only rows whose incremental insert failed get
+    // a second chance here. Legacy batch path inserts everything.
+    const rowsSource = responsesAlreadyPersisted ? unpersistedLoopResponses : responses;
+    const rows = rowsSource.map((r) => ({
       mission_id:      missionId,
       persona_id:      r.persona_id,
       persona_profile: r.persona_profile,

@@ -25,6 +25,10 @@ const { calculateMissionPrice, extractCountriesFromMission, validateMissionPrici
 const { runMission } = require('../jobs/runMission');
 const { updateMission } = require('../db/missionSchema');
 const { logPaymentError, shapeStripeError } = require('../services/paymentErrors');
+// Pass 46 Phase 2 — success-poll fallback trigger (audit P0-1: the live
+// Stripe account had no webhook configured, so paid missions never
+// started until the 6h recovery cron).
+const { confirmCheckoutSessionPaid } = require('../services/payments/confirmCheckoutSession');
 const logger = require('../utils/logger');
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://www.vettit.ai';
@@ -273,6 +277,20 @@ router.get('/checkout-session/:id', async (req, res, next) => {
       missionId:        session.metadata?.missionId || null,
       amountTotal:      session.amount_total,
       currency:         session.currency,
+    });
+
+    // Pass 46 Phase 2 — P0-1 fallback: the success page polls this
+    // endpoint every 2s after Stripe redirects back. If the session is
+    // complete+paid, confirm the mission and fire the pipeline NOW
+    // instead of waiting for a webhook that (audit finding) was never
+    // configured. Idempotent: status guard inside + runMission's claim.
+    // Fire-and-forget so the poll response stays fast.
+    setImmediate(() => {
+      confirmCheckoutSessionPaid({ supabase, runMission }, session).catch((err) => {
+        logger.error('checkout-session fallback crashed', {
+          sessionId: session.id, err: err.message,
+        });
+      });
     });
   } catch (err) { next(err); }
 });
