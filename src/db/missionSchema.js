@@ -169,6 +169,8 @@ const ALLOWED_COLUMNS = new Set([
   // Pass 45 T1 — per-question aggregation map consumed by the 9
   // methodology result renderers (CSAT/Naming/Pricing/etc.).
   'aggregated_by_question',
+  // Pass 46 Phase 3 — deterministic methodology analysis object.
+  'analysis',
 ]);
 
 /**

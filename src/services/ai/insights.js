@@ -132,9 +132,29 @@ function aggregate(responses, questions) {
  * @param {Array}  responses  rows from mission_responses
  * @returns {Promise<object>} { executive_summary, kpis, per_question_insights, recommendations, follow_ups, contradictions }
  */
-async function synthesizeInsights(mission, responses) {
+async function synthesizeInsights(mission, responses, analysis = null) {
   const questions = mission.questions || [];
   const agg = aggregate(responses, questions);
+
+  // Pass 46 Phase 3 — computed-analysis injection. When runMission hands
+  // us the deterministic methodology analysis (src/services/analysis/),
+  // the narrator writes prose ABOUT those numbers and NEVER recomputes
+  // them. Capped so a long VW curve can't blow the prompt budget.
+  let analysisBlock = '';
+  if (analysis) {
+    let analysisJson = JSON.stringify(analysis, null, 2);
+    if (analysisJson.length > 9000) analysisJson = `${analysisJson.slice(0, 9000)}\n…(truncated)`;
+    analysisBlock = `
+COMPUTED METHODOLOGY ANALYSIS (authoritative, computed server-side):
+${analysisJson}
+
+RULE: every methodology number in your output (lift points, significance,
+optimal price, NPS, utilities, win rates…) MUST come verbatim from the
+COMPUTED METHODOLOGY ANALYSIS block above. Do NOT recompute, re-derive,
+estimate, or round differently. If a number is null/missing there, say the
+data does not support it — never invent it.
+`;
+  }
 
   // Compute sample metrics for the prompt — needed for Bug 4/5 guardrails
   const personaSet = new Map();
@@ -233,7 +253,7 @@ It is NOT a headcount. Do not use it as a dropout or completion metric under any
 
 Per-question aggregated data:
 ${JSON.stringify(agg, null, 2)}
-
+${analysisBlock}
 Persona summaries (for cross-cut segmentation; pick the 2-3 most informative axes):
 ${JSON.stringify(personaSummaries, null, 2)}
 

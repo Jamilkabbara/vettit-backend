@@ -1577,6 +1577,64 @@ router.post('/backfill/chart-data', async (req, res, next) => {
 });
 
 /**
+ * Pass 46 Phase 3 — POST /api/admin/backfill/analysis
+ *
+ * Populates missions.analysis (deterministic methodology analysis)
+ * for every completed mission where it's NULL. Same async-202 +
+ * admin_actions audit pattern. Idempotent.
+ */
+router.post('/backfill/analysis', async (req, res, next) => {
+  try {
+    const { runAnalysisBackfill } = require('../services/backfills/analysis');
+
+    const { data: completed, error: countErr } = await supabase
+      .from('missions')
+      .select('id, analysis')
+      .eq('status', 'completed');
+    if (countErr) return next(countErr);
+    const pending = (completed || []).filter((m) => !m.analysis).length;
+
+    await supabase.from('admin_actions').insert({
+      admin_user_id: req.user.id,
+      action_type:   'backfill_analysis',
+      target_type:   'backfill',
+      target_id:     req.user.id,
+      reason:        'admin-triggered methodology analysis backfill',
+      metadata:      { phase: 'start', pending_count: pending },
+    });
+
+    res.status(202).json({ started: true, pending_count: pending });
+
+    (async () => {
+      try {
+        const result = await runAnalysisBackfill(supabase, {
+          onProgress: (done, total) =>
+            logger.info('[admin backfill analysis] progress', { done, total }),
+        });
+        await supabase.from('admin_actions').insert({
+          admin_user_id: req.user.id,
+          action_type:   'backfill_analysis',
+          target_type:   'backfill',
+          target_id:     req.user.id,
+          reason:        'admin-triggered methodology analysis backfill',
+          metadata:      { phase: 'complete', ...result },
+        });
+      } catch (err) {
+        logger.error('[admin backfill analysis] failed', { err: err.message });
+        await supabase.from('admin_actions').insert({
+          admin_user_id: req.user.id,
+          action_type:   'backfill_analysis',
+          target_type:   'backfill',
+          target_id:     req.user.id,
+          reason:        'admin-triggered methodology analysis backfill',
+          metadata:      { phase: 'failed', error: err.message },
+        }).then(() => {}, () => {});
+      }
+    })();
+  } catch (err) { next(err); }
+});
+
+/**
  * Pass 45 T1c — POST /api/admin/backfill/aggregations
  *
  * Populates missions.aggregated_by_question for every completed
