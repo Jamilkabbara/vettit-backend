@@ -37,6 +37,8 @@ const { updateMission } = require('../db/missionSchema');
 const { runRecruitmentLoop, shouldUseRecruitLoop } = require('../services/ai/recruitLoop');
 // Pass 46 Phase 2 — empty-survey guard (audit P0-5).
 const { ensureMissionQuestions } = require('../services/ai/ensureQuestions');
+// Pass 46 Phase 3 — deterministic methodology analysis.
+const { computeAnalysis } = require('../services/analysis');
 const emailService = require('../services/email');
 
 // Pass 23 Bug 23.12 — notification copy templates. Truncate long mission
@@ -394,10 +396,30 @@ async function runMission(missionId, opts = {}) {
       }
     }
 
+    // ─── Deterministic methodology analysis (Pass 46 Phase 3) ─────────────
+    // Computed BEFORE synthesis so the narrator LLM writes prose about
+    // these numbers instead of inventing its own. exposure_status rides
+    // on the rows for brand_lift lift math. Non-fatal: null analysis
+    // never blocks completion.
+    let analysis = null;
+    try {
+      const analysisRows = responses.map((r) => ({
+        ...r,
+        exposure_status: exposureByPersonaId[r.persona_id]
+          || (r.persona_profile && r.persona_profile._exposure_status)
+          || 'not_applicable',
+      }));
+      analysis = computeAnalysis(mission, analysisRows);
+    } catch (computeErr) {
+      logger.error('Mission run: computeAnalysis threw (non-fatal)', {
+        missionId, err: computeErr.message,
+      });
+    }
+
     // ─── Synthesize insights (non-fatal) ──────────────────────────────────
     let insights = null;
     try {
-      insights = await synthesizeInsights(mission, responses);
+      insights = await synthesizeInsights(mission, responses, analysis);
     } catch (analysisErr) {
       logger.error('Mission run: synthesizeInsights failed (non-fatal)', {
         missionId, err: analysisErr.message,
@@ -508,6 +530,10 @@ async function runMission(missionId, opts = {}) {
       executive_summary: insights?.executive_summary || null,
       insights: insights || null,
       aggregated_by_question: aggregatedByQuestion,
+      // Pass 46 Phase 3 — deterministic methodology analysis (typed
+      // object per src/services/analysis/; renderers + narrator both
+      // consume it; LLM never computes these numbers).
+      analysis,
       total_simulated_count:        totalSimulated,
       qualified_respondent_count:   qualifiedRespondent,
       qualification_rate:           qualificationRate,
