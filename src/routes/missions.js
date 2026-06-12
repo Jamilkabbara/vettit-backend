@@ -152,7 +152,11 @@ router.post('/', authenticate, async (req, res, next) => {
     const respCount   = respondentCount || 50;
     const finalTarget = targeting || targetingConfig || {};
     const finalQs     = questions || [];
-    const resolvedGoal = goalType || goal || 'general_research';
+    // Pass 44 P0 — default changed 'general_research' → 'research'.
+    // The DB CHECK constraint (missions_goal_type_check) allows 'research'
+    // as the canonical general-research goal; 'general_research' violates
+    // it and 500'd any insert that fell back to the default.
+    const resolvedGoal = goalType || goal || 'research';
 
     // Pass 25 Phase 0.3 — CA missions need >= 10 respondents. Reject early
     // with 400 so the UI can surface the message rather than silently
@@ -293,13 +297,13 @@ router.post('/draft', authenticate, async (req, res, next) => {
       targeting:       finalTarget,
       questionCount:   finalQs.length,
       countries:       extractCountriesFromMission({ targeting: finalTarget }),
-      goalType:        goalType || 'general_research',
+      goalType:        goalType || 'research',
     });
 
     // Filter phantom columns before hitting the DB (see missionSchema.js).
     const { patch: row, rejected } = sanitizeMissionPatch({
       title:             title || 'Untitled draft',
-      goal_type:         goalType || 'general_research',
+      goal_type:         goalType || 'research',
       brief:             brief || missionStatement || '',
       questions:         finalQs,
       targeting:         finalTarget,

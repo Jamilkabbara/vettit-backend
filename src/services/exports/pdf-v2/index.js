@@ -43,7 +43,18 @@ function loadBaseTemplate() {
 }
 
 function loadBodyPartial(name) {
-  if (_bodyTemplates[name]) return _bodyTemplates[name];
+  // Pass 44 P0 — ALWAYS re-register the 'body' partial, even on cache
+  // hit. The old early-return skipped registerPartial, so whichever
+  // template was exported FIRST after process boot stayed registered
+  // as 'body' for every subsequent PDF regardless of mission type.
+  // Production forensics: one brand_lift export poisoned all research
+  // PDFs (3-page brand-lift shell, zero question sections) until the
+  // dyno restarted. The cache only saves the disk read; the partial
+  // registration is per-render state and must track `name`.
+  if (_bodyTemplates[name]) {
+    Handlebars.registerPartial('body', _bodyTemplates[name]);
+    return _bodyTemplates[name];
+  }
   const file = path.join(TEMPLATE_DIR, `${name}.hbs`);
   if (!fs.existsSync(file)) {
     throw new Error(`PDF body template not found: ${name}.hbs`);

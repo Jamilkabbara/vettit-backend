@@ -721,7 +721,24 @@ router.post('/missions/:id/mark-paid', async (req, res, next) => {
     logger.info('Admin marked mission paid', {
       missionId: id, adminEmail: req.user.email, reason,
     });
-    res.json({ success: true, mission_id: id, paid_at: now });
+
+    // Pass 44 P0 — trigger the pipeline. The Stripe path triggers
+    // runMission via webhook / payments-confirm; admin-marked missions
+    // had NO trigger at all: generate-responses treats status='paid'
+    // as "already running" (it assumes the webhook fired), and the
+    // recovery cron only sweeps pending_payment. Every mark-paid
+    // mission stranded at status='paid' forever. Same fire-and-forget
+    // pattern as the webhook-miss recovery in missionRecovery.js.
+    const { runMission } = require('../jobs/runMission');
+    setImmediate(() => {
+      runMission(id).catch((runErr) => {
+        logger.error('Admin mark-paid: runMission trigger failed', {
+          missionId: id, err: runErr.message,
+        });
+      });
+    });
+
+    res.json({ success: true, mission_id: id, paid_at: now, pipeline_triggered: true });
   } catch (err) { next(err); }
 });
 
