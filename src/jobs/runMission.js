@@ -504,86 +504,29 @@ async function runMission(missionId) {
     logger.error('Mission run: fatal', { missionId, err: err.message, stack: err.stack });
     const failureReason = String(err && err.message ? err.message : 'Unknown error').slice(0, 500);
 
-    // Pass 23 Bug 23.80 — auto-refund on hard pipeline failure.
+    // Pass 44 P0 — auto-refund block REMOVED (was Pass 23 Bug 23.80).
     //
-    // A hard runMission failure (Anthropic API reject, storage download
-    // fail, persona-gen crash, synthesis parse fail, mission timeout)
-    // means the user paid and got NOTHING. Per the delivery contract,
-    // they're owed a full refund automatically — not "we'll look into
-    // it".
-    //
-    // Idempotency: Stripe's idempotency_key (`auto_refund:${missionId}`)
-    // ensures a runMission retry doesn't double-refund. partial_refund_id
-    // on the mission row also gates the call so we never even try a
-    // second time.
-    //
-    // The mission UPDATE writes status='failed' AND the refund forensic
-    // atomically so an observer can never see "failed but no refund yet"
-    // longer than the network round-trip to Stripe.
-    let refundResult = null;     // { id, amountCents }
-    let refundFailed = false;
-    const eligibleForAutoRefund =
-      mission.paid_at &&
-      !mission.partial_refund_id &&
-      mission.latest_payment_intent_id;
-
-    if (eligibleForAutoRefund) {
-      try {
-        const refund = await createRefund({
-          paymentIntentId: mission.latest_payment_intent_id,
-          // Omit amountCents → Stripe refunds the full PI amount.
-          idempotencyKey:  `auto_refund:${missionId}`,
-          reason:          'requested_by_customer',
-          metadata: {
-            missionId,
-            userId: mission.user_id || '',
-            reason_code: 'pipeline_failure',
-            failure_reason: failureReason.slice(0, 250),
-          },
-        });
-        refundResult = { id: refund.id, amountCents: refund.amount };
-        logger.info('Mission run: auto-refund issued for hard failure', {
-          missionId, refundId: refund.id, amountCents: refund.amount,
-        });
-      } catch (refundErr) {
-        refundFailed = true;
-        logger.error('Mission run: auto-refund failed', {
-          missionId, paymentIntentId: mission.latest_payment_intent_id,
-          err: refundErr.message,
-        });
-      }
-    } else if (!mission.paid_at) {
-      logger.warn('Mission run: failed but unpaid — no refund needed', { missionId });
-    } else {
-      logger.warn('Mission run: failed but already refunded — skipping auto-refund', {
-        missionId,
-        existing_refund_id: mission.partial_refund_id,
-      });
-    }
-
-    // Pass 34 C1 — failed_full_refund tells the admin / dashboard /
-    // refund-runner sweepers that this mission's refund was issued
-    // automatically. The CHECK constraint on delivery_status was
-    // extended in migrations/pass-34/01_c1_*.sql to allow this value.
-    const failedDeliveryStatus = refundResult
-      ? 'failed_full_refund'
-      : (mission.paid_at ? null : null);
-
+    // Two reasons:
+    // 1. Policy: NO REFUNDS, EVER (Pass 42 G4, Terms §5.3). Failed
+    //    missions get a support-prioritized re-run, not money back.
+    // 2. Forensic: the block was dead code anyway — `createRefund` was
+    //    referenced but never imported in this file, so every
+    //    invocation threw ReferenceError inside its own try/catch
+    //    (same dead-reference pattern as the deriveFilters P0).
+    //    No refund was ever actually issued by this path; customers
+    //    were being PROMISED refunds in the failure notification that
+    //    nothing ever fulfilled. The promise is the bug.
     await updateMission(supabase, missionId, {
       status: 'failed',
       failure_reason: failureReason,
       completed_at: new Date().toISOString(),
-      // Bug 23.80 — repurpose the partial_refund_* columns for the
-      // auto-refund forensic. (Future migration may rename to refund_id/
-      // refund_amount_cents — for now the column name is misleading but
-      // the schema works.)
-      partial_refund_id: refundResult?.id || null,
-      partial_refund_amount_cents: refundResult?.amountCents || null,
-      ...(failedDeliveryStatus ? { delivery_status: failedDeliveryStatus } : {}),
     }, { caller: 'runMission: fatal' });
 
     // Admin alert so ops can see hard-failure missions without paging
     // funnel_events. Dedup pattern matches missionRecovery::alertAdmin.
+    // Pass 44 P0 — refund fields removed from payload (NO REFUNDS;
+    // the auto-refund block above is gone). action_required tells ops
+    // the new contract: prioritize a re-run for the customer.
     try {
       await supabase.from('admin_alerts').insert({
         alert_type: 'mission_pipeline_failure',
@@ -592,10 +535,8 @@ async function runMission(missionId) {
         payload: {
           failure_reason: failureReason,
           paid_amount_cents: mission.paid_amount_cents,
-          refund_id: refundResult?.id || null,
-          refund_amount_cents: refundResult?.amountCents || null,
-          refund_failed: refundFailed,
           payment_intent_id: mission.latest_payment_intent_id,
+          action_required: 'Customer paid and got nothing — prioritize a manual re-run (admin reanalyze / re-trigger). NO refund per policy.',
         },
         resolved: false,
       });
@@ -605,20 +546,17 @@ async function runMission(missionId) {
       });
     }
 
-    // Notification — copy depends on whether refund landed cleanly.
-    const refundUsd = (refundResult?.amountCents || 0) / 100;
-    const notifBody = refundResult
-      ? `Your "${truncateTitle(mission.title)}" hit a snag. We've refunded $${refundUsd.toFixed(2)} automatically. It will land in 5-10 business days.`
-      : refundFailed
-        ? `Your "${truncateTitle(mission.title)}" hit a snag. Our team has been notified and will issue a refund within one business day.`
-        : `Your "${truncateTitle(mission.title)}" hit a snag. Our team has been notified.`;
+    // Pass 44 P0 — no-refund-consistent failure copy (Pass 42 G4 /
+    // Terms §5.3). The customer gets a support-prioritized re-run,
+    // and the copy says exactly that — no money-back promises.
+    const notifBody = `Your "${truncateTitle(mission.title)}" hit a snag before completing. Our team has been notified and will prioritize a re-run of your mission. Contact support if you don't hear from us within one business day.`;
     try {
       const { error: failNotifErr } = await supabase
         .from('notifications')
         .insert({
           user_id: mission.user_id,
           type:    'mission_failed',
-          title:   refundResult ? 'Mission failed, refund issued' : 'Mission failed',
+          title:   'Mission failed — re-run prioritized',
           body:    notifBody,
           link:    mission.goal_type === 'creative_attention'
             ? `/creative-results/${missionId}`
@@ -631,23 +569,29 @@ async function runMission(missionId) {
       }
     } catch { /* swallowed; logging-only */ }
 
-    // Bug 23.80 — email the user about the failure + refund.
+    // Pass 44 P0 — failure email now uses the generic failure sender
+    // when available; the old sendMissionFailedRefundEmail promised a
+    // refund in its template. Passing refund-free fields; if only the
+    // legacy sender exists it receives no refund amount (0) and
+    // refundFailed=false so its template's refund branch can't fire.
     try {
       const { data: { user } } = await supabase.auth.admin.getUserById(mission.user_id);
       if (user?.email) {
-        await emailService.sendMissionFailedRefundEmail?.({
+        const sendFailureEmail =
+          emailService.sendMissionFailedEmail || emailService.sendMissionFailedRefundEmail;
+        await sendFailureEmail?.({
           to: user.email,
           name: user.user_metadata?.name || user.email.split('@')[0],
           missionTitle: mission.title || 'Your VETT mission',
           missionId,
-          refundAmountUsd: refundResult ? refundUsd : (mission.paid_amount_cents || 0) / 100,
-          refundFailed,
+          refundAmountUsd: 0,
+          refundFailed: false,
           // Sanitize the failure reason — strip stack-trace-ish content + cap length.
           friendlyReason: friendlyFailureReason(failureReason),
         });
       }
     } catch (mailErr) {
-      logger.warn('Mission run: failure-refund email send failed', { missionId, err: mailErr.message });
+      logger.warn('Mission run: failure email send failed', { missionId, err: mailErr.message });
     }
   }
 }
