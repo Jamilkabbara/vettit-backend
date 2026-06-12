@@ -1,0 +1,198 @@
+/**
+ * Pass 46 Phase 3 — marketing (ad_effectiveness) deterministic analysis.
+ *
+ * Doctrine: the LLM does NOT compute methodology math. Every number in
+ * the ad-effectiveness report block is computed here, deterministically,
+ * from clean mission_responses rows. The narrator LLM only writes prose
+ * ABOUT the object this module returns. No LLM calls, no new deps.
+ *
+ * Metadata contract — quoted from src/services/claudeAI.js
+ * MARKETING_SURVEY_GEN_SYSTEM (Pass 30 B5, ~lines 1288-1351). Each
+ * generated question carries:
+ *   "methodology": "ad_effectiveness"
+ *   "funnel_stage": "screener|recall|exposure|attribution|message|
+ *       likeability|stopping|distinctiveness|emotional|persuasion|
+ *       message_match|sharing"
+ * Fixed battery order (validateMarketingSurvey enforces it):
+ *   q1  screener        — single, qualifies category buyers
+ *   q2  recall          — UNAIDED recall, type="text"
+ *   q3  exposure        — creative acknowledgement, type="text" (no metric)
+ *   q4  recall          — AIDED recall, type="single",
+ *                         options=["Yes","No","Not sure"]
+ *   q5  attribution     — "Whose ad is this?" type="text"
+ *   q6  message         — "What's the main message?" type="text"
+ *   q7  likeability     — rating 1-7
+ *   q8  stopping        — rating 1-7   (emitted as funnel.stopping_power)
+ *   q9  distinctiveness — rating 1-7
+ *   q10 emotional       — multi (Amused/Inspired/Curious/…)
+ *   q11 persuasion      — rating 1-7
+ *   q12 message_match   — single ["Yes","Somewhat","No"], ONLY when
+ *                         intended_message was supplied
+ *   q13 sharing         — single ["Yes","Maybe","No"]
+ *
+ * Note the 'recall' stage holds TWO questions (q2 unaided text + q4 aided
+ * single); they are disambiguated by question type below. Stages absent
+ * from the data are emitted as null — never invented.
+ */
+
+const {
+  byQuestion,
+  distribution,
+  ratingStats,
+  round4,
+} = require('./shared');
+
+/** Options whose text contains 'yes' (case-insensitive) count as affirmative. */
+function yesLikeOptions(options) {
+  return (options || [])
+    .map((o) => String(o).toLowerCase())
+    .filter((o) => o.includes('yes'));
+}
+
+/** Scalar answer for single-choice rows; stray arrays use their first element. */
+function scalarAnswer(answer) {
+  const a = Array.isArray(answer) ? answer[0] : answer;
+  if (a === null || a === undefined || a === '') return null;
+  return String(a);
+}
+
+/**
+ * Positive-rate block for a Yes-anchored single-choice battery question
+ * (aided recall "Yes"/"No"/"Not sure", sharing "Yes"/"Maybe"/"No",
+ * message_match "Yes"/"Somewhat"/"No"). An answer is positive when it
+ * equals (case-insensitive) an option containing 'Yes'; with no options
+ * metadata, falls back to the answer text containing 'yes'.
+ * @returns {{n:number, positive_rate:number}|null} null when no usable answers
+ */
+function positiveRateBlock(entries) {
+  let n = 0;
+  let positive = 0;
+  for (const { q, rows } of entries) {
+    const yes = yesLikeOptions(q.options);
+    for (const r of rows) {
+      const a = scalarAnswer(r.answer);
+      if (a === null) continue;
+      n += 1;
+      const low = a.toLowerCase();
+      const hit = yes.length > 0 ? yes.includes(low) : low.includes('yes');
+      if (hit) positive += 1;
+    }
+  }
+  if (n === 0) return null;
+  return { n, positive_rate: round4(positive / n) };
+}
+
+/** Pool the response rows of every question in a stage entry list. */
+function poolRows(entries) {
+  const out = [];
+  for (const { rows } of entries) out.push(...rows);
+  return out;
+}
+
+/** Up to `cap` trimmed non-empty string answers (verbatims for the narrator). */
+function verbatims(entries, cap = 30) {
+  const out = [];
+  for (const r of poolRows(entries)) {
+    if (typeof r.answer === 'string' && r.answer.trim().length > 0) {
+      out.push(r.answer.trim());
+      if (out.length >= cap) return out;
+    }
+  }
+  return out;
+}
+
+/**
+ * Compute the full marketing / ad_effectiveness block for a mission.
+ *
+ * @param {Array<{persona_id:string,question_id:string,answer:any,exposure_status:string,persona_profile:object}>} rows
+ *        clean mission_responses rows (exposure_status is unused — ad
+ *        effectiveness has no exposed/control split)
+ * @param {Array<object>} questions mission.questions array (funnel_stage metadata above)
+ * @param {{brand_name?:string}} mission the missions row (brand_name anchors attribution correctness)
+ * @returns {object} JSON-serializable block. Rates are 0-1 fractions; every
+ *          rate/mean carries its base n; absent stages are null.
+ */
+function computeMarketing(rows, questions, mission) {
+  const all = (Array.isArray(rows) ? rows : []).filter((r) => r && typeof r === 'object');
+  const byQ = byQuestion(all);
+
+  // stage → [{q, rows}] (a stage can hold several questions, e.g. 'recall').
+  const stages = new Map();
+  for (const q of Array.isArray(questions) ? questions : []) {
+    if (!q || typeof q.funnel_stage !== 'string' || q.funnel_stage.length === 0) continue;
+    const qid = q.id ?? q.question_id;
+    if (!stages.has(q.funnel_stage)) stages.set(q.funnel_stage, []);
+    stages.get(q.funnel_stage).push({ q, rows: byQ.get(qid) || [] });
+  }
+  const stage = (name, predicate) => {
+    const entries = stages.get(name) || [];
+    return predicate ? entries.filter(({ q }) => predicate(q)) : entries;
+  };
+
+  // ── recall (aided): the funnel_stage="recall" question with type="single"
+  // (q4 "Have you seen this ad before?" options ["Yes","No","Not sure"]).
+  const recallAided = positiveRateBlock(stage('recall', (q) => q.type !== 'text'));
+
+  // ── attribution: funnel_stage="attribution" free text ("Whose ad is
+  // this?"). Correct = answer contains mission.brand_name (case-insensitive
+  // substring) — only computable when the mission carries a brand anchor.
+  const brand = mission && typeof mission.brand_name === 'string' && mission.brand_name.trim().length > 0
+    ? mission.brand_name.trim().toLowerCase()
+    : null;
+  let attribution = null;
+  if (brand) {
+    let n = 0;
+    let correct = 0;
+    for (const r of poolRows(stage('attribution'))) {
+      const a = scalarAnswer(r.answer);
+      if (a === null) continue;
+      n += 1;
+      if (a.toLowerCase().includes(brand)) correct += 1;
+    }
+    attribution = n > 0 ? { n, correct_rate: round4(correct / n) } : null;
+  }
+
+  // ── rating stages: funnel_stage="likeability" / "stopping" /
+  // "distinctiveness" / "persuasion", all rating 1-7. ratingStats → null
+  // when the stage is absent or has no numeric answers.
+  const ratingStage = (name) => ratingStats(poolRows(stage(name)));
+
+  // ── emotional: funnel_stage="emotional" multi; distribution counts each
+  // selection, n is the respondent base the shares are read against.
+  const emoRows = poolRows(stage('emotional')).filter((r) => {
+    const a = r.answer;
+    return !(a === null || a === undefined || a === '' || (Array.isArray(a) && a.length === 0));
+  });
+  const emotional = emoRows.length > 0
+    ? { n: emoRows.length, distribution: distribution(emoRows) }
+    : null;
+
+  return {
+    methodology: 'marketing',
+    funnel: {
+      recall_aided: recallAided,
+      attribution,
+      likeability: ratingStage('likeability'),
+      // funnel_stage value is "stopping"; report key is stopping_power.
+      stopping_power: ratingStage('stopping'),
+      distinctiveness: ratingStage('distinctiveness'),
+      persuasion: ratingStage('persuasion'),
+      emotional,
+      // funnel_stage="message_match" single ["Yes","Somewhat","No"] — only
+      // generated when intended_message was supplied; null otherwise.
+      message_match: positiveRateBlock(stage('message_match', (q) => q.type !== 'text')),
+      sharing: positiveRateBlock(stage('sharing', (q) => q.type !== 'text')),
+    },
+    // Pass 46 Phase 3 — no benchmark DB yet; Phase 4 copy labels these
+    // unbenchmarked. Kept as an explicit null so the shape is stable.
+    norms: null,
+    openEnded: {
+      // funnel_stage="recall" type="text" = q2 unaided recall verbatims.
+      recall_unaided_verbatims: verbatims(stage('recall', (q) => q.type === 'text')),
+      // funnel_stage="message" type="text" = q6 main-message verbatims.
+      message_verbatims: verbatims(stage('message')),
+    },
+  };
+}
+
+module.exports = { computeMarketing };
