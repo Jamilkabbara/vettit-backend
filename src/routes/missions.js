@@ -148,6 +148,23 @@ router.post('/', authenticate, async (req, res, next) => {
       questions, targeting, targetingConfig, respondentCount,
     } = req.body;
 
+    // Pass 46 Phase 2 — create-time validation (audit P1-6). The Phase 0
+    // probe proved respondentCount:0 was silently coerced to 50 and
+    // priced $99; reject garbage explicitly instead.
+    if (respondentCount !== undefined
+        && (!Number.isInteger(respondentCount) || respondentCount < 1 || respondentCount > 5000)) {
+      return res.status(400).json({
+        error: 'invalid_respondent_count',
+        message: 'respondentCount must be an integer between 1 and 5000.',
+      });
+    }
+    if (questions !== undefined && !Array.isArray(questions)) {
+      return res.status(400).json({
+        error: 'invalid_questions',
+        message: 'questions must be an array.',
+      });
+    }
+
     // Pass 21 Bug 16: default 100 → 50 (entry tier, $35).
     const respCount   = respondentCount || 50;
     const finalTarget = targeting || targetingConfig || {};
@@ -286,6 +303,21 @@ router.post('/draft', authenticate, async (req, res, next) => {
       missionId, goalType, title, brief, missionStatement,
       questions, targeting, respondentCount,
     } = req.body;
+
+    // Pass 46 Phase 2 — same create-time validation as POST / (audit P1-6).
+    if (respondentCount !== undefined
+        && (!Number.isInteger(respondentCount) || respondentCount < 1 || respondentCount > 5000)) {
+      return res.status(400).json({
+        error: 'invalid_respondent_count',
+        message: 'respondentCount must be an integer between 1 and 5000.',
+      });
+    }
+    if (questions !== undefined && !Array.isArray(questions)) {
+      return res.status(400).json({
+        error: 'invalid_questions',
+        message: 'questions must be an array.',
+      });
+    }
 
     // Pass 21 Bug 16: default 100 → 50 (entry tier, $35).
     const respCount   = respondentCount || 50;
