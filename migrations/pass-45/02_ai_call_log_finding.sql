@@ -1,0 +1,16 @@
+-- Pass 45 T5 — RESOLVED AS NAMING MISMATCH, NO TABLE NEEDED.
+--
+-- The Pass 42 A3 spec referenced an `ai_call_log` table for per-call
+-- cost telemetry and the Pass 44 audit flagged it missing. Pass 45
+-- investigation found telemetry has ALWAYS worked: the cost wrapper in
+-- src/services/ai/anthropic.js writes per-call rows to `ai_calls`
+-- (454 rows in production at audit time; 12 for gate mission
+-- 2f909afe) and increments mission-level spend via the
+-- increment_mission_ai_spend RPC.
+--
+-- An ai_call_log shell was briefly created during this pass and
+-- dropped in the same session (migrations pass_45_ai_call_log +
+-- pass_45_drop_redundant_ai_call_log). `ai_calls` is the single
+-- per-call ledger. This file records the finding; it makes no schema
+-- change.
+SELECT 1;

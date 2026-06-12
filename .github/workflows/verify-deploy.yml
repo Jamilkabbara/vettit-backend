@@ -28,7 +28,8 @@ jobs:
     # PR-time check is the screenshot job below.
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Pass 45 T7b — must exceed DEPLOY_WAIT_S (20 min) plus checkout.
+    timeout-minutes: 25
     steps:
       - name: Check out merged code
         uses: actions/checkout@v4
@@ -57,8 +58,11 @@ jobs:
           EXPECTED_SHA:  ${{ steps.expected.outputs.sha }}
           EXPECTED_PASS: ${{ steps.expected.outputs.pass }}
           VERSION_URL:   ${{ secrets.PROD_VERSION_URL || 'https://vettit-backend-production.up.railway.app/version' }}
-          DEPLOY_WAIT_S: 300
-          POLL_EVERY_S: 15
+          # Pass 45 T7b — Railway's real deploy latency is 8-15 min
+          # (observed across Passes 43-44); the old 5-min window
+          # false-failed a healthy deploy. Poll up to 20 min.
+          DEPLOY_WAIT_S: 1200
+          POLL_EVERY_S: 30
         run: |
           set -euo pipefail
           elapsed=0

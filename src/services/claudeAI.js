@@ -423,6 +423,28 @@ async function generateSurvey({
   clarify = {},
   missionAssets = [],
 }) {
+  // Pass 45 T4 (BUG-013, dormant since Pass 42) — extract the subject
+  // noun phrase ONCE and append it to the description every generator
+  // interpolates (all 11 specialized paths + the generic path embed
+  // `Brief: "${description}"`). The system prompts already instruct
+  // "use the short productName, never paste the full brief" — this
+  // hands the model the exact phrase, eliminating the
+  // "Are you interested in I want to validate..." class of question.
+  // extractSubject self-skips briefs ≤8 words and falls back to
+  // truncation on API failure, so this never blocks generation.
+  try {
+    const subject = await extractSubject(description);
+    if (subject && subject.trim() && subject.trim() !== (description || '').trim()) {
+      description = `${description}
+
+SUBJECT (extracted noun phrase — use THIS short phrase when wording questions; NEVER paste the brief text above into question text): "${subject.trim()}"`;
+    }
+  } catch (subjErr) {
+    logger?.warn?.('generateSurvey: extractSubject failed (continuing with raw brief)', {
+      err: subjErr.message,
+    });
+  }
+
   if (goal === 'brand_lift') {
     return generateBrandLiftSurvey({ description, clarify, missionAssets });
   }
