@@ -1577,6 +1577,67 @@ router.post('/backfill/chart-data', async (req, res, next) => {
 });
 
 /**
+ * Pass 45 T1c — POST /api/admin/backfill/aggregations
+ *
+ * Populates missions.aggregated_by_question for every completed
+ * mission where it's NULL. Same async-202 + admin_actions audit
+ * pattern as the chart-data backfill. Idempotent.
+ */
+router.post('/backfill/aggregations', async (req, res, next) => {
+  try {
+    const { runAggregationsBackfill } = require('../services/backfills/aggregations');
+
+    const { data: completed, error: countErr } = await supabase
+      .from('missions')
+      .select('id, aggregated_by_question')
+      .eq('status', 'completed');
+    if (countErr) return next(countErr);
+    const pending = (completed || []).filter((m) => {
+      const a = m.aggregated_by_question;
+      return !a || typeof a !== 'object' || Object.keys(a).length === 0;
+    }).length;
+
+    await supabase.from('admin_actions').insert({
+      admin_user_id: req.user.id,
+      action_type:   'backfill_aggregations',
+      target_type:   'backfill',
+      target_id:     req.user.id,
+      reason:        'admin-triggered aggregated_by_question backfill',
+      metadata:      { phase: 'start', pending_count: pending },
+    });
+
+    res.status(202).json({ started: true, pending_count: pending });
+
+    (async () => {
+      try {
+        const result = await runAggregationsBackfill(supabase, {
+          onProgress: (done, total) =>
+            logger.info('[admin backfill aggregations] progress', { done, total }),
+        });
+        await supabase.from('admin_actions').insert({
+          admin_user_id: req.user.id,
+          action_type:   'backfill_aggregations',
+          target_type:   'backfill',
+          target_id:     req.user.id,
+          reason:        'admin-triggered aggregated_by_question backfill',
+          metadata:      { phase: 'complete', ...result },
+        });
+      } catch (err) {
+        logger.error('[admin backfill aggregations] failed', { err: err.message });
+        await supabase.from('admin_actions').insert({
+          admin_user_id: req.user.id,
+          action_type:   'backfill_aggregations',
+          target_type:   'backfill',
+          target_id:     req.user.id,
+          reason:        'admin-triggered aggregated_by_question backfill',
+          metadata:      { phase: 'failed', error: err.message },
+        }).then(() => {}, () => {});
+      }
+    })();
+  } catch (err) { next(err); }
+});
+
+/**
  * Pass 43 T3b — POST /api/admin/backfill/stripe-coupons
  *
  * Syncs every promo_codes row with sync_to_stripe=true AND

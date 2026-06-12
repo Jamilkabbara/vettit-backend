@@ -26,7 +26,7 @@ const supabase = require('../db/supabase');
 const logger = require('../utils/logger');
 const { generatePersonas } = require('../services/ai/personas');
 const { simulateAllResponses } = require('../services/ai/simulate');
-const { synthesizeInsights } = require('../services/ai/insights');
+const { synthesizeInsights, aggregate } = require('../services/ai/insights');
 const { generateTargetingBrief } = require('../services/ai/targetingBrief');
 const { analyzeCreative }       = require('../services/ai/creativeAttention');
 const { updateMission } = require('../db/missionSchema');
@@ -411,11 +411,27 @@ async function runMission(missionId) {
     // loop was used AND ceiling_hit terminated it. Legacy batch path
     // always reports 'full' per pre-Pass-42 semantics.
     const deliveryStatusFinal = recruitmentPartial ? 'partial' : 'full';
+
+    // Pass 45 T1b — aggregated_by_question: the per-question map the 9
+    // methodology renderers read ({distribution, average, n, verbatims}
+    // keyed by question_id). Same aggregate() the synthesis prompt is
+    // fed from, persisted so renderers don't recompute client-side.
+    // Coexists with insights.chart_data (universal charts) by design.
+    let aggregatedByQuestion = null;
+    try {
+      aggregatedByQuestion = aggregate(responses, mission.questions || []);
+    } catch (aggErr) {
+      logger.warn('Mission run: aggregated_by_question compute failed (non-fatal)', {
+        missionId, err: aggErr.message,
+      });
+    }
+
     await updateMission(supabase, missionId, {
       status: 'completed',
       completed_at: new Date().toISOString(),
       executive_summary: insights?.executive_summary || null,
       insights: insights || null,
+      aggregated_by_question: aggregatedByQuestion,
       total_simulated_count:        totalSimulated,
       qualified_respondent_count:   qualifiedRespondent,
       qualification_rate:           qualificationRate,

@@ -166,6 +166,9 @@ const ALLOWED_COLUMNS = new Set([
   'ai_spend_ceiling_usd',
   'recruitment_status',
   'recruitment_completed_at',
+  // Pass 45 T1 — per-question aggregation map consumed by the 9
+  // methodology result renderers (CSAT/Naming/Pricing/etc.).
+  'aggregated_by_question',
 ]);
 
 /**
