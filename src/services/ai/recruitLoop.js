@@ -91,30 +91,77 @@ async function runRecruitmentLoop(mission, supabase) {
   const ceiling = Number(mission.ai_spend_ceiling_usd);
   const maxPersonas = target * MAX_PERSONAS_PER_TARGET;
 
-  logger.info('Recruitment loop: starting', {
+  // ── Pass 46 Phase 2 — RESUME SUPPORT (audit P1-3) ──────────────────────
+  // The loop persists each qualified persona's responses immediately (see
+  // the qualify block below), so a process restart mid-run can pick up
+  // where it left off instead of orphaning the mission until the stuck-
+  // processing reaper fails it. On entry we load any rows a previous
+  // attempt persisted and rebuild the in-memory state from them.
+  const qualifiedResponses = []; // flat list, persona × question
+  const qualifiedPersonas  = []; // persona objects (tagged for brand_lift)
+  let recruitedCount = 0;
+  let qualifiedCount = 0;
+
+  const { data: priorRows, error: priorErr } = await supabase
+    .from('mission_responses')
+    .select('persona_id, persona_profile, question_id, answer, exposure_status')
+    .eq('mission_id', missionId)
+    .eq('screened_out', false);
+  if (priorErr) {
+    logger.warn('Recruitment loop: prior-rows read failed (starting fresh)', {
+      missionId, err: priorErr.message,
+    });
+  }
+  if (Array.isArray(priorRows) && priorRows.length > 0) {
+    const personasById = new Map();
+    for (const r of priorRows) {
+      if (r.persona_id && !personasById.has(r.persona_id)) {
+        personasById.set(r.persona_id, r.persona_profile || { id: r.persona_id, persona_id: r.persona_id });
+      }
+      qualifiedResponses.push({
+        persona_id:      r.persona_id,
+        persona_profile: r.persona_profile,
+        question_id:     r.question_id,
+        answer:          r.answer,
+        reasoning:       null, // reasoning is not resumable (memory-only pre-restart)
+      });
+    }
+    qualifiedPersonas.push(...personasById.values());
+    qualifiedCount = personasById.size;
+    recruitedCount = Math.max(Number(mission.recruited_persona_count) || 0, qualifiedCount);
+  }
+  const isResume = qualifiedCount > 0;
+
+  logger.info(isResume ? 'Recruitment loop: RESUMING' : 'Recruitment loop: starting', {
     missionId,
     target,
     ceilingUsd: ceiling,
     maxPersonas,
     goalType: mission.goal_type,
+    resumedQualified: qualifiedCount,
+    resumedRecruited: recruitedCount,
   });
 
-  await updateMission(supabase, missionId, {
+  // On a fresh start zero the counters; on resume DO NOT reset
+  // recruited_persona_count or ai_spend_usd_actual — the spend already
+  // incurred is real and the ceiling check must see it.
+  await updateMission(supabase, missionId, isResume ? {
+    recruitment_status: 'recruiting',
+  } : {
     recruitment_status: 'recruiting',
     recruited_persona_count: 0,
     ai_spend_usd_actual: 0,
-  }, { caller: 'recruitLoop: start' });
+  }, { caller: isResume ? 'recruitLoop: resume' : 'recruitLoop: start' });
 
-  const qualifiedResponses = []; // flat list, persona × question
-  const qualifiedPersonas  = []; // persona objects, for downstream exposure tagging
-  let recruitedCount = 0;
-  let qualifiedCount = 0;
   // Pass 44 P0 — track WHY the loop exited so the terminal status is
   // honest. Pre-Pass-44, every non-target exit was labeled
   // 'ceiling_hit', including transient persona-gen failures (429s),
   // which produced partial deliveries blamed on "strict screener" at
   // 3% budget spend.
   let breakReason = null; // 'ceiling' | 'max_personas' | 'persona_gen_failed' | 'persona_gen_empty'
+  // Pass 46 Phase 2 — rows whose incremental insert failed; runMission's
+  // completion insert picks these up so no qualified data is ever lost.
+  const unpersistedResponses = [];
 
   while (qualifiedCount < target) {
     // ── Hard guard against runaway loops ───────────────────────────────
@@ -207,6 +254,18 @@ async function runRecruitmentLoop(mission, supabase) {
     }
     recruitedCount += 1;
 
+    // ── Pass 46 Phase 2 — brand_lift exposure tagging IN-LOOP ──────────
+    // simulate.js branches on persona._exposure_status to inject the
+    // exposed-uplift / control-baseline instructions. The old loop path
+    // tagged personas in runMission AFTER the loop returned, i.e. AFTER
+    // simulation — so every loop-path brand_lift persona answered at
+    // baseline and the persisted exposure labels were post-hoc cosmetics
+    // with no lift signal in the data. Tag BEFORE simulating, alternating
+    // by recruitment order for an ~50/50 split among qualifiers.
+    if (mission.goal_type === 'brand_lift') {
+      persona._exposure_status = recruitedCount % 2 === 1 ? 'exposed' : 'control';
+    }
+
     // ── Run the full survey for this persona ───────────────────────────
     // We don't separately run "screener only first" — simulateResponses
     // returns answers for all questions, then we check screening inline.
@@ -255,16 +314,44 @@ async function runRecruitmentLoop(mission, supabase) {
 
     // ── Qualified! Capture responses + bump counts ─────────────────────
     qualifiedPersonas.push(persona);
+    const personaResponses = [];
     for (const r of keptResponses) {
-      qualifiedResponses.push({
+      const entry = {
         persona_id:      persona.id,
         persona_profile: persona,
         question_id:     r.question_id,
         answer:          r.answer,
         reasoning:       typeof r.reasoning === 'string' ? r.reasoning : null,
-      });
+      };
+      qualifiedResponses.push(entry);
+      personaResponses.push(entry);
     }
     qualifiedCount += 1;
+
+    // ── Pass 46 Phase 2 — persist THIS persona's rows immediately ──────
+    // This is what makes the loop resumable: a restart reconstructs
+    // state from mission_responses instead of starting over. Same row
+    // shape as runMission's completion insert (which is skipped for the
+    // loop path now — see responses_already_persisted in the result).
+    // Insert failures are non-fatal: the rows ride along in
+    // unpersistedResponses and runMission's completion insert picks
+    // them up.
+    const insertRows = personaResponses.map((r) => ({
+      mission_id:      missionId,
+      persona_id:      r.persona_id,
+      persona_profile: r.persona_profile,
+      question_id:     r.question_id,
+      answer:          r.answer,
+      screened_out:    false,
+      exposure_status: persona._exposure_status || 'not_applicable',
+    }));
+    const { error: insErr } = await supabase.from('mission_responses').insert(insertRows);
+    if (insErr) {
+      logger.warn('Recruitment loop: incremental persist failed (will retry at completion)', {
+        missionId, personaId: persona.id, err: insErr.message,
+      });
+      unpersistedResponses.push(...personaResponses);
+    }
 
     // Always write progress on qualified-count change so the customer
     // UI ticks up live.
@@ -333,6 +420,13 @@ async function runRecruitmentLoop(mission, supabase) {
     qualifiedCount,
     terminalStatus,
     partial: !reachedTarget,
+    // Pass 46 Phase 2 — the loop persists qualified rows incrementally
+    // (resume support); runMission must NOT bulk-insert `responses`
+    // again. Only the rows whose incremental insert failed need a
+    // second chance at completion.
+    responsesAlreadyPersisted: true,
+    unpersistedResponses,
+    resumed: isResume,
   };
 }
 

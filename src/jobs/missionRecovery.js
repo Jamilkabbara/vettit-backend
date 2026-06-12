@@ -55,10 +55,21 @@ const os = require('os');
 
 const JOB1_NAME = 'mission_recovery_stuck_processing';
 const JOB1_INTERVAL_MS_DEFAULT = 10 * 60 * 1000; // 10 min
-const JOB1_STUCK_AFTER_HOURS = 2;
+// Pass 46 Phase 2 — 2h → 6h. A 1000-respondent mission takes ~2.8h at
+// the measured Pass 45 rate, so the 2h reaper would auto-fail EVERY
+// large run. With the boot-time resume sweep (Job 3 below) a restart
+// re-enters stranded missions instead of relying on this reaper, so
+// 6h is a true catastrophic-hang backstop, not the primary recovery.
+const JOB1_STUCK_AFTER_HOURS = 6;
 
 const JOB2_NAME = 'mission_recovery_orphan_pending_payment';
-const JOB2_INTERVAL_MS_DEFAULT = 30 * 60 * 1000; // 30 min
+// Pass 46 Phase 2 — audit P0-1: with no Stripe webhook configured this
+// cron was the ONLY real-payment trigger, at 30min cadence + 6h age
+// gate. Now sweeps every 10 min for missions >10 min old; PI-succeeded
+// rows recover immediately, while the destructive branches (reset to
+// draft / legacy alert) still require the original 6h age.
+const JOB2_INTERVAL_MS_DEFAULT = 10 * 60 * 1000; // 10 min
+const JOB2_RECOVER_AFTER_MINUTES = 10;
 const JOB2_STUCK_AFTER_HOURS = 6;
 
 const LOCK_STALE_MINUTES = 15;
@@ -281,7 +292,10 @@ async function runJob2() {
         logger.info('[cron] job2 auto-expired legacy pending_payment missions', { count: expired.length });
       }
 
-      const cutoff = new Date(Date.now() - JOB2_STUCK_AFTER_HOURS * 3600 * 1000).toISOString();
+      // Pass 46 Phase 2 — sweep young rows too (>10 min) so webhook-miss
+      // recovery is fast; reconcileOrphanPendingPayment age-gates the
+      // destructive branches at JOB2_STUCK_AFTER_HOURS.
+      const cutoff = new Date(Date.now() - JOB2_RECOVER_AFTER_MINUTES * 60 * 1000).toISOString();
       const { data: stuck, error } = await supabase
         .from('missions')
         .select('id, status, latest_payment_intent_id, user_id, total_price_usd, title, created_at')
@@ -328,11 +342,19 @@ async function runJob2() {
  *                clean with a fresh quote)
  */
 async function reconcileOrphanPendingPayment(m) {
+  // Pass 46 Phase 2 — the sweep now sees rows as young as 10 min so a
+  // succeeded PI recovers fast (P0-1). Destructive/noisy branches
+  // (legacy alert, reset-to-draft) keep the original 6h age gate: a
+  // user can legitimately sit on the Stripe checkout page for a while.
+  const ageMs = Date.now() - new Date(m.created_at).getTime();
+  const isOldEnoughToReset = ageMs > JOB2_STUCK_AFTER_HOURS * 3600 * 1000;
+
   // No PI ever recorded — legacy / pre-Bug-22.9 mission. SAFE PATH: alert,
   // do NOT auto-mutate. The Bali forensic showed these rows can have a
   // succeeded PI in Stripe (webhook miss; user paid) that we don't know
   // about because we never stored the PI id on the mission row.
   if (!m.latest_payment_intent_id) {
+    if (!isOldEnoughToReset) return; // young + legacy → leave alone, no alert spam
     await alertAdmin('orphan_pending_payment_legacy_unsafe_to_auto_reset', m.id, {
       user_id:           m.user_id,
       title:             m.title,
@@ -389,6 +411,9 @@ async function reconcileOrphanPendingPayment(m) {
   // for a >6h-old mission with a still-resumable PI, that's a long-abandoned
   // checkout. Reset so the user can retry cleanly with a fresh quote.
   // (succeeded/canceled/anything else also lands here = reset.)
+  // Pass 46 Phase 2 — young rows with a non-succeeded PI are mid-checkout;
+  // leave them for a later tick.
+  if (!isOldEnoughToReset) return;
   await updateMission(supabase, m.id, {
     status:                   'draft',
     latest_payment_intent_id: null,
@@ -405,6 +430,52 @@ async function reconcileOrphanPendingPayment(m) {
   logger.warn('[cron] job2 reset stuck pending', {
     missionId: m.id, pi: pi.id, pi_status: pi.status,
   });
+}
+
+// ─── JOB 3 — boot-time resume sweep (Pass 46 Phase 2, audit P1-3) ─────────
+//
+// The recruit loop persists each qualified persona's responses
+// incrementally, so a mission stranded in status='processing' by a
+// process restart (Railway redeploy, crash, OOM) is RESUMABLE: re-enter
+// runMission with {resume:true} and the loop reconstructs its state
+// from mission_responses and continues. This runs once, shortly after
+// boot — exactly when stranded missions exist. Without it, a stranded
+// 1000-respondent run (~2.8h) would burn its progress and eventually be
+// auto-failed by Job 1.
+async function runJob3BootResume() {
+  try {
+    if (!(await tryAcquireLock('mission_recovery_boot_resume'))) {
+      logger.debug('[cron] job3 skip: another instance holds lock');
+      return;
+    }
+    try {
+      const { data: stranded, error } = await supabase
+        .from('missions')
+        .select('id, title, started_at, recruitment_status')
+        .eq('status', 'processing');
+      if (error) throw error;
+      if (!stranded || stranded.length === 0) {
+        logger.info('[cron] job3 boot resume: no stranded processing missions');
+        return;
+      }
+      logger.warn('[cron] job3 boot resume: re-entering stranded missions', {
+        count: stranded.length, ids: stranded.map((m) => m.id),
+      });
+      for (const m of stranded) {
+        setImmediate(() => {
+          runMission(m.id, { resume: true }).catch((err) => {
+            logger.error('[cron] job3 resume runMission failed', {
+              missionId: m.id, err: err.message,
+            });
+          });
+        });
+      }
+    } finally {
+      await releaseLock('mission_recovery_boot_resume');
+    }
+  } catch (err) {
+    logger.error('[cron] job3 crashed', { err: err.message });
+  }
 }
 
 // ─── init / shutdown ──────────────────────────────────────────────────────
@@ -440,6 +511,9 @@ function init(opts = {}) {
   // rolling deploy).
   setTimeout(() => { runJob1().catch(() => {}); }, 30 * 1000);
   setTimeout(() => { runJob2().catch(() => {}); }, 45 * 1000);
+  // Pass 46 Phase 2 — resume stranded processing missions ~20s after
+  // boot (before Job 1 could ever see them as stuck).
+  setTimeout(() => { runJob3BootResume().catch(() => {}); }, 20 * 1000);
 
   logger.info('[cron] missionRecovery started', {
     instance: _instanceId,

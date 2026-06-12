@@ -111,27 +111,25 @@ function makeMission({ target, ceiling, goalType = 'research' }) {
  * spy that must never be called (NO REFUNDS policy enforcement).
  */
 function makeSupabaseMock(spendRef) {
+  // Pass 46 Phase 2 — the loop now also (a) reads prior mission_responses
+  // rows with a DOUBLE .eq() chain awaited directly (resume support) and
+  // (b) inserts each qualified persona's rows. The chain object is both
+  // chainable and thenable: awaiting it resolves empty (no prior rows →
+  // fresh start), .single() serves the spend re-read, insert no-ops.
   return {
     from() {
-      return {
-        select() {
-          return {
-            eq() {
-              return {
-                single: async () => ({
-                  data: { ai_spend_usd_actual: spendRef.value },
-                  error: null,
-                }),
-              };
-            },
-          };
-        },
-        update() {
-          return {
-            eq: async () => ({ data: null, error: null }),
-          };
-        },
+      const chain = {
+        select: () => chain,
+        update: () => chain,
+        eq: () => chain,
+        single: async () => ({
+          data: { ai_spend_usd_actual: spendRef.value },
+          error: null,
+        }),
+        insert: async () => ({ error: null }),
+        then: (resolve) => resolve({ data: [], error: null }),
       };
+      return chain;
     },
     stripeRefunds: jest.fn(),
   };
@@ -230,7 +228,11 @@ describe('Pass 42 A5 — recruitment loop integration', () => {
 
     expect(result.qualifiedCount).toBe(0);
     expect(result.recruitedCount).toBeLessThanOrEqual(target * MAX_PERSONAS_PER_TARGET);
-    expect(result.terminalStatus).toBe('ceiling_hit');
+    // Pass 45 T2b — 'ceiling_hit' means SPEND ceiling only; the
+    // max-personas guard is an infra exit and labels 'incomplete'
+    // (see recruit_loop_invariants.test.js). Updated from the stale
+    // Pass 42 expectation when Pass 46 first ran the full suite.
+    expect(result.terminalStatus).toBe('incomplete');
     expect(supabase.stripeRefunds).not.toHaveBeenCalled();
   });
 

@@ -74,29 +74,33 @@ describe('calculateMissionPrice — base price by tier', () => {
     expect(totalCents).toBe(3500);
   });
 
-  it('tier 2 (SA): 10 respondents, 5 questions → $27.50', () => {
+  // Pass 46 — country tiers were removed from the base-price model
+  // (volume tiers only since the Pass 23 PRICING overhaul); these
+  // expectations were stale relics of the deleted country-tier table,
+  // first caught when Pass 46 ran the full suite.
+  it('country does not change base price: 10 respondents (SA) → $35', () => {
     const { total, totalCents } = calculateMissionPrice({
       respondentCount: 10,
       questionCount: 5,
       countries: ['SA'],
     });
-    expect(total).toBe(27.50);
-    expect(totalCents).toBe(2750);
+    expect(total).toBe(35.00);
+    expect(totalCents).toBe(3500);
   });
 
-  it('tier 3 (default): 10 respondents, 5 questions → $19', () => {
+  it('no-country default: 10 respondents → $35 (Validate volume tier)', () => {
     const { total, totalCents } = calculateMissionPrice({
       respondentCount: 10,
       questionCount: 5,
       countries: [],
     });
-    expect(total).toBe(19.00);
-    expect(totalCents).toBe(1900);
+    expect(total).toBe(35.00);
+    expect(totalCents).toBe(3500);
   });
 
-  it('100 respondents, tier 1 → $350', () => {
+  it('100 respondents → $120 (Deep Dive volume rate $1.20/resp)', () => {
     const { total } = calculateMissionPrice({ respondentCount: 100, questionCount: 5, countries: ['US'] });
-    expect(total).toBe(350.00);
+    expect(total).toBe(120.00);
   });
 });
 
