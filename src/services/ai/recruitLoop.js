@@ -109,6 +109,12 @@ async function runRecruitmentLoop(mission, supabase) {
   const qualifiedPersonas  = []; // persona objects, for downstream exposure tagging
   let recruitedCount = 0;
   let qualifiedCount = 0;
+  // Pass 44 P0 — track WHY the loop exited so the terminal status is
+  // honest. Pre-Pass-44, every non-target exit was labeled
+  // 'ceiling_hit', including transient persona-gen failures (429s),
+  // which produced partial deliveries blamed on "strict screener" at
+  // 3% budget spend.
+  let breakReason = null; // 'ceiling' | 'max_personas' | 'persona_gen_failed' | 'persona_gen_empty'
 
   while (qualifiedCount < target) {
     // ── Hard guard against runaway loops ───────────────────────────────
@@ -116,6 +122,7 @@ async function runRecruitmentLoop(mission, supabase) {
       logger.warn('Recruitment loop: max-personas guard tripped', {
         missionId, recruitedCount, qualifiedCount, target, maxPersonas,
       });
+      breakReason = 'max_personas';
       break;
     }
 
@@ -140,6 +147,7 @@ async function runRecruitmentLoop(mission, supabase) {
       logger.info('Recruitment loop: ceiling reached (post-spend)', {
         missionId, spentUsd, ceiling, recruitedCount, qualifiedCount,
       });
+      breakReason = 'ceiling';
       break;
     }
 
@@ -153,25 +161,40 @@ async function runRecruitmentLoop(mission, supabase) {
         missionId, spentUsd, worstCaseNext, ceiling,
         recruitedCount, qualifiedCount,
       });
+      breakReason = 'ceiling';
       break;
     }
 
-    // ── Generate ONE persona ───────────────────────────────────────────
+    // ── Generate ONE persona (with transient-failure retries) ──────────
     // generatePersonas() is batch-friendly internally but caps at the
     // requested count via .slice(0, count) so requesting 1 returns 1.
-    let personaBatch;
-    try {
-      personaBatch = await generatePersonas(mission, 1, {
-        startOffset: recruitedCount,
+    //
+    // Pass 44 P0 — retry with backoff instead of breaking on the first
+    // failure. Forensics: 10 concurrent test missions hit Anthropic
+    // rate limits; the old code broke the loop on the first 429 and
+    // the terminal block mislabeled the exit 'ceiling_hit' at ~$0.06
+    // spend vs a $2.70 ceiling. Customers got partial deliveries
+    // (2/5) implicitly blamed on screener strictness when the cause
+    // was OUR transient infra failure — unacceptable with NO REFUNDS.
+    let personaBatch = null;
+    for (let attempt = 0; attempt < 3 && !personaBatch; attempt += 1) {
+      try {
+        personaBatch = await generatePersonas(mission, 1, {
+          startOffset: recruitedCount,
+        });
+      } catch (err) {
+        const delayMs = [2000, 8000, 20000][attempt];
+        logger.warn('Recruitment loop: persona generation failed (will retry)', {
+          missionId, err: err.message, recruitedCount, attempt: attempt + 1, delayMs,
+        });
+        if (attempt < 2) await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+    if (!personaBatch) {
+      logger.error('Recruitment loop: persona generation failed after 3 attempts', {
+        missionId, recruitedCount, qualifiedCount,
       });
-    } catch (err) {
-      logger.error('Recruitment loop: persona generation failed', {
-        missionId, err: err.message, recruitedCount,
-      });
-      // Persona-gen failures are likely transient (rate limit, model
-      // outage). One failure shouldn't end the mission — break out
-      // of the loop here, the outer runMission will treat what we
-      // have as the final qualified set.
+      breakReason = 'persona_gen_failed';
       break;
     }
     const persona = personaBatch[0];
@@ -179,6 +202,7 @@ async function runRecruitmentLoop(mission, supabase) {
       logger.warn('Recruitment loop: persona generation returned empty', {
         missionId, recruitedCount,
       });
+      breakReason = 'persona_gen_empty';
       break;
     }
     recruitedCount += 1;
@@ -250,6 +274,14 @@ async function runRecruitmentLoop(mission, supabase) {
   }
 
   // ── Terminal state ───────────────────────────────────────────────────
+  // Pass 44 P0 — the status enum is {pending|recruiting|ceiling_hit|
+  // target_hit} (schema CHECK), so non-target exits still record
+  // 'ceiling_hit'. But when the exit was NOT a genuine ceiling trip
+  // (transient persona-gen failure, empty batch, max-personas guard),
+  // we now raise an admin alert so ops can re-run the mission for the
+  // customer instead of the shortfall silently masquerading as a
+  // strict-screener partial. NO REFUNDS makes this distinction a
+  // customer-trust requirement, not a nicety.
   const reachedTarget = qualifiedCount >= target;
   const terminalStatus = reachedTarget ? 'target_hit' : 'ceiling_hit';
   await updateMission(supabase, missionId, {
@@ -258,9 +290,31 @@ async function runRecruitmentLoop(mission, supabase) {
     recruitment_completed_at: new Date().toISOString(),
   }, { caller: `recruitLoop: terminal=${terminalStatus}` });
 
+  if (!reachedTarget && breakReason && breakReason !== 'ceiling') {
+    try {
+      await supabase.from('admin_alerts').insert({
+        alert_type: 'recruitment_infra_partial',
+        mission_id: missionId,
+        user_id:    mission.user_id,
+        payload: {
+          break_reason:    breakReason,
+          qualified_count: qualifiedCount,
+          target,
+          recruited_count: recruitedCount,
+          action_required: 'Partial delivery caused by infra (NOT screener, NOT budget). Re-run the mission for the customer — no refund per policy, re-delivery is the remedy.',
+        },
+        resolved: false,
+      });
+    } catch (alertErr) {
+      logger.warn('Recruitment loop: infra-partial alert insert failed (non-fatal)', {
+        missionId, err: alertErr.message,
+      });
+    }
+  }
+
   logger.info('Recruitment loop: exit', {
     missionId, qualifiedCount, target, recruitedCount,
-    terminalStatus, partial: !reachedTarget,
+    terminalStatus, breakReason, partial: !reachedTarget,
   });
 
   return {
