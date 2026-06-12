@@ -69,6 +69,15 @@ const MODEL_ROUTING = {
   creative_attention_frame:    'claude-sonnet-4-6',  // vision: per-frame emotion analysis
   creative_attention_synthesis: 'claude-sonnet-4-6', // text: aggregate + recommendations
   brand_lift_benchmarks:        'claude-sonnet-4-6', // Pass 25 Phase 1F: AI benchmarks for the brand-lift KPI templates
+  // Pass 44 — admin.js _generateInsights has passed this callType since
+  // the panel shipped, but it was never routed here; callClaude threw
+  // "Unknown AI callType: admin_insights" → GET /api/admin/insights
+  // hard-500'd on every cache miss (Agent C audit finding).
+  admin_insights:               'claude-sonnet-4-6',
+  // Pass 44 — extractSubject (claudeAI.js, BUG-013 helper) passes this
+  // callType; routed to Haiku per its design (~$0.005/call). Unrouted
+  // it would throw the same way the moment the helper gets wired in.
+  subject_extract:              'claude-haiku-4-5',
 };
 
 /**

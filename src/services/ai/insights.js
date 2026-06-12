@@ -188,6 +188,36 @@ async function synthesizeInsights(mission, responses) {
     ? `\nIMPORTANT — PARTIAL DELIVERY: This mission was paid for ${targetCount} qualified respondents but only ${completedCount} qualified within the customer's screener constraints. Open the Executive Summary with one honest sentence acknowledging this (e.g. "Your screener was strict — we surfaced N qualified responses out of the M you requested."). Do not apologize. Do not recommend a re-run — the customer agreed at checkout that strict screeners may produce partial delivery. Frame the remaining insights as the directional signal they are.\n`
     : '';
 
+  // Pass 44 — methodology-specific chart_data instructions. The Pass 42
+  // B1 prompt never asked for chart_data.methodology_specific, so the
+  // D1-D4 frontend charts (BrandLift pre/post, Pricing WTP/demand,
+  // Naming head-to-head, Roadmap quadrant) had no data on new missions.
+  // Conditional per goal_type so unrelated methodologies don't pay the
+  // tokens or risk hallucinated blocks.
+  const METHODOLOGY_CHART_INSTR = {
+    brand_lift: `
+
+Pass 44 — ALSO emit chart_data.methodology_specific.brand_lift when the responses support it:
+"methodology_specific": { "brand_lift": { "pre": {"recall": <0-100>, "awareness": <0-100>, "intent": <0-100>}, "post": {...same keys}, "lift_pct": {...same keys, post minus pre} } }
+Derive pre/post from control vs exposed respondent groups when exposure_status is present; otherwise estimate baseline vs current from the response content. Omit the block if neither is derivable.`,
+    pricing: `
+
+Pass 44 — ALSO emit chart_data.methodology_specific.pricing when the responses support it:
+"methodology_specific": { "pricing": { "wtp_buckets": {"<price>": <count>, ...}, "demand_at_price": [{"price": <number>, "demand_pct": <0-100>}, ...], "optimal_price": <number> } }
+Derive from any willingness-to-pay / price-rating answers. Omit if no price signal exists in the responses.`,
+    naming_messaging: `
+
+Pass 44 — ALSO emit chart_data.methodology_specific.naming when the responses support it:
+"methodology_specific": { "naming": [ {"name": "<candidate>", "love": <count>, "like": <count>, "neutral": <count>, "dislike": <count>, "top_phrase": "<short verbatim>"}, ... ] }
+Derive per name candidate mentioned in the questions/responses. Omit if no name candidates appear.`,
+    roadmap: `
+
+Pass 44 — ALSO emit chart_data.methodology_specific.roadmap when the responses support it:
+"methodology_specific": { "roadmap": [ {"feature": "<short name>", "importance": <1-5>, "feasibility": <1-5>, "mentions": <count>}, ... ] }
+Derive per feature mentioned in the questions/responses. Use respondent-implied importance; estimate feasibility only when respondents address it, else 3. Omit if no features appear.`,
+  };
+  const methodologySpecificInstr = METHODOLOGY_CHART_INSTR[mission.goal_type] || '';
+
   const userPrompt = `${partialNotice}Mission brief: ${mission.brief || mission.mission_statement || ''}
 Goal: ${mission.goal_type || 'general research'}
 
@@ -299,7 +329,7 @@ Pass 42 B1 — also emit the chart_data block. Frontend renders charts (distribu
 - sentiment_breakdown is a single aggregate across all open-text responses in the mission. If there are no text responses, omit this field entirely.
 - segment_distributions echoes segment_breakdowns but with a single key_metric_values object per segment (key = metric name like "purchase_intent_mean", value = numeric). If no good aggregable metric exists for a segment, omit that segment.
 
-If chart_data cannot be reliably emitted (very small sample, malformed responses), omit the whole chart_data block. Frontend treats absence as "no charts" not "broken charts".`;
+If chart_data cannot be reliably emitted (very small sample, malformed responses), omit the whole chart_data block. Frontend treats absence as "no charts" not "broken charts".${methodologySpecificInstr}`;
 
   const response = await callClaude({
     callType: 'insight_synth',
