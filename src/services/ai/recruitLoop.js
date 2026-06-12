@@ -283,7 +283,16 @@ async function runRecruitmentLoop(mission, supabase) {
   // strict-screener partial. NO REFUNDS makes this distinction a
   // customer-trust requirement, not a nicety.
   const reachedTarget = qualifiedCount >= target;
-  const terminalStatus = reachedTarget ? 'target_hit' : 'ceiling_hit';
+  // Pass 45 T2b — 'ceiling_hit' may ONLY mean the spend ceiling
+  // tripped (breakReason='ceiling'). Infra exits (persona_gen_failed /
+  // persona_gen_empty / max_personas) now get 'incomplete' — no DB
+  // CHECK constrains recruitment_status, and conflating infra
+  // failures with budget exhaustion misled both customers (strict-
+  // screener framing) and ops (no re-run signal). Pass 44 added the
+  // retry/backoff + alert; this closes the labeling half.
+  const terminalStatus = reachedTarget
+    ? 'target_hit'
+    : (breakReason === 'ceiling' ? 'ceiling_hit' : 'incomplete');
   await updateMission(supabase, missionId, {
     recruitment_status: terminalStatus,
     recruited_persona_count: recruitedCount,

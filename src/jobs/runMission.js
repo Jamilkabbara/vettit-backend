@@ -139,6 +139,12 @@ async function runMission(missionId) {
     let personas;
     let responses;
     let recruitmentPartial = false;
+    // Pass 45 T2a — carry the loop's REAL counters to completion.
+    // Pre-Pass-45, completion hardcoded qualified_respondent_count =
+    // targetCount (Pass 23 always-deliver), which produced impossible
+    // rows like recruited=2 / qualified=5 on partial missions.
+    let loopQualifiedCount = null;
+    let loopRecruitedCount = null;
     if (shouldUseRecruitLoop(mission)) {
       logger.info('Mission run: using Pass 42 A2 recruit loop', {
         missionId,
@@ -149,6 +155,8 @@ async function runMission(missionId) {
       personas  = loopResult.personas;
       responses = loopResult.responses;
       recruitmentPartial = loopResult.partial;
+      loopQualifiedCount = loopResult.qualifiedCount;
+      loopRecruitedCount = loopResult.recruitedCount;
       // Brand Lift exposure split still applies — tag exposed/control
       // by order of qualification.
       if (mission.goal_type === 'brand_lift' && personas.length > 0) {
@@ -363,7 +371,18 @@ async function runMission(missionId) {
     // delivery purposes (the admin_alerts row above is the quality signal).
     // The promise of purchase is absolute: paid_for == qualified == delivered.
     const totalSimulated = personas.length;
-    const qualifiedRespondent = targetCount;
+    // Pass 45 T2a — loop path reports the loop's actual qualified
+    // count; legacy batch path keeps Pass 23 always-deliver semantics
+    // (qualified = paid-for target). Invariant recruited >= qualified
+    // enforced defensively: a violation is clamped + logged loudly
+    // because it means the counters drifted again.
+    let qualifiedRespondent = loopQualifiedCount != null ? loopQualifiedCount : targetCount;
+    if (loopRecruitedCount != null && qualifiedRespondent > loopRecruitedCount) {
+      logger.error('Mission run: INVARIANT VIOLATION qualified > recruited — clamping', {
+        missionId, qualified: qualifiedRespondent, recruited: loopRecruitedCount,
+      });
+      qualifiedRespondent = loopRecruitedCount;
+    }
     const qualificationRate = totalSimulated > 0
       ? Number((qualifiedRespondent / totalSimulated).toFixed(4))
       : null;
@@ -436,6 +455,11 @@ async function runMission(missionId) {
       qualified_respondent_count:   qualifiedRespondent,
       qualification_rate:           qualificationRate,
       delivered_respondent_count:   deliveredRespondentCount,
+      // Pass 45 T2a — legacy batch path never wrote recruited count;
+      // persist personas.length so recruited >= qualified holds on
+      // every path. Loop path already wrote it in its terminal update
+      // (same value re-written here harmlessly).
+      recruited_persona_count:      loopRecruitedCount != null ? loopRecruitedCount : totalSimulated,
       delivery_status:              deliveryStatusFinal,
       delivery_check_at:            new Date().toISOString(),
       // partial_refund_id and partial_refund_amount_cents stay NULL —
