@@ -12,6 +12,7 @@
  */
 
 const { computeCompare } = require('../src/services/analysis/compare');
+const { round4 } = require('../src/services/analysis/shared');
 
 const row = (persona_id, question_id, answer) => ({ persona_id, question_id, answer });
 
@@ -161,6 +162,105 @@ test('no mission context: labels recovered from "Considering [<name>]" battery t
 test('mission.concepts as a JSON string (TEXT column) parses', () => {
   const res = computeCompare(ROWS, QUESTIONS, { concepts: JSON.stringify(MISSION.concepts) });
   expect(byId(res, 'c2').label).toBe('Bolt');
+});
+
+/*
+ * Pass 47 — REAL bug regression (mission 86d4b8c6-05f9-436e-ad4d-83e52579df28).
+ * The live generator emits UNBRACKETED battery text ("Considering <Name>:
+ * <desc>. How appealing…") and the mission.concepts column is NULL, so the
+ * old bracket-only label recovery fell back to the bare concept_id ("cA").
+ * Forced-choice answers are concept NAMES ("Guided Setup Wizard" / "AI
+ * Budget Builder"), which then matched no concept → final_choice_pct 0/0.
+ * This fixture is the exact production shape; it must yield shares summing
+ * to 100% across concepts + none, with cB the winner (3 of 5).
+ */
+const REAL_INTENT_OPTS = INTENT_OPTS;
+const REAL_QUESTIONS = [
+  { id: 'q1', concept_id: null, type: 'single', funnel_stage: null, is_final_choice: false, methodology: 'sequential_monadic', text: 'Which of the following best describes your use of personal-finance apps in the past 6 months?', options: ['I currently use a personal-finance app regularly', 'I have used a personal-finance app in the past but not currently', 'I have never used a personal-finance app'] },
+  // concept cA "Guided Setup Wizard" — note: NO brackets, name before ':'
+  { id: 'q2', concept_id: 'cA', type: 'rating', funnel_stage: 'appeal', is_final_choice: false, methodology: 'sequential_monadic', text: 'Considering Guided Setup Wizard: a 3-step guided setup wizard that walks you through configuring your personal-finance app one step at a time. How appealing is this concept?', options: ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'] },
+  { id: 'q3', concept_id: 'cA', type: 'rating', funnel_stage: 'relevance', is_final_choice: false, methodology: 'sequential_monadic', text: 'How relevant is the Guided Setup Wizard concept to your needs?', options: ['1', '2', '3', '4', '5', '6', '7'] },
+  { id: 'q4', concept_id: 'cA', type: 'rating', funnel_stage: 'uniqueness', is_final_choice: false, methodology: 'sequential_monadic', text: 'How different is the Guided Setup Wizard from other onboarding concepts for personal-finance app options you have seen or used?', options: ['1', '2', '3', '4', '5', '6', '7'] },
+  { id: 'q5', concept_id: 'cA', type: 'single', funnel_stage: 'intent', is_final_choice: false, methodology: 'sequential_monadic', text: 'If the Guided Setup Wizard were available, how likely would you be to use it to set up a personal-finance app?', options: REAL_INTENT_OPTS },
+  { id: 'q6', concept_id: 'cA', type: 'text', funnel_stage: 'qualitative', is_final_choice: false, methodology: 'sequential_monadic', text: "What's the best thing and the worst thing about the Guided Setup Wizard concept?", options: [] },
+  // concept cB "AI Budget Builder"
+  { id: 'q7', concept_id: 'cB', type: 'rating', funnel_stage: 'appeal', is_final_choice: false, methodology: 'sequential_monadic', text: 'Considering AI Budget Builder: an AI chat that automatically builds your budget by connecting to and analyzing your bank data. How appealing is this concept?', options: ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'] },
+  { id: 'q8', concept_id: 'cB', type: 'rating', funnel_stage: 'relevance', is_final_choice: false, methodology: 'sequential_monadic', text: 'How relevant is the AI Budget Builder concept to your needs?', options: ['1', '2', '3', '4', '5', '6', '7'] },
+  { id: 'q9', concept_id: 'cB', type: 'rating', funnel_stage: 'uniqueness', is_final_choice: false, methodology: 'sequential_monadic', text: 'How different is the AI Budget Builder from other onboarding concepts for personal-finance app options you have seen or used?', options: ['1', '2', '3', '4', '5', '6', '7'] },
+  { id: 'q10', concept_id: 'cB', type: 'single', funnel_stage: 'intent', is_final_choice: false, methodology: 'sequential_monadic', text: 'If the AI Budget Builder were available, how likely would you be to use it to set up a personal-finance app?', options: REAL_INTENT_OPTS },
+  { id: 'q11', concept_id: 'cB', type: 'text', funnel_stage: 'qualitative', is_final_choice: false, methodology: 'sequential_monadic', text: "What's the best thing and the worst thing about the AI Budget Builder concept?", options: [] },
+  // final block — forced choice options are the bare concept NAMES
+  { id: 'q12', concept_id: null, type: 'single', funnel_stage: null, is_final_choice: true, methodology: 'sequential_monadic', text: 'Which concept did you find most appealing overall?', options: ['Guided Setup Wizard', 'AI Budget Builder', 'None of these'] },
+  { id: 'q13', concept_id: null, type: 'text', funnel_stage: null, is_final_choice: true, methodology: 'sequential_monadic', text: 'Why?', options: [] },
+];
+
+// Verbatim from mission 86d4b8c6's mission_responses (n=5, P001..P005).
+const REAL_ROWS = [
+  row('P001', 'q2', '7'), row('P002', 'q2', '7'), row('P003', 'q2', '6'), row('P004', 'q2', '7'), row('P005', 'q2', '7'),
+  row('P001', 'q3', '6'), row('P002', 'q3', '6'), row('P003', 'q3', '5'), row('P004', 'q3', '6'), row('P005', 'q3', '6'),
+  row('P001', 'q4', '3'), row('P002', 'q4', '4'), row('P003', 'q4', '3'), row('P004', 'q4', '3'), row('P005', 'q4', '3'),
+  row('P001', 'q5', 'Probably would buy'), row('P002', 'q5', 'Probably would buy'), row('P003', 'q5', 'Probably would buy'), row('P004', 'q5', 'Probably would buy'), row('P005', 'q5', 'Probably would buy'),
+  row('P001', 'q7', '3'), row('P002', 'q7', '3'), row('P003', 'q7', '7'), row('P004', 'q7', '5'), row('P005', 'q7', '8'),
+  row('P001', 'q8', '2'), row('P002', 'q8', '3'), row('P003', 'q8', '6'), row('P004', 'q8', '6'), row('P005', 'q8', '7'),
+  row('P001', 'q9', '6'), row('P002', 'q9', '5'), row('P003', 'q9', '6'), row('P004', 'q9', '6'), row('P005', 'q9', '6'),
+  row('P001', 'q10', 'Definitely would NOT buy'), row('P002', 'q10', 'Definitely would NOT buy'), row('P003', 'q10', 'Probably would buy'), row('P004', 'q10', 'Might or might not'), row('P005', 'q10', 'Probably would buy'),
+  // forced choice — answers are concept NAMES (the exact bug)
+  row('P001', 'q12', 'Guided Setup Wizard'), row('P002', 'q12', 'Guided Setup Wizard'),
+  row('P003', 'q12', 'AI Budget Builder'), row('P004', 'q12', 'AI Budget Builder'), row('P005', 'q12', 'AI Budget Builder'),
+];
+
+const realById = (res, id) => res.concepts.find((c) => c.concept_id === id);
+
+test('Pass 47 regression: concept-NAME forced choice maps to concept_ids, shares sum to 100% (mission 86d4b8c6, concepts=NULL, unbracketed text)', () => {
+  // concepts column is NULL in production → pass a mission with no concepts.
+  const res = computeCompare(REAL_ROWS, REAL_QUESTIONS, { concepts: null });
+
+  // labels recovered from the unbracketed "Considering <Name>:" text
+  expect(realById(res, 'cA').label).toBe('Guided Setup Wizard');
+  expect(realById(res, 'cB').label).toBe('AI Budget Builder');
+
+  // THE BUG: before the fix both were { pct: 0, count: 0 }.
+  expect(realById(res, 'cA').final_choice_pct).toEqual({ pct: 40, count: 2, base: 5 });
+  expect(realById(res, 'cB').final_choice_pct).toEqual({ pct: 60, count: 3, base: 5 });
+  expect(res.final_choice.none).toEqual({ count: 0, pct: 0 });
+
+  // per-concept shares + none must sum to exactly 100%.
+  const sum = realById(res, 'cA').final_choice_pct.pct
+    + realById(res, 'cB').final_choice_pct.pct
+    + res.final_choice.none.pct;
+  expect(sum).toBe(100);
+
+  // winner by final choice = cB (3 of 5)
+  expect(res.overall_winner).toEqual({ concept_id: 'cB', by: 'final_choice' });
+
+  // head-to-head still reads the concept_id'd monadic ratings correctly
+  expect(h2h(res, 'appeal')).toEqual({ dimension: 'appeal', winner_concept_id: 'cA', runner_up_concept_id: 'cB', delta: 1.6, metric: 'mean_diff' });
+  expect(h2h(res, 'relevance')).toEqual({ dimension: 'relevance', winner_concept_id: 'cA', runner_up_concept_id: 'cB', delta: 1, metric: 'mean_diff' });
+  expect(h2h(res, 'uniqueness')).toEqual({ dimension: 'uniqueness', winner_concept_id: 'cB', runner_up_concept_id: 'cA', delta: 2.6, metric: 'mean_diff' });
+  expect(h2h(res, 'intent')).toEqual({ dimension: 'intent', winner_concept_id: 'cA', runner_up_concept_id: 'cB', delta: 60, metric: 'top2_pp_diff' });
+});
+
+test('Pass 47: a "None of these" vote lands in the none bucket; concept shares + none still sum to 100%', () => {
+  const rows = [
+    row('P001', 'q12', 'Guided Setup Wizard'),
+    row('P002', 'q12', 'AI Budget Builder'),
+    row('P003', 'q12', 'None of these'),
+  ];
+  const res = computeCompare(rows, REAL_QUESTIONS, { concepts: null });
+  expect(realById(res, 'cA').final_choice_pct).toEqual({ pct: round4(100 / 3), count: 1, base: 3 });
+  expect(realById(res, 'cB').final_choice_pct).toEqual({ pct: round4(100 / 3), count: 1, base: 3 });
+  expect(res.final_choice.none).toEqual({ count: 1, pct: round4(100 / 3) });
+  // each share is rounded to 4 dp independently, so three exact thirds sum
+  // to 99.9999 — the buckets are exhaustive (counts sum to base), which is
+  // the real invariant.
+  const sum = realById(res, 'cA').final_choice_pct.pct
+    + realById(res, 'cB').final_choice_pct.pct
+    + res.final_choice.none.pct;
+  expect(sum).toBeCloseTo(100, 2);
+  const countSum = realById(res, 'cA').final_choice_pct.count
+    + realById(res, 'cB').final_choice_pct.count
+    + res.final_choice.none.count;
+  expect(countSum).toBe(res.final_choice.base);
 });
 
 test('incomputable → null, never throw (empty + junk inputs)', () => {

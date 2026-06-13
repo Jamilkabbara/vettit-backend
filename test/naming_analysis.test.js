@@ -181,3 +181,138 @@ test('incomputable → null, never throw (empty + junk inputs)', () => {
   );
   expect(byId(res, 'n1').pairwise_win_rate).toEqual({ pct: 100, wins: 1, appearances: 1 });
 });
+
+/* ── Pass 47 — REAL-DATA identity split (mission bdf049d5) ──────────────
+ * The production naming mission diverges from the template fixture above
+ * in two ways that together produced "6 candidates when there are 3" and
+ * "c1/c2/c3" labels on the results page:
+ *
+ *   (a) MONADIC text is NOT bracketed. The generator template says
+ *       '[<candidate text>]' but real output is 'how memorable is Lumio?'
+ *       — no brackets. Label recovery must peel the scaffold.
+ *   (b) IDENTITY SPLIT. Monadic Qs key on candidate_id ('c1'); the
+ *       forced-choice + paired Qs key on the verbatim NAME ('Lumio')
+ *       with candidate_id=null. The OLD parser registered the name as a
+ *       SECOND candidate → 3 id-keyed + 3 name-keyed = 6 phantoms, half
+ *       with "no data".
+ *
+ * The fixture also gives naming_candidates DIFFERENT ids (n1/n2/n3) than
+ * the monadic candidate_id (c1/c2/c3) — exactly the drift seen in
+ * production — to prove reconciliation joins on NAME, not on id. The
+ * screener carries non-candidate options to prove they never leak in.
+ */
+const SPLIT_QUESTIONS = [
+  // Screener — methodology=monadic_plus_paired (claudeAI.js:1640) with
+  // category-buyer options that must NOT become candidates.
+  { id: 'q1', text: 'How often do you purchase premium sparkling water?', type: 'single', isScreening: true, methodology: 'monadic_plus_paired', options: ['At least once a week', 'At least once a month', 'Rarely or never'] },
+  // monadic c1 "Lumio" — UNBRACKETED text
+  { id: 'q2', text: 'On a 1-7 scale, how memorable is Lumio?', type: 'rating', methodology: 'monadic', candidate_id: 'c1', criterion: 'memorable' },
+  { id: 'q3', text: 'On a 1-7 scale, how distinctive is Lumio?', type: 'rating', methodology: 'monadic', candidate_id: 'c1', criterion: 'distinctive' },
+  { id: 'q4', text: 'On a 1-7 scale, how premium in feeling is Lumio?', type: 'rating', methodology: 'monadic', candidate_id: 'c1', criterion: 'premium' },
+  { id: 'q6', text: 'What does Lumio make you think of? Up to 5 words.', type: 'text', methodology: 'monadic', candidate_id: 'c1', criterion: 'word_association' },
+  // monadic c2 "Brightly"
+  { id: 'q7', text: 'On a 1-7 scale, how memorable is Brightly?', type: 'rating', methodology: 'monadic', candidate_id: 'c2', criterion: 'memorable' },
+  { id: 'q8', text: 'On a 1-7 scale, how distinctive is Brightly?', type: 'rating', methodology: 'monadic', candidate_id: 'c2', criterion: 'distinctive' },
+  // monadic c3 "Glowex"
+  { id: 'q12', text: 'On a 1-7 scale, how memorable is Glowex?', type: 'rating', methodology: 'monadic', candidate_id: 'c3', criterion: 'memorable' },
+  { id: 'q13', text: 'On a 1-7 scale, how distinctive is Glowex?', type: 'rating', methodology: 'monadic', candidate_id: 'c3', criterion: 'distinctive' },
+  // forced choice — names, candidate_id=null, is_paired_comparison=false
+  { id: 'q17', text: 'Which candidate did you find most appealing overall?', type: 'single', methodology: 'monadic_plus_paired', is_paired_comparison: false, candidate_id: null, options: ['Lumio', 'Brightly', 'Glowex'] },
+  { id: 'q18', text: 'Why?', type: 'text', methodology: 'monadic_plus_paired', candidate_id: null },
+  // paired comparisons — names, candidate_id=null
+  { id: 'q19', text: 'Which would you choose: Lumio OR Brightly?', type: 'single', methodology: 'paired_comparison', is_paired_comparison: true, candidate_id: null, options: ['Lumio', 'Brightly'] },
+  { id: 'q20', text: 'Which would you choose: Lumio OR Glowex?', type: 'single', methodology: 'paired_comparison', is_paired_comparison: true, candidate_id: null, options: ['Lumio', 'Glowex'] },
+];
+
+// naming_candidates ids (n1..n3) deliberately DIFFER from monadic ids
+// (c1..c3) — reconciliation must bridge them by NAME.
+const SPLIT_MISSION = {
+  naming_candidates: [
+    { id: 'n1', text: 'Lumio' },
+    { id: 'n2', text: 'Brightly' },
+    { id: 'n3', text: 'Glowex' },
+  ],
+};
+
+/* Hand math (3 personas):
+ *   c1 memorable [6,6,6]→6   distinctive [5,5,5]→5   premium [7,7,7]→7
+ *     composite = (6+5+7)/3 = 6.0
+ *   c2 memorable [4,4,4]→4   distinctive [6,6,6]→6   composite = 5.0
+ *   c3 memorable [3,3,3]→3   distinctive [4,4,4]→4   composite = 3.5
+ *   paired: q19 Lumio×3 (Brightly 0), q20 Lumio×3 (Glowex 0)
+ *     Lumio  6/6 = 100%   Brightly 0/3 = 0%   Glowex 0/3 = 0%
+ */
+const SPLIT_ROWS = [
+  row('p1', 'q2', 6), row('p2', 'q2', 6), row('p3', 'q2', 6),
+  row('p1', 'q3', 5), row('p2', 'q3', 5), row('p3', 'q3', 5),
+  row('p1', 'q4', 7), row('p2', 'q4', 7), row('p3', 'q4', 7),
+  row('p1', 'q6', 'fresh, light'), row('p2', 'q6', 'glow'),
+  row('p1', 'q7', 4), row('p2', 'q7', 4), row('p3', 'q7', 4),
+  row('p1', 'q8', 6), row('p2', 'q8', 6), row('p3', 'q8', 6),
+  row('p1', 'q12', 3), row('p2', 'q12', 3), row('p3', 'q12', 3),
+  row('p1', 'q13', 4), row('p2', 'q13', 4), row('p3', 'q13', 4),
+  row('p1', 'q17', 'Lumio'), row('p2', 'q17', 'Lumio'), row('p3', 'q17', 'Brightly'),
+  row('p1', 'q19', 'Lumio'), row('p2', 'q19', 'Lumio'), row('p3', 'q19', 'Lumio'),
+  row('p1', 'q20', 'Lumio'), row('p2', 'q20', 'Lumio'), row('p3', 'q20', 'Lumio'),
+];
+
+test('real split: exactly N candidates (no phantoms), real labels, composite + pairwise both populated', () => {
+  const res = computeNaming(SPLIT_ROWS, SPLIT_QUESTIONS, SPLIT_MISSION);
+
+  // EXACTLY 3 candidates — not 6. The id-keyed monadic block and the
+  // name-keyed paired/forced blocks collapse onto one registry per name.
+  expect(res.candidates).toHaveLength(3);
+
+  // Canonical id = the monadic candidate_id (c1..c3); the naming_candidates
+  // ids (n1..n3) are joined onto it BY NAME, never spawned as extras.
+  const ids = res.candidates.map((c) => c.candidate_id).sort();
+  expect(ids).toEqual(['c1', 'c2', 'c3']);
+
+  // No bare-id labels (the "c1/c2/c3" bug) and no leaked screener options.
+  const labels = res.candidates.map((c) => c.label).sort();
+  expect(labels).toEqual(['Brightly', 'Glowex', 'Lumio']);
+  for (const c of res.candidates) {
+    expect(c.label).not.toBe(c.candidate_id);
+    expect(c.label).toMatch(/^(Lumio|Brightly|Glowex)$/);
+  }
+  expect(labels).not.toContain('At least once a week');
+  expect(labels).not.toContain('Rarely or never');
+
+  // EVERY candidate has BOTH composite (monadic) AND pairwise (paired) —
+  // the "no data for some candidates" symptom is gone.
+  for (const c of res.candidates) {
+    expect(c.composite).not.toBeNull();
+    expect(c.pairwise_win_rate).not.toBeNull();
+    expect(typeof c.pairwise_win_rate.pct).toBe('number');
+  }
+
+  const c1 = byId(res, 'c1');
+  expect(c1.label).toBe('Lumio');
+  expect(c1.composite).toBe(6); // (6+5+7)/3
+  expect(c1.criteria.premium.mean).toBe(7);
+  // word_association is text → never a criterion key
+  expect(Object.keys(c1.criteria).sort()).toEqual(['distinctive', 'memorable', 'premium']);
+  expect(c1.pairwise_win_rate).toEqual({ pct: 100, wins: 6, appearances: 6 });
+
+  expect(byId(res, 'c2').composite).toBe(5);
+  expect(byId(res, 'c2').pairwise_win_rate).toEqual({ pct: 0, wins: 0, appearances: 3 });
+  expect(byId(res, 'c3').composite).toBe(3.5);
+  expect(byId(res, 'c3').pairwise_win_rate).toEqual({ pct: 0, wins: 0, appearances: 3 });
+
+  expect(res.winner).toEqual({ candidate_id: 'c1', by: 'pairwise_win_rate' });
+});
+
+test('real split WITHOUT naming_candidates: labels recovered from unbracketed monadic text; still N candidates', () => {
+  // The OLD mission bdf049d5 has naming_candidates=[] persisted and can
+  // never be repaired retroactively — but the parser must still recover
+  // real names from the (unbracketed) monadic question wording so the
+  // results page shows "Lumio", not "c1".
+  const res = computeNaming(SPLIT_ROWS, SPLIT_QUESTIONS, { naming_candidates: [] });
+  expect(res.candidates).toHaveLength(3);
+  expect(res.candidates.map((c) => c.candidate_id).sort()).toEqual(['c1', 'c2', 'c3']);
+  expect(res.candidates.map((c) => c.label).sort()).toEqual(['Brightly', 'Glowex', 'Lumio']);
+  expect(byId(res, 'c1').label).toBe('Lumio'); // from 'how memorable is Lumio?'
+  expect(byId(res, 'c1').composite).toBe(6);
+  expect(byId(res, 'c1').pairwise_win_rate.pct).toBe(100);
+  expect(res.winner).toEqual({ candidate_id: 'c1', by: 'pairwise_win_rate' });
+});

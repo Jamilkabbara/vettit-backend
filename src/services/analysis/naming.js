@@ -52,6 +52,38 @@ const norm = (v) => String(v ?? '').trim().toLowerCase();
 
 const BRACKET_RE = /\[([^\]]+)\]/;
 
+/**
+ * Recover a candidate's display NAME from a monadic question's text.
+ *
+ * The generator template wraps the name in [brackets]
+ * (claudeAI.js:1642-1643) but production output drops them — real
+ * mission bdf049d5 emits 'On a 1-7 scale, how memorable is Lumio?' with
+ * NO brackets. So:
+ *   1. Prefer a [bracketed] span when present.
+ *   2. Otherwise peel the two known monadic scaffolds:
+ *        'On a 1-7 scale, how <label> is <NAME>?'
+ *        'What does <NAME> make you think of? ...'
+ *      The label half is variable (criterion phrasing), so we anchor on
+ *      the fixed substrings ' is ' / 'What does ' instead of the label.
+ * Returns '' when nothing recoverable (caller falls back to the id).
+ */
+function nameFromMonadicText(text) {
+  const t = String(text || '').trim();
+  if (!t) return '';
+  const bracket = BRACKET_RE.exec(t);
+  if (bracket && bracket[1].trim()) return bracket[1].trim();
+  // 'how <label> is <NAME>?'  → take what follows the LAST ' is '.
+  const isIdx = t.toLowerCase().lastIndexOf(' is ');
+  if (isIdx !== -1) {
+    const tail = t.slice(isIdx + 4).replace(/[?.!]+\s*$/, '').trim();
+    if (tail) return tail;
+  }
+  // 'What does <NAME> make you think of?'
+  const m = /what\s+does\s+(.+?)\s+make\s+you\s+think\s+of/i.exec(t);
+  if (m && m[1].trim()) return m[1].trim();
+  return '';
+}
+
 /** Mission JSON columns are TEXT — tolerate an array or a JSON string. */
 function parseMaybeJSONArray(v) {
   if (Array.isArray(v)) return v;
@@ -106,28 +138,98 @@ function computeNamingInner(rows, questions, mission) {
   const answered = (qid) => (rowsByQ.get(qid) || [])
     .filter((r) => r.answer !== null && r.answer !== undefined);
 
-  // ── Candidate registry (insertion order = report order) ─────────────
-  // mission.naming_candidates first, then any candidate_id discovered on
-  // monadic questions; discovered labels come from the [bracketed]
-  // candidate text in the question (claudeAI.js:1572).
-  const registry = new Map(); // candidate_id → label
+  // ── ONE canonical candidate registry (Pass 47) ──────────────────────
+  // The split that produced phantom "6 candidates when there are 3":
+  // monadic questions identify a candidate by candidate_id ("c1"), but
+  // forced-choice / paired / TURF identify it by its verbatim NAME
+  // ("Lumio") with candidate_id=null. The OLD code keyed the registry on
+  // id alone, so a paired option name that didn't already resolve to an
+  // id was registered as a NEW id — double-counting every candidate.
+  //
+  // Fix: NAME is the universal join key. We can't trust ids to line up
+  // across sources — mission bdf049d5 was generated with candidate_id
+  // "c1/c2/c3" while naming_candidates carried different ids — but the
+  // NAME is identical everywhere ("Lumio"). So:
+  //   1. Discover (id?, name) pairs from all three sources.
+  //   2. Collapse by norm(name) into ONE canonical entry per name.
+  //   3. The canonical candidate_id prefers the monadic candidate_id
+  //      (what the renderer + monadic math key on), else the
+  //      naming_candidates id, else the name itself.
+  // Insertion order = report order: mission.naming_candidates first
+  // (author's intended order), then monadic candidate_ids, then any
+  // name seen only in paired/TURF options.
+  const byName = new Map(); // norm(name) → { id, label }
+  const ensure = (rawName, rawId) => {
+    const name = String(rawName ?? '').trim();
+    const key = norm(name);
+    if (!key) return null;
+    let entry = byName.get(key);
+    if (!entry) { entry = { id: null, label: name }; byName.set(key, entry); }
+    // First real label wins; never overwrite a name with a bare id.
+    if (!entry.label && name) entry.label = name;
+    // Bind an id only if one is supplied and none is set yet. Monadic
+    // callers (1b) re-assert their id unconditionally afterwards so the
+    // monadic candidate_id always wins; paired/TURF callers (1c) pass no
+    // id and so never clobber an existing one.
+    const id = rawId === null || rawId === undefined ? '' : String(rawId).trim();
+    if (id && !entry.id) entry.id = id;
+    return entry;
+  };
+
+  // (1a) Author's intended candidates — id + name from the column.
   for (const c of parseMaybeJSONArray(mission.naming_candidates)) {
     if (!c || typeof c !== 'object') continue;
-    const label = String(c.text || c.name || '').trim();
-    const id = String(c.id ?? label).trim();
-    if (id) registry.set(id, label || id);
+    const name = String(c.text || c.name || '').trim();
+    if (name) ensure(name, c.id);
   }
+  // (1b) Monadic candidate_ids — recover the NAME from the question text
+  // (bracketed OR not) and bind it to candidate_id. We give the monadic
+  // id priority by writing it even when a naming_candidates id already
+  // exists for that name.
+  const monadicNameById = new Map(); // candidate_id → resolved name
   for (const q of questions) {
     if (!q || !q.candidate_id) continue;
-    const id = String(q.candidate_id);
-    if (!registry.has(id)) {
-      const m = BRACKET_RE.exec(String(q.text || ''));
-      registry.set(id, (m && m[1].trim()) || id);
+    const id = String(q.candidate_id).trim();
+    if (!id) continue;
+    const name = nameFromMonadicText(q.text) || monadicNameById.get(id) || '';
+    if (name && !monadicNameById.has(id)) monadicNameById.set(id, name);
+    const entry = ensure(name || id, null);
+    if (entry) entry.id = id; // monadic id is authoritative for the registry
+    // A monadic question with an unrecoverable name still needs an entry
+    // keyed by its id so its ratings aren't dropped.
+    if (!entry) {
+      const k = norm(id);
+      if (!byName.has(k)) byName.set(k, { id, label: id });
     }
   }
-  const idByLabel = new Map(); // norm(label) → candidate_id
-  for (const [id, label] of registry) {
-    if (!idByLabel.has(norm(label))) idByLabel.set(norm(label), id);
+  // (1c) Names appearing only as option text in forced-choice / paired /
+  // TURF Qs (these options ARE candidate names). EXCLUDE the screener:
+  // it is also methodology="monadic_plus_paired" (claudeAI.js:1640) but
+  // its options are category-buyer answers ("At least once a week"), not
+  // candidates — ingesting them spawns junk candidates. The forced
+  // choice is the only non-screening monadic_plus_paired Q with options.
+  for (const q of questions) {
+    if (!q || !Array.isArray(q.options) || q.options.length === 0) continue;
+    if (q.isScreening === true || q.is_screening === true) continue;
+    const carriesCandidateOptions = q.is_paired_comparison === true
+      || q.is_turf === true
+      || (q.methodology === 'monadic_plus_paired' && q.type !== 'text');
+    if (!carriesCandidateOptions) continue;
+    for (const o of q.options) ensure(o, null);
+  }
+
+  // Materialize: registry (candidate_id → label) + idByLabel (norm(name)
+  // → candidate_id). Both are keyed on the SAME canonical id so monadic,
+  // paired and TURF all roll up onto one candidate.
+  const registry = new Map();
+  const idByLabel = new Map();
+  for (const [, entry] of byName) {
+    const id = entry.id || entry.label; // names with no id key on themselves
+    if (!registry.has(id)) registry.set(id, entry.label || id);
+    if (!idByLabel.has(norm(entry.label))) idByLabel.set(norm(entry.label), id);
+    // Also let the bare id resolve to itself (covers monadic answers and
+    // any option text that happens to BE an id).
+    if (!idByLabel.has(norm(id))) idByLabel.set(norm(id), id);
   }
 
   // ── Monadic: per candidate × criterion → ratingStats ────────────────

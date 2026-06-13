@@ -282,6 +282,22 @@ async function runRecruitmentLoop(mission, supabase) {
       continue; // try the next persona
     }
 
+    // ── Pass 47 — zero-response guard (audit finding) ──────────────────
+    // A persona that produced NO parseable responses must NOT count as
+    // qualified. The roadmap mission (Pass 46) "completed" target_hit
+    // qualified=5 with ZERO persisted rows because empty personas slid
+    // through: keptResponses was empty, no screening question failed (no
+    // answers to check), so the persona qualified with nothing. With the
+    // simulator's retry this should be rare, but the guard is the
+    // invariant: qualified ⇒ at least one real response. Wasted, not
+    // qualified; the loop generates another persona.
+    if (!Array.isArray(responses) || responses.length === 0) {
+      logger.warn('Recruitment loop: persona produced zero responses; wasted, not qualified', {
+        missionId, personaIndex: recruitedCount,
+      });
+      continue;
+    }
+
     // ── Apply screening: walk responses in order, stop at first screen-fail
     const questionById = Object.fromEntries(
       (mission.questions || []).map((q) => [q.id, q]),
