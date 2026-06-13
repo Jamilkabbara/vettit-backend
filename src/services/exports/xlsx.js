@@ -1,11 +1,13 @@
 /**
  * VETT — Excel export using exceljs.
- * Five sheets:
+ * Sheets:
  *   1. Cover                — title, brief, meta, executive summary
- *   2. Raw responses        — every persona/question row from mission_responses
- *   3. Summary              — per-question aggregated distribution / averages / verbatims
- *   4. Insights             — narrative findings + recommended next actions from AI
- *   5. Demographic breakdown — age / country / gender / occupation tables
+ *   2. Key Results          — methodology's computed centerpiece metrics (Pass 47 Phase 4)
+ *   3. Raw responses        — every persona/question row from mission_responses
+ *   4. Summary              — per-question aggregated distribution / averages / verbatims
+ *   5. Insights             — narrative findings + recommended next actions from AI
+ *   6. Demographic breakdown — age / country / gender / occupation tables
+ *   (Key Results is omitted when the mission has no computed analysis.)
  *
  * Dark-theme styling isn't truly visual in spreadsheets, but we adopt the
  * VETT palette for headers and banding so the file feels on-brand.
@@ -15,6 +17,7 @@ const ExcelJS = require('exceljs');
 const { BRAND } = require('./shared');
 const { buildIntegrityWarnings } = require('./integrity');
 const { getReportMetadata } = require('./reportMetadata');
+const { analysisHeadlines, brandLiftStageTable } = require('./analysisHeadlines');
 
 // exceljs uses ARGB with leading alpha FF
 const argb = (c) => 'FF' + (c || '').replace('#', '').toUpperCase();
@@ -105,7 +108,52 @@ function buildXLSX(pack, res) {
   esBody.font = { name: 'Calibri', size: 11 };
   esBody.alignment = { vertical: 'top', wrapText: true };
 
-  // ── SHEET 2: RAW ───────────────────────────────────────────
+  // ── SHEET 2: KEY RESULTS (Pass 47 Phase 4) ────────────────
+  // The methodology's computed centerpiece numbers (VW optimal price,
+  // brand-lift exposed/control funnel + significance, NPS/CSAT/CES,
+  // MaxDiff/Kano, naming win-rates, …). Placed 2nd (right after the
+  // cover) so the research-grade headline metrics are the first thing a
+  // reader sees, not buried behind raw rows. Skipped entirely when there
+  // is no computed analysis (legacy missions) so the tab strip stays clean.
+  const analysisObj = mission.analysis || null;
+  const headlines = analysisHeadlines(analysisObj);
+  if (headlines.length > 0) {
+    const kr = wb.addWorksheet('Key Results', {
+      views: [{ state: 'frozen', ySplit: 1 }],
+      properties: { tabColor: { argb: argb(BRAND.lime) } },
+    });
+    kr.columns = [
+      { header: 'Metric', key: 'metric', width: 52 },
+      { header: 'Value',  key: 'value',  width: 44 },
+    ];
+    kr.getRow(1).eachCell((c) => styleHeader(c));
+
+    headlines.forEach((h, idx) => {
+      const row = kr.addRow({ metric: h.label, value: h.value });
+      row.getCell('value').font = { name: 'Calibri', size: 11, bold: true };
+      if (idx % 2 === 0) {
+        row.eachCell((c) => {
+          c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8F9FC' } };
+        });
+      }
+    });
+
+    // Brand-lift per-stage lift table — richer than the flat headlines.
+    const liftRows = brandLiftStageTable(analysisObj);
+    if (liftRows.length > 0) {
+      kr.addRow({});
+      const hdr = kr.addRow({ metric: 'Funnel stage', value: 'Exposed / Control / Lift / Significance / n' });
+      hdr.eachCell((c) => styleHeader(c));
+      liftRows.forEach((r) => {
+        kr.addRow({
+          metric: r.stage,
+          value: `${r.exposed} vs ${r.control}  ·  ${r.lift}  ·  ${r.significance}  ·  n=${r.n}`,
+        });
+      });
+    }
+  }
+
+  // ── SHEET 3: RAW ───────────────────────────────────────────
   const raw = wb.addWorksheet('Raw responses', {
     properties: { tabColor: { argb: argb(BRAND.lime) } },
   });
@@ -153,7 +201,7 @@ function buildXLSX(pack, res) {
     }
   });
 
-  // ── SHEET 3: SUMMARY ───────────────────────────────────────
+  // ── SHEET 4: SUMMARY ───────────────────────────────────────
   const summary = wb.addWorksheet('Summary', {
     properties: { tabColor: { argb: argb(BRAND.lime) } },
   });
@@ -216,7 +264,7 @@ function buildXLSX(pack, res) {
     summary.addRow({});
   });
 
-  // ── SHEET 4: INSIGHTS ──────────────────────────────────────
+  // ── SHEET 5: INSIGHTS ──────────────────────────────────────
   const insightsSheet = wb.addWorksheet('Insights', {
     views: [{ state: 'frozen', ySplit: 1 }],
     properties: { tabColor: { argb: argb(BRAND.lime) } },
@@ -302,7 +350,7 @@ function buildXLSX(pack, res) {
     });
   }
 
-  // ── SHEET 5: DEMOGRAPHIC BREAKDOWN ────────────────────────
+  // ── SHEET 6: DEMOGRAPHIC BREAKDOWN ────────────────────────
   const demoSheet = wb.addWorksheet('Demographic breakdown', {
     properties: { tabColor: { argb: argb(BRAND.lime) } },
   });
@@ -382,7 +430,7 @@ function buildXLSX(pack, res) {
     : `Occupation distribution (n=${totalOccCount})`;
   addDemoTable(demoSheet, dr, occLabel, occEntries.slice(0, 10));
 
-  // ── SHEET 6: DATA INTEGRITY (Pass 25 Phase 0.1 Bug H + A) ─
+  // ── SHEET 7: DATA INTEGRITY (Pass 25 Phase 0.1 Bug H + A) ─
   // Hidden sheet — surfaces schema drift and option overlap warnings without
   // cluttering the primary tab strip. Users find via "View hidden sheets".
   const integrityWarnings = buildIntegrityWarnings(mission, aggregatedByQuestion);

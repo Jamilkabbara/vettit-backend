@@ -19,6 +19,23 @@
     {{/each}}
   </div>
   {{/if}}
+
+  {{!-- Pass 47 Phase 4 — Key Results: the methodology's computed centerpiece
+       numbers (from mission.analysis). NUMBERS only; chart visuals → Pass 48. --}}
+  {{#if hasKeyResults}}
+  <div class="section-eyebrow trailing-block" style="margin-top: 18pt;">Key Results</div>
+  <div class="section-divider"></div>
+  <table style="width:100%; border-collapse:collapse; font-size:10.5pt;">
+    <tbody>
+      {{#each keyResults}}
+      <tr style="border-bottom: 0.5pt solid var(--border);">
+        <td style="padding:5pt 8pt 5pt 0; color: var(--text2); vertical-align:top;">{{this.label}}</td>
+        <td style="padding:5pt 0; text-align:right; color: var(--lime); font-weight:700; font-variant-numeric: tabular-nums; white-space:nowrap;">{{this.value}}</td>
+      </tr>
+      {{/each}}
+    </tbody>
+  </table>
+  {{/if}}
 </section>
 
 {{!-- ─── PER-QUESTION RESULTS ──────────────────────────────────── --}}
