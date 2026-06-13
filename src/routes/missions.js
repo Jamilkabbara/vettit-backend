@@ -105,6 +105,78 @@ router.get('/', authenticate, async (req, res, next) => {
  * dead URL (and made the ResultsPage flash "Mission not found" during
  * the auth-race window before user state settled).
  */
+/**
+ * GET /api/missions/recent-vetted — PUBLIC, anonymized social proof for
+ * the landing-page ticker (Pass 46 follow-up).
+ *
+ * Returns ONLY { location, category } for recent COMPLETED missions —
+ * never briefs, titles, ids, or user data. Location is the first
+ * targeted city when present, else the (display-normalized) country;
+ * category is the goal_type mapped to a plain label.
+ *
+ * The frontend hides the ticker entirely when `count` < 5, so the
+ * fabricated-data placeholder is never shown. NO AUTH (public data),
+ * service-role read returning a strict allow-list of fields.
+ */
+const VETTED_CATEGORY_LABELS = {
+  research:          'Market Research',
+  validate:          'Product Validation',
+  compare:           'Concept Test',
+  marketing:         'Ad Testing',
+  satisfaction:      'Customer Satisfaction',
+  pricing:           'Pricing Study',
+  roadmap:           'Feature Roadmap',
+  competitor:        'Competitor Analysis',
+  naming_messaging:  'Naming & Messaging',
+  churn_research:    'Churn Study',
+  brand_lift:        'Brand Lift',
+  creative_attention:'Creative Testing',
+};
+const VETTED_COUNTRY_NAMES = {
+  AE: 'UAE', SA: 'Saudi Arabia', US: 'the US', GB: 'the UK', UK: 'the UK',
+  EG: 'Egypt', IN: 'India', SG: 'Singapore', FR: 'France', DE: 'Germany',
+  NG: 'Nigeria', KE: 'Kenya', CA: 'Canada', BR: 'Brazil', NL: 'Netherlands',
+  KR: 'South Korea', TR: 'Turkey', QA: 'Qatar', KW: 'Kuwait', BH: 'Bahrain', OM: 'Oman',
+};
+function vettedLocation(targeting) {
+  const geo = (targeting && targeting.geography) || {};
+  const cities = Array.isArray(geo.cities) ? geo.cities.filter(Boolean) : [];
+  if (cities.length > 0) return String(cities[0]);
+  const countries = Array.isArray(geo.countries) ? geo.countries.filter(Boolean) : [];
+  if (countries.length > 0) {
+    const c = String(countries[0]);
+    // ISO-2 code → display name; otherwise it's already a name.
+    return c.length === 2 ? (VETTED_COUNTRY_NAMES[c.toUpperCase()] || c) : c;
+  }
+  return null;
+}
+router.get('/recent-vetted', async (req, res, next) => {
+  try {
+    const { data, error } = await supabase
+      .from('missions')
+      .select('goal_type, targeting, completed_at')
+      .eq('status', 'completed')
+      .order('completed_at', { ascending: false, nullsFirst: false })
+      .limit(40);
+    if (error) throw error;
+
+    const items = [];
+    for (const m of data || []) {
+      const location = vettedLocation(m.targeting);
+      const category = VETTED_CATEGORY_LABELS[m.goal_type];
+      // Require BOTH a real location and a known category — never emit
+      // a half-anonymized or unlabeled entry.
+      if (location && category) items.push({ location, category });
+      if (items.length >= 20) break;
+    }
+
+    // The gate the spec mandates: fewer than 5 real completed missions
+    // with usable location+category → empty, frontend hides the ticker.
+    if (items.length < 5) return res.json({ items: [], count: items.length });
+    res.json({ items, count: items.length });
+  } catch (err) { next(err); }
+});
+
 router.get('/:id', authenticate, async (req, res, next) => {
   try {
     // First probe: does this UUID exist at all? (Independent of ownership.)
