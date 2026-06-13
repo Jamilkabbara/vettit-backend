@@ -134,19 +134,29 @@ const VETTED_CATEGORY_LABELS = {
 };
 const VETTED_COUNTRY_NAMES = {
   AE: 'UAE', SA: 'Saudi Arabia', US: 'the US', GB: 'the UK', UK: 'the UK',
-  EG: 'Egypt', IN: 'India', SG: 'Singapore', FR: 'France', DE: 'Germany',
-  NG: 'Nigeria', KE: 'Kenya', CA: 'Canada', BR: 'Brazil', NL: 'Netherlands',
-  KR: 'South Korea', TR: 'Turkey', QA: 'Qatar', KW: 'Kuwait', BH: 'Bahrain', OM: 'Oman',
+  EG: 'Egypt', IN: 'India', ID: 'Indonesia', SG: 'Singapore', FR: 'France',
+  DE: 'Germany', NG: 'Nigeria', KE: 'Kenya', CA: 'Canada', BR: 'Brazil',
+  NL: 'Netherlands', KR: 'South Korea', TR: 'Turkey', QA: 'Qatar', KW: 'Kuwait',
+  BH: 'Bahrain', OM: 'Oman', JO: 'Jordan', LB: 'Lebanon', PK: 'Pakistan',
+  ES: 'Spain', IT: 'Italy', AU: 'Australia', JP: 'Japan', CN: 'China',
+};
+// Collapse full country names that show up in older targeting rows to the
+// same short display the ISO codes resolve to, so the ticker doesn't read
+// "United Arab Emirates" next to "UAE". Keys are lowercased.
+const VETTED_NAME_CANON = {
+  'united arab emirates': 'UAE', 'u.a.e.': 'UAE', 'uae': 'UAE',
+  'united states': 'the US', 'united states of america': 'the US', 'usa': 'the US',
+  'united kingdom': 'the UK', 'great britain': 'the UK',
 };
 function vettedLocation(targeting) {
   const geo = (targeting && targeting.geography) || {};
   const cities = Array.isArray(geo.cities) ? geo.cities.filter(Boolean) : [];
-  if (cities.length > 0) return String(cities[0]);
+  if (cities.length > 0) return String(cities[0]).trim();
   const countries = Array.isArray(geo.countries) ? geo.countries.filter(Boolean) : [];
   if (countries.length > 0) {
-    const c = String(countries[0]);
-    // ISO-2 code → display name; otherwise it's already a name.
-    return c.length === 2 ? (VETTED_COUNTRY_NAMES[c.toUpperCase()] || c) : c;
+    const c = String(countries[0]).trim();
+    if (c.length === 2) return VETTED_COUNTRY_NAMES[c.toUpperCase()] || c.toUpperCase();
+    return VETTED_NAME_CANON[c.toLowerCase()] || c; // already a name
   }
   return null;
 }
@@ -161,12 +171,19 @@ router.get('/recent-vetted', async (req, res, next) => {
     if (error) throw error;
 
     const items = [];
+    const seen = new Set();
     for (const m of data || []) {
       const location = vettedLocation(m.targeting);
       const category = VETTED_CATEGORY_LABELS[m.goal_type];
       // Require BOTH a real location and a known category — never emit
       // a half-anonymized or unlabeled entry.
-      if (location && category) items.push({ location, category });
+      if (!location || !category) continue;
+      // Dedupe to distinct location+category pairs (newest-first) so the
+      // ticker reads with variety instead of repeating the same line.
+      const key = `${location}|${category}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push({ location, category });
       if (items.length >= 20) break;
     }
 
