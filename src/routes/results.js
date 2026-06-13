@@ -577,6 +577,14 @@ router.get('/:missionId/export/raw', authenticate, async (req, res, next) => {
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition',
       `attachment; filename="vett-raw-${req.params.missionId}.json"`);
+    // Pass 47 Phase 4 — include the deterministic methodology analysis
+    // (missions.analysis: VW optimal price, brand-lift funnel + significance,
+    // NPS/CSAT/CES, MaxDiff/Kano, naming win-rates, etc.) so the JSON dump
+    // carries the research-grade centerpiece numbers, not just per-question
+    // tables. analysisHeadlines is the flat label/value summary alongside it.
+    const { analysisHeadlines } = require('../services/exports/analysisHeadlines');
+    const analysis = pack.mission.analysis || null;
+
     res.json({
       mission: {
         id:               pack.mission.id,
@@ -589,6 +597,8 @@ router.get('/:missionId/export/raw', authenticate, async (req, res, next) => {
         completed_at:     pack.mission.completed_at,
       },
       insights:            taggedInsights,
+      analysis,
+      analysis_headlines:  analysisHeadlines(analysis),
       aggregatedByQuestion: pack.aggregatedByQuestion,
       responses:           pack.responses,
       _integrity_warnings: integrityWarnings,

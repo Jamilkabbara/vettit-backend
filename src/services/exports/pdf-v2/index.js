@@ -19,6 +19,7 @@ const { renderPdfFromHtml, getFontFaceCss } = require('./engine');
 const { resolveQuestionInsight } = require('../screenerInsights');
 const { buildIntegrityWarnings } = require('../integrity');
 const { getReportMetadata } = require('../reportMetadata');
+const { analysisHeadlines, brandLiftStageTable } = require('../analysisHeadlines');
 
 /* ─── Template + CSS loading (once per process) ─────────────────────────── */
 
@@ -208,6 +209,15 @@ function buildViewModel(pack) {
   // Pass 25 Phase 0.1 Minor 1 — distinct mission_completed vs report_generated
   const meta = getReportMetadata(mission);
 
+  // Pass 47 Phase 4 — methodology key-results (computed centerpiece numbers
+  // from mission.analysis). Rendered as a "Key Results" section near the top
+  // of the body templates so the research-grade metrics aren't absent from
+  // the PDF. brandLiftHeadlineTable feeds the per-stage lift table on the
+  // brand_lift template. NUMBERS only; full chart-visual parity → Pass 48.
+  const analysisObj = mission.analysis || null;
+  const keyResults = analysisHeadlines(analysisObj);
+  const brandLiftHeadlineTable = brandLiftStageTable(analysisObj);
+
   return {
     mission: {
       id:                mission.id,
@@ -218,6 +228,10 @@ function buildViewModel(pack) {
     insights: insights || {},
     kpis,
     hasKpis:            kpis.length > 0,
+    keyResults,
+    hasKeyResults:      keyResults.length > 0,
+    brandLiftHeadlineTable,
+    hasBrandLiftHeadlineTable: brandLiftHeadlineTable.length > 0,
     questions,
     hasRecommendations: Array.isArray(insights?.recommendations) && insights.recommendations.length > 0,
     hasFollowUps:       Array.isArray(insights?.follow_ups)      && insights.follow_ups.length > 0,

@@ -25,6 +25,54 @@
   {{/if}}
 </section>
 
+{{!-- ─── KEY RESULTS (Pass 47 Phase 4) ──────────────────────────
+     The computed brand-lift centerpiece numbers from mission.analysis:
+     exposed/control cell n's, per-stage exposed% vs control% + lift +
+     significance. Sourced from the deterministic analysis (NOT the legacy
+     blr payload), so the research-grade numbers appear even on missions
+     that have analysis but no blr. Chart visuals → Pass 48. --}}
+{{#if hasKeyResults}}
+<section class="page">
+  <div class="section-eyebrow">· Key Results</div>
+  <div class="section-divider"></div>
+  <table style="width:100%; border-collapse:collapse; font-size:10.5pt; margin-bottom: 16pt;">
+    <tbody>
+      {{#each keyResults}}
+      <tr style="border-bottom: 0.5pt solid var(--border);">
+        <td style="padding:5pt 8pt 5pt 0; color: var(--text2); vertical-align:top;">{{this.label}}</td>
+        <td style="padding:5pt 0; text-align:right; color: var(--lime); font-weight:700; font-variant-numeric: tabular-nums;">{{this.value}}</td>
+      </tr>
+      {{/each}}
+    </tbody>
+  </table>
+
+  {{#if hasBrandLiftHeadlineTable}}
+  <table style="width:100%; border-collapse:collapse; font-size:10pt;">
+    <thead>
+      <tr style="border-bottom: 1pt solid var(--border);">
+        <th style="text-align:left; padding:6pt 0;">Funnel stage</th>
+        <th style="text-align:right; padding:6pt 0;">Exposed</th>
+        <th style="text-align:right; padding:6pt 0;">Control</th>
+        <th style="text-align:right; padding:6pt 0;">Lift</th>
+        <th style="text-align:right; padding:6pt 0;">Significance</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{#each brandLiftHeadlineTable}}
+      <tr>
+        <td style="padding:5pt 0; color: var(--text1);">{{this.stage}}</td>
+        <td style="padding:5pt 0; text-align:right; font-variant-numeric: tabular-nums;">{{this.exposed}}</td>
+        <td style="padding:5pt 0; text-align:right; font-variant-numeric: tabular-nums;">{{this.control}}</td>
+        <td style="padding:5pt 0; text-align:right; color: var(--lime); font-variant-numeric: tabular-nums;">{{this.lift}}</td>
+        <td style="padding:5pt 0; text-align:right; color: var(--text2);">{{this.significance}}</td>
+      </tr>
+      {{/each}}
+    </tbody>
+  </table>
+  {{/if}}
+</section>
+{{/if}}
+
 {{!-- ─── FUNNEL PERFORMANCE ─────────────────────────────────── --}}
 {{#if blr.funnel}}
 <section class="page">

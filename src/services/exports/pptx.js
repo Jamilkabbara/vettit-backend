@@ -25,6 +25,7 @@ const { BRAND } = require('./shared');
 const { resolveQuestionInsight } = require('./screenerInsights');
 const { buildIntegrityWarnings } = require('./integrity');
 const { getReportMetadata } = require('./reportMetadata');
+const { analysisHeadlines } = require('./analysisHeadlines');
 
 // pptxgenjs uses hex codes without the leading '#'
 const hex = (c) => (c || '').replace('#', '');
@@ -213,6 +214,36 @@ function buildPPTX(pack, res) {
     paraSpaceAfter: 8, valign: 'top',
     autoFit: true,
   });
+
+  // ── KEY RESULTS (Pass 47 Phase 4) ─────────────────────────
+  // The methodology's computed centerpiece numbers from mission.analysis
+  // (VW optimal price, brand-lift funnel + significance, NPS/CSAT/CES,
+  // MaxDiff/Kano, naming win-rates, …). Rendered as a label/value list
+  // right after the exec summary so the research-grade headline metrics
+  // are front-and-centre. Paginated (12 rows/slide) so long brand-lift
+  // funnels don't overflow the frame. Skipped when no computed analysis.
+  const headlines = analysisHeadlines(mission.analysis || null);
+  if (headlines.length > 0) {
+    const PER_SLIDE = 12;
+    const pageCount = Math.ceil(headlines.length / PER_SLIDE);
+    for (let pageIdx = 0; pageIdx < pageCount; pageIdx += 1) {
+      const krSlide = pptx.addSlide();
+      addDarkBackground(krSlide);
+      addSectionHeader(
+        krSlide,
+        '· KEY RESULTS',
+        pageCount > 1 ? `The numbers that matter (${pageIdx + 1}/${pageCount})` : 'The numbers that matter',
+      );
+      const slotRows = headlines.slice(pageIdx * PER_SLIDE, (pageIdx + 1) * PER_SLIDE);
+      const items = [];
+      slotRows.forEach((h, i) => {
+        if (i > 0) items.push({ text: '', options: { breakLine: true } });
+        items.push({ text: `${h.label}:  `, options: { fontSize: 13, color: hex(BRAND.text2), breakLine: false } });
+        items.push({ text: String(h.value), options: { fontSize: 13, bold: true, color: hex(BRAND.lime), paraSpaceAfter: 8 } });
+      });
+      krSlide.addText(items, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: 'Calibri', valign: 'top' });
+    }
+  }
 
   // ── KPI SNAPSHOT ──────────────────────────────────────────
   // Bug 8 fix: layout assumes exactly 3 KPIs (prompt instructs Claude to return 3).
