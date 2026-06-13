@@ -208,3 +208,138 @@ test('incomputable → null, never throw (empty + junk inputs)', () => {
   expect(noRows.gaps).toBeNull();
   expect(noRows.switching).toBeNull();
 });
+
+// ── PASS 47 — NEW GENERATOR SHAPE: per-brand attribute batteries ──────────
+// The fixed generator emits ONE attribute battery PER BRAND (focal + each
+// competitor), all funnel_stage="attributes", IDENTICAL options, brand_id
+// set per brand (focal = "our_brand"). This mirrors the radar-enabling
+// shape and the WORST anchoring case from real mission
+// 4515fed5-7c3d-4c47-912b-d54b07ba31de: a GENERIC focal — mission.brand_name
+// is null and competitor_brands is empty, so the focal brand is identified
+// ONLY by the brand_id="our_brand" convention + the aided-awareness option
+// "Our Brand". Three brands share the same 3-attribute battery, so the radar
+// has shared axes across ≥2 brands and gaps compute.
+const NEW_BRAND_OPTS = ['Our Brand', 'Careem', 'Uber'];
+const NEW_ATTRS = ['Reliable', 'Affordable', 'Modern'];
+
+const NEW_QUESTIONS = [
+  { id: 'q1', text: 'How often do you take ride-hailing trips?', type: 'single', isScreening: true, methodology: 'brand_health_tracker', funnel_stage: 'screener', brand_id: null, options: ['Weekly', 'Never'] },
+  { id: 'q2', text: 'Which ride-hailing brands come to mind? List up to 5.', type: 'text', methodology: 'brand_health_tracker', funnel_stage: 'awareness', brand_id: null, options: [] },
+  { id: 'q3', text: 'Which of these ride-hailing brands have you heard of? Select all.', type: 'multi', methodology: 'brand_health_tracker', funnel_stage: 'awareness', brand_id: null, options: NEW_BRAND_OPTS },
+  { id: 'q4', text: 'Which of these would you consider next time? Select all.', type: 'multi', methodology: 'brand_health_tracker', funnel_stage: 'consideration', brand_id: null, options: NEW_BRAND_OPTS },
+  { id: 'q5', text: 'If you had to choose ONE for your next ride, which would you pick?', type: 'single', methodology: 'brand_health_tracker', funnel_stage: 'preference', brand_id: null, options: NEW_BRAND_OPTS },
+  { id: 'q6', text: 'Which ride-hailing brand do you use most often?', type: 'single', methodology: 'brand_health_tracker', funnel_stage: 'use', brand_id: null, options: [...NEW_BRAND_OPTS, 'None of these'] },
+  // NPS — focal via brand_id="our_brand" convention (generic focal: no brand_name)
+  { id: 'q7', text: 'How likely are you to recommend Our Brand to a friend? (0-10)', type: 'rating', methodology: 'brand_health_tracker', funnel_stage: 'recommendation', brand_id: 'our_brand', options: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'] },
+  // attribute batteries — funnel_stage="attributes", IDENTICAL options, one per brand
+  { id: 'q8_focal', text: 'Which of these attributes apply to Our Brand? Select all that apply.', type: 'multi', methodology: 'brand_health_tracker', funnel_stage: 'attributes', brand_id: 'our_brand', options: NEW_ATTRS },
+  { id: 'q8_careem', text: 'Which of these attributes apply to Careem? Select all that apply.', type: 'multi', methodology: 'brand_health_tracker', funnel_stage: 'attributes', brand_id: 'Careem', options: NEW_ATTRS },
+  { id: 'q8_uber', text: 'Which of these attributes apply to Uber? Select all that apply.', type: 'multi', methodology: 'brand_health_tracker', funnel_stage: 'attributes', brand_id: 'Uber', options: NEW_ATTRS },
+  { id: 'q9', text: 'How likely are you to switch brands in the next 6 months? (1-5)', type: 'rating', methodology: 'brand_health_tracker', funnel_stage: 'switching', brand_id: null, options: ['1', '2', '3', '4', '5'] },
+  { id: 'q10', text: 'If you were to switch, which brand would you most likely switch to?', type: 'single', methodology: 'brand_health_tracker', funnel_stage: 'switching', brand_id: null, options: ['Careem', 'Uber'] },
+  { id: 'q11', text: 'In the past 2 weeks, have you talked about Our Brand with others?', type: 'single', methodology: 'brand_health_tracker', funnel_stage: 'wom', brand_id: 'our_brand', options: ['Yes - positively', 'Yes - negatively', "No, but I've thought about them", 'No, not at all'] },
+];
+
+// Generic focal — exactly the real-mission failure mode (brand_name null).
+const NEW_MISSION = { brand_name: null, competitor_brands: [] };
+
+/* Hand math (p1..p5, base 5) —
+ *   preference q5: [Our Brand, Careem, Uber, Careem, Uber]
+ *                  → Our Brand 20%  Careem 40%  Uber 40%  (sums to 100%)
+ *   attributes (shared battery Reliable/Affordable/Modern):
+ *     Our Brand q8_focal:  Reliable {p1,p2,p3} 60%  Affordable {p1} 20%  Modern {p1,p2} 40%
+ *     Careem    q8_careem: Reliable {p1,p2} 40%     Affordable {p1,p2,p3,p4} 80%  Modern {p3} 20%
+ *     Uber      q8_uber:   Reliable {p1..p5} 100%   Affordable {p1} 20%  Modern {p1,p2,p3,p4} 80%
+ *   gaps (focal − best competitor):
+ *     Reliable  60 − 100(Uber)  = −40
+ *     Affordable 20 − 80(Careem) = −60
+ *     Modern    40 − 80(Uber)   = −40
+ *     sorted ascending (gap, then attr name): Affordable −60, Modern −40, Reliable −40
+ *   NPS focal q7 [10,9,8,6,5]: promoters 2 (40%), passives 1 (20%),
+ *             detractors 2 (40%) → score 40−40 = 0
+ */
+const NEW_ROWS = [
+  // q3 aided (so focal anchoring also works off the first option)
+  row('p1', 'q3', ['Our Brand', 'Careem', 'Uber']), row('p2', 'q3', ['Careem', 'Uber']),
+  row('p3', 'q3', ['Uber']), row('p4', 'q3', ['Careem', 'Uber']), row('p5', 'q3', ['Uber']),
+  // q5 preference
+  row('p1', 'q5', 'Our Brand'), row('p2', 'q5', 'Careem'), row('p3', 'q5', 'Uber'),
+  row('p4', 'q5', 'Careem'), row('p5', 'q5', 'Uber'),
+  // q7 NPS focal
+  row('p1', 'q7', 10), row('p2', 'q7', 9), row('p3', 'q7', 8), row('p4', 'q7', 6), row('p5', 'q7', 5),
+  // q8_focal attributes — Our Brand
+  row('p1', 'q8_focal', ['Reliable', 'Affordable', 'Modern']), row('p2', 'q8_focal', ['Reliable', 'Modern']),
+  row('p3', 'q8_focal', ['Reliable']), row('p4', 'q8_focal', []), row('p5', 'q8_focal', []),
+  // q8_careem attributes — Careem
+  row('p1', 'q8_careem', ['Reliable', 'Affordable']), row('p2', 'q8_careem', ['Reliable', 'Affordable']),
+  row('p3', 'q8_careem', ['Affordable', 'Modern']), row('p4', 'q8_careem', ['Affordable']), row('p5', 'q8_careem', []),
+  // q8_uber attributes — Uber
+  row('p1', 'q8_uber', ['Reliable', 'Affordable', 'Modern']), row('p2', 'q8_uber', ['Reliable', 'Modern']),
+  row('p3', 'q8_uber', ['Reliable', 'Modern']), row('p4', 'q8_uber', ['Reliable', 'Modern']), row('p5', 'q8_uber', ['Reliable']),
+  // q10 switching target
+  row('p1', 'q10', 'Careem'), row('p2', 'q10', 'Careem'), row('p3', 'q10', 'Uber'),
+  row('p4', 'q10', 'Careem'), row('p5', 'q10', 'Uber'),
+];
+
+test('NEW shape: generic focal anchored via brand_id="our_brand" convention', () => {
+  const res = computeCompetitor(NEW_ROWS, NEW_QUESTIONS, NEW_MISSION);
+  // mission.brand_name is null, yet the focal resolves to the "Our Brand" label
+  expect(res.focal_brand).toBe('Our Brand');
+  expect(brand(res, 'Our Brand').is_focal).toBe(true);
+  expect(brand(res, 'Careem').is_focal).toBe(false);
+  expect(brand(res, 'Uber').is_focal).toBe(false);
+  // focal NPS resolves through the convention even with a generic focal
+  expect(brand(res, 'Our Brand').nps).toEqual({
+    score: 0, promoters_pct: 40, passives_pct: 20, detractors_pct: 40, base: 5,
+  });
+});
+
+test('NEW shape: radar — ≥2 brands scored on the SAME shared attribute axes', () => {
+  const res = computeCompetitor(NEW_ROWS, NEW_QUESTIONS, NEW_MISSION);
+  const withAttrs = res.brands.filter((b) => b.attributes);
+  // all three brands carry attribute data (radar needs ≥2)
+  expect(withAttrs.map((b) => b.brand_id)).toEqual(['Our Brand', 'Careem', 'Uber']);
+  // axes are shared: identical key set across every brand
+  const axes = (b) => Object.keys(b.attributes).sort();
+  expect(axes(brand(res, 'Our Brand'))).toEqual(['Affordable', 'Modern', 'Reliable']);
+  expect(axes(brand(res, 'Careem'))).toEqual(['Affordable', 'Modern', 'Reliable']);
+  expect(axes(brand(res, 'Uber'))).toEqual(['Affordable', 'Modern', 'Reliable']);
+  // endorsement % per the hand math
+  expect(brand(res, 'Our Brand').attributes).toEqual({ Reliable: 60, Affordable: 20, Modern: 40 });
+  expect(brand(res, 'Careem').attributes).toEqual({ Reliable: 40, Affordable: 80, Modern: 20 });
+  expect(brand(res, 'Uber').attributes).toEqual({ Reliable: 100, Affordable: 20, Modern: 80 });
+  expect(brand(res, 'Our Brand').attributes_base).toBe(5);
+});
+
+test('NEW shape: share-of-preference maps brand-name answers, sums to 100% over brands', () => {
+  const res = computeCompetitor(NEW_ROWS, NEW_QUESTIONS, NEW_MISSION);
+  expect(res.share_of_preference.question_id).toBe('q5');
+  expect(res.share_of_preference.base).toBe(5);
+  const sh = res.share_of_preference.shares;
+  expect(sh['Our Brand']).toEqual({ count: 1, pct: 20 });
+  expect(sh.Careem).toEqual({ count: 2, pct: 40 });
+  expect(sh.Uber).toEqual({ count: 2, pct: 40 });
+  const totalPct = Object.values(sh).reduce((s, v) => s + v.pct, 0);
+  expect(totalPct).toBe(100);
+});
+
+test('NEW shape: gaps — focal vs best competitor per attribute, worst deficit first', () => {
+  const res = computeCompetitor(NEW_ROWS, NEW_QUESTIONS, NEW_MISSION);
+  // focal(Our Brand) − best competitor per attribute:
+  //   Affordable 20 − 80(Careem) = −60  (worst → first)
+  //   Modern     40 − 80(Uber)   = −40  ("Modern" < "Reliable" on the tie)
+  //   Reliable   60 − 100(Uber)  = −40
+  expect(res.gaps).toEqual([
+    { attribute: 'Affordable', focal_mean: 20, best_competitor: 'Careem', best_competitor_mean: 80, gap: -60 },
+    { attribute: 'Modern', focal_mean: 40, best_competitor: 'Uber', best_competitor_mean: 80, gap: -40 },
+    { attribute: 'Reliable', focal_mean: 60, best_competitor: 'Uber', best_competitor_mean: 100, gap: -40 },
+  ]);
+});
+
+test('NEW shape: attribute batteries are NOT mistaken for aided awareness (q3 stays brand-based)', () => {
+  const res = computeCompetitor(NEW_ROWS, NEW_QUESTIONS, NEW_MISSION);
+  // aided awareness still reads from q3 (brand options), not the batteries:
+  // Uber heard-of by all 5 personas → 100%
+  expect(brand(res, 'Uber').awareness_pct).toEqual({ pct: 100, count: 5, base: 5 });
+  expect(brand(res, 'Our Brand').awareness_pct).toEqual({ pct: 20, count: 1, base: 5 });
+});

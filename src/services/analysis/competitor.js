@@ -1,5 +1,5 @@
 /**
- * Pass 46 Phase 3 — deterministic COMPETITOR ANALYSIS
+ * Pass 46 Phase 3 / Pass 47 — deterministic COMPETITOR ANALYSIS
  * (Brand Health Tracker: 5-stage funnel + NPS + attributes + switching + WoM).
  *
  * Doctrine (Pass 46): the LLM does NOT compute methodology math. This
@@ -7,12 +7,25 @@
  * answer}) into every number the competitor report shows.
  * Deterministic, never throws, incomputable → null.
  *
+ * PASS 47 — the perceptual-map radar needs EVERY brand scored on the same
+ * attribute axes. The fixed generator now emits ONE attribute battery per
+ * brand (focal + each competitor), all funnel_stage="attributes", identical
+ * options, brand_id set per brand (focal = "our_brand"). This module:
+ *   • anchors the focal brand from mission.brand_name OR the "our_brand"
+ *     brand_id convention OR the first aided-awareness option — robust to a
+ *     null/generic focal (real mission 4515fed5 has brand_name=null and the
+ *     focal label is literally "Our Brand"/brand_id "our_brand");
+ *   • reads funnel_stage="attributes" batteries (and still tolerates the
+ *     LEGACY shape where the focal battery rode funnel_stage="awareness");
+ *   • produces per-brand attribute endorsement % on the shared battery, so
+ *     the radar has ≥2 brands on shared axes when the survey carries
+ *     per-brand batteries.
+ *
  * Question metadata contract — quoted from the generator prompt
- * COMPETITOR_SURVEY_GEN_SYSTEM (src/services/claudeAI.js:1416-1457).
- * Every question carries methodology="brand_health_tracker" and a
- * funnel_stage ∈ "screener|awareness|consideration|preference|use|
- * recommendation|switching|wom" (claudeAI.js:1433). The 11 fixed
- * questions (claudeAI.js:1441-1452):
+ * COMPETITOR_SURVEY_GEN_SYSTEM (src/services/claudeAI.js). Every question
+ * carries methodology="brand_health_tracker" and a funnel_stage ∈
+ * "screener|awareness|consideration|preference|use|recommendation|
+ * attributes|switching|wom". The fixed funnel questions:
  *
  *  q2  UNAIDED AWARENESS — funnel_stage="awareness", type="text".
  *      Free text → narrative layer; no math here.
@@ -34,27 +47,31 @@
  *      recommendation questions and resolves each to a brand via
  *      brand_id (case-insensitive) → question-text label scan → focal
  *      fallback. ANSWER: a number 0-10 (simulate.js:67).
- *  q8  ATTRIBUTE MATRIX  — funnel_stage="awareness" (!), type="multi",
- *      text 'Which of these attributes apply to <focal_brand>? …',
- *      options = the attribute battery, NOT brands (claudeAI.js:1449).
- *      Disambiguated from q3 by checking whether the options match
- *      known brand labels. ANSWER: array of selected attribute strings;
- *      endorsement is binary, so the brand×attribute "mean" is the
- *      endorsement percentage (0-100) of the question's answer base.
- *  q9  SWITCHING INTENT  — funnel_stage="switching", type="rating" 1-5.
- *  q10 SWITCHING TARGET  — funnel_stage="switching", type="single",
- *      options = competitor list (claudeAI.js:1451).
- *  q11 WORD-OF-MOUTH     — funnel_stage="wom", type="single", options=
+ *  ATTRIBUTE BATTERIES — funnel_stage="attributes" (PASS 47), type="multi",
+ *      ONE question per brand, text 'Which of these attributes apply to
+ *      <brand>? …', IDENTICAL options = the attribute battery (NOT brands),
+ *      brand_id = that brand's id (focal = "our_brand"). ANSWER: array of
+ *      selected attribute strings; endorsement is binary, so the
+ *      brand×attribute "mean" is the endorsement % (0-100) of the
+ *      question's answer base. LEGACY tolerance: an old focal-only battery
+ *      rode funnel_stage="awareness" with attribute (non-brand) options;
+ *      such questions are still detected and attributed to the focal brand.
+ *  SWITCHING INTENT  — funnel_stage="switching", type="rating" 1-5.
+ *  SWITCHING TARGET  — funnel_stage="switching", type="single",
+ *      options = competitor list.
+ *  WORD-OF-MOUTH     — funnel_stage="wom", type="single", options=
  *      ["Yes - positively","Yes - negatively",
- *       "No, but I've thought about them","No, not at all"]
- *      (claudeAI.js:1452).
+ *       "No, but I've thought about them","No, not at all"].
  *
- * Focal brand = mission.brand_name; competitors = mission.
- * competitor_brands — a JSONB array of brand-name strings
- * (buildCompetitorUserPrompt JSON.parses it and joins with ', ',
- * claudeAI.js:1480-1484). All brand matching is case-insensitive on
- * trimmed labels; brands have no other stable id, so the label IS the
- * brand_id in this module's output.
+ * Focal anchoring (PASS 47, robust to a null/generic focal): in priority
+ * order — (1) mission.brand_name; (2) the brand whose battery/NPS/wom
+ * question carries brand_id matching the focal convention ("our_brand", or
+ * "focal"/"focal_brand"/"us"); (3) the label "Our Brand" if present among
+ * brands; (4) the first aided-awareness option. competitors = mission.
+ * competitor_brands — a JSONB array of brand-name strings. All brand
+ * matching is case-insensitive on trimmed labels; non-convention brands
+ * have no other stable id, so the label IS the brand_id in this module's
+ * output (the focal brand_id stays its label too, for output stability).
  */
 
 const {
@@ -64,6 +81,11 @@ const {
 const norm = (v) => String(v ?? '').trim().toLowerCase();
 const NONE_OF_THESE = 'none of these';
 const toArray = (a) => (Array.isArray(a) ? a : [a]);
+// PASS 47: brand_id values the generator uses for the focal brand. The fixed
+// prompt emits "our_brand"; the others are tolerated so a focal-id rename
+// upstream still anchors here.
+const FOCAL_BRAND_IDS = new Set(['our_brand', 'focal', 'focal_brand', 'us']);
+const isFocalBrandId = (v) => FOCAL_BRAND_IDS.has(norm(v));
 
 /** competitor_brands: array (JSONB) | JSON string | legacy 'A|B' / 'A,B' string. */
 function parseBrandList(v) {
@@ -129,9 +151,9 @@ function computeCompetitorInner(rows, questions, mission) {
   const answered = (qid) => (rowsByQ.get(qid) || [])
     .filter((r) => r.answer !== null && r.answer !== undefined);
 
-  // ── Brand registry (insertion order = report order): focal, mission
+  // ── Brand registry (insertion order = report order): mission focal +
   // competitors, then brands discovered in question options. ──
-  const focalLabel = mission.brand_name ? String(mission.brand_name).trim() || null : null;
+  const missionFocal = mission.brand_name ? String(mission.brand_name).trim() || null : null;
   const brandLabels = [];
   const brandByNorm = new Map(); // norm(label) → canonical label
   const addBrand = (label) => {
@@ -143,25 +165,27 @@ function computeCompetitorInner(rows, questions, mission) {
       brandLabels.push(trimmed);
     }
   };
-  if (focalLabel) addBrand(focalLabel);
+  if (missionFocal) addBrand(missionFocal);
   for (const c of parseBrandList(mission.competitor_brands)) addBrand(c);
 
-  // ── Identify the aided-awareness question vs the attribute matrix.
-  // Both are funnel_stage="awareness" + type="multi" (q3 claudeAI.js:1444,
-  // q8 claudeAI.js:1449); q3's options are brand labels, q8's are
-  // attributes. Test: ≥50% of options matching known brands (or "None
-  // of these") → brand-option question. With no known brands at all,
-  // fall back to prompt order: the FIRST awareness option-question is
-  // q3 (aided), the rest are attribute batteries. ──
-  const awarenessOptionQs = questions.filter((q) => q
-    && q.funnel_stage === 'awareness'
-    && q.type !== 'text'
-    && Array.isArray(q.options) && q.options.length > 0);
+  // ── Identify aided-awareness vs attribute batteries. ──
+  // PASS 47: attribute batteries carry funnel_stage="attributes". For
+  // BACKWARD COMPAT, the legacy focal battery rode funnel_stage="awareness"
+  // alongside aided awareness (q3). Both are type!="text" with options; q3's
+  // options are brand labels, a battery's are attributes. Disambiguate by
+  // option content: ≥50% of options matching known brands (or "None of
+  // these") → the brand (aided) question; otherwise an attribute battery.
+  // With no known brands yet, fall back to prompt order (first = aided).
   const brandRatio = (q) => {
+    if (!Array.isArray(q.options) || q.options.length === 0) return 0;
     const matches = q.options
       .filter((o) => brandByNorm.has(norm(o)) || norm(o) === NONE_OF_THESE).length;
     return matches / q.options.length;
   };
+  const awarenessOptionQs = questions.filter((q) => q
+    && q.funnel_stage === 'awareness'
+    && q.type !== 'text'
+    && Array.isArray(q.options) && q.options.length > 0);
   let aidedQ = null;
   if (brandByNorm.size > 0) {
     aidedQ = awarenessOptionQs.find((q) => brandRatio(q) >= 0.5) || null;
@@ -171,8 +195,8 @@ function computeCompetitorInner(rows, questions, mission) {
   if (aidedQ) for (const o of aidedQ.options) addBrand(o);
 
   // Funnel questions are unambiguous by funnel_stage; their options are
-  // brand labels too (claudeAI.js:1445-1447,1451) — register them so the
-  // resolver and brand list stay complete even without mission context.
+  // brand labels too — register them so the resolver and brand list stay
+  // complete even without mission context.
   const firstStage = (stage, pred) => questions
     .find((q) => q && q.funnel_stage === stage && (!pred || pred(q))) || null;
   const considerationQ = firstStage('consideration');
@@ -189,22 +213,68 @@ function computeCompetitorInner(rows, questions, mission) {
   if (switchTargetQ) for (const o of switchTargetQ.options) addBrand(o);
   const womQ = firstStage('wom');
 
-  // Attribute batteries: awareness option-questions that are not the
-  // aided question and whose options do NOT look like brands.
-  const attributeQs = awarenessOptionQs.filter((q) => q !== aidedQ && brandRatio(q) < 0.5);
+  // Attribute batteries: every funnel_stage="attributes" question (PASS 47),
+  // plus legacy awareness option-questions that are not the aided question
+  // and whose options do NOT look like brands.
+  const attributeQs = [
+    ...questions.filter((q) => q && q.funnel_stage === 'attributes'
+      && q.type !== 'text' && Array.isArray(q.options) && q.options.length > 0),
+    ...awarenessOptionQs.filter((q) => q !== aidedQ && brandRatio(q) < 0.5),
+  ];
 
-  // ── Per-brand question resolver: brand_id (case-insensitive) →
-  // longest brand label found in the question text → focal fallback
-  // (claudeAI.js:1453 — q7 is emitted once for the focal brand). ──
-  const labelsByLength = [...brandLabels].sort((a, b) => b.length - a.length || a.localeCompare(b));
+  // ── Focal anchoring (PASS 47, robust to a null/generic focal). Priority:
+  //  1) mission.brand_name;
+  //  2) a brand named by a question carrying a focal-convention brand_id
+  //     ("our_brand", …) — resolved to a brand label found in its text;
+  //  3) the literal "Our Brand" if present among brands;
+  //  4) the first aided-awareness option. ──
+  const labelsByLength = () => [...brandLabels]
+    .sort((a, b) => b.length - a.length || a.localeCompare(b));
+  const labelInText = (text) => {
+    const t = norm(text);
+    for (const label of labelsByLength()) if (t.includes(norm(label))) return label;
+    return null;
+  };
+  let focalLabel = missionFocal;
+  if (!focalLabel) {
+    // brand_id="our_brand" appears on the focal NPS / wom / attribute
+    // questions; pull the focal LABEL from any such question's text.
+    const focalIdQ = questions.find((q) => q && isFocalBrandId(q.brand_id));
+    if (focalIdQ) {
+      focalLabel = labelInText(focalIdQ.text)
+        // attribute batteries name the focal in text too; otherwise look
+        // across all focal-id questions for a recognizable brand label.
+        || (() => {
+          for (const q of questions) {
+            if (!q || !isFocalBrandId(q.brand_id)) continue;
+            const l = labelInText(q.text);
+            if (l) return l;
+          }
+          return null;
+        })();
+    }
+  }
+  if (!focalLabel) {
+    const ourBrand = brandLabels.find((l) => norm(l) === 'our brand');
+    if (ourBrand) focalLabel = ourBrand;
+  }
+  if (!focalLabel && aidedQ && Array.isArray(aidedQ.options) && aidedQ.options.length) {
+    focalLabel = String(aidedQ.options[0]).trim() || null;
+  }
+  // Make sure the focal label is in the registry (and stays first in order
+  // when mission context was empty — its battery still resolves to it).
+  if (focalLabel) addBrand(focalLabel);
+
+  // ── Per-brand question resolver: focal-convention brand_id → focal label;
+  // else brand_id matching a known label; else longest brand label found in
+  // the question text; else focal fallback. ──
   const resolveBrand = (q) => {
+    if (isFocalBrandId(q.brand_id)) return focalLabel;
     if (q.brand_id !== null && q.brand_id !== undefined && brandByNorm.has(norm(q.brand_id))) {
       return brandByNorm.get(norm(q.brand_id));
     }
-    const text = norm(q.text);
-    for (const label of labelsByLength) {
-      if (text.includes(norm(label))) return label;
-    }
+    const fromText = labelInText(q.text);
+    if (fromText) return fromText;
     return focalLabel;
   };
 

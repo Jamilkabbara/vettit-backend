@@ -362,6 +362,21 @@ router.post('/', authenticate, async (req, res, next) => {
       target_qualified_count:  respCount,
       ai_spend_ceiling_usd:    Math.round(pricing.total * 0.30 * 10000) / 10000,
       recruitment_status:      'pending',
+      // Pass 47 — naming & messaging inputs. The create route destructured
+      // a fixed field set and silently dropped these, so missions.naming_*
+      // came through empty even when the body supplied them; the naming
+      // results page then had no id↔name map and fell back to bare
+      // candidate ids ("c1/c2/c3"). Persist them here (columns exist and
+      // are whitelisted in missionSchema.js — same pattern as csat_*).
+      // camelCase from the JS client OR snake_case from API callers.
+      ...(resolvedGoal === 'naming_messaging' ? {
+        ...((req.body.namingCandidates ?? req.body.naming_candidates) !== undefined
+          ? { naming_candidates: req.body.namingCandidates ?? req.body.naming_candidates } : {}),
+        ...((req.body.namingCriteria ?? req.body.naming_criteria) !== undefined
+          ? { naming_criteria: req.body.namingCriteria ?? req.body.naming_criteria } : {}),
+        ...((req.body.namingTestType ?? req.body.naming_test_type) !== undefined
+          ? { naming_test_type: req.body.namingTestType ?? req.body.naming_test_type } : {}),
+      } : {}),
     });
     if (rejected.length) logger.warn('POST /missions: dropped cols', { rejected });
 

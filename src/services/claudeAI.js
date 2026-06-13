@@ -1409,10 +1409,22 @@ async function generateMarketingSurvey({ description, clarify }) {
   return parsed || { questions: [], missionStatement: '', productName: '' };
 }
 
-// ── PASS 31 B1 — COMPETITOR ANALYSIS (BRAND HEALTH TRACKER) ────────────────
-// 11-question 5-stage funnel (Awareness → Consideration → Preference →
-// Use → Recommendation) per published 2026 industry guidance from
-// YouGov BrandIndex / Hanover / Kantar.
+// ── PASS 31 B1 / PASS 47 — COMPETITOR ANALYSIS (BRAND HEALTH TRACKER) ──────
+// 5-stage funnel (Awareness → Consideration → Preference → Use →
+// Recommendation) per published 2026 industry guidance from YouGov
+// BrandIndex / Hanover / Kantar.
+//
+// PASS 47 — the radar (perceptual map) requires every brand scored on the
+// SAME attribute battery. The old prompt emitted ONE attribute question for
+// the focal brand only (brand_id="our_brand"), so competitor.js found no
+// shared axes and rendered no radar. The fixed prompt emits an attribute
+// battery PER BRAND (focal + each named competitor) — identical options,
+// brand_id set per brand, funnel_stage="attributes". The question count is
+// therefore 10 fixed + (1 + numCompetitors) attribute questions, not a hard
+// 11. The focal brand is ALWAYS identified by brand_id="our_brand" and its
+// label is the FOCAL_BRAND_LABEL the user prompt enumerates (a real name
+// when supplied, else "Our Brand"), so the parser anchors the focal brand
+// even when mission.brand_name is empty/generic.
 const COMPETITOR_SURVEY_GEN_SYSTEM = `You are a senior brand-research methodologist designing Brand Health Tracker studies (YouGov BrandIndex / Hanover / Kantar tradition). Always return ONLY valid JSON with no markdown fences.
 
 JSON structure required:
@@ -1430,7 +1442,7 @@ JSON structure required:
       "qualifying_answers": ["..."],
       "screening_continue_on": ["..."],
       "methodology": "brand_health_tracker",
-      "funnel_stage": "screener|awareness|consideration|preference|use|recommendation|switching|wom",
+      "funnel_stage": "screener|awareness|consideration|preference|use|recommendation|attributes|switching|wom",
       "brand_id": null
     }
   ],
@@ -1438,19 +1450,21 @@ JSON structure required:
   "suggestedRespondentCount": 400
 }
 
-Hard rules — generate EXACTLY 11 questions in this order:
-  q1 SCREENER (isScreening=true, methodology="brand_health_tracker", funnel_stage="screener") — qualifies category buyers from the brief context. type="single", 2-3 options, qualify the most relevant.
-  q2 UNAIDED AWARENESS (funnel_stage="awareness") — "What <category> brands come to mind? List up to 5." type="text".
-  q3 AIDED AWARENESS (funnel_stage="awareness") — "Which of these brands have you heard of? Select all." type="multi", options = [<focal_brand>, ...<competitors>] in supplied order.
-  q4 CONSIDERATION (funnel_stage="consideration") — "Of the brands you've heard of, which would you consider buying next time you need a <category>?" type="multi", options = same as q3.
-  q5 PREFERENCE (funnel_stage="preference") — "Of the brands you'd consider, if you had to choose ONE, which would you pick?" type="single", options = same as q3.
-  q6 CURRENT USE (funnel_stage="use") — "Which of these brands do you use most often?" type="single", options = same as q3 + "None of these".
-  q7 NPS PER BRAND (funnel_stage="recommendation") — "How likely are you to recommend [<focal_brand>] to a friend or colleague?" type="rating" 0-10. brand_id=<focal_brand_id>.
-  q8 ATTRIBUTE MATRIX (funnel_stage="awareness") — "Which of these attributes apply to <focal_brand>? Select all that apply." type="multi", options = the supplied attribute battery (default 10 standard or user-specified).
-  q9 SWITCHING INTENT (funnel_stage="switching") — "How likely are you to switch from your current <category> brand to a different one in the next 6 months?" type="rating" 1-5.
-  q10 SWITCHING TARGET (funnel_stage="switching") — "If you were to switch, which brand would you most likely switch to?" type="single", options = competitor list.
-  q11 WORD-OF-MOUTH (funnel_stage="wom") — "In the past 2 weeks, have you talked about <focal_brand> with friends, family, or colleagues?" type="single", options=["Yes - positively","Yes - negatively","No, but I've thought about them","No, not at all"].
-- Per-brand questions (q7) carry brand_id; the simulator runs the question per aware brand. For now, emit q7 once with brand_id set to the focal brand id; downstream aggregator extends to competitors.
+BRAND IDENTITY — the user prompt enumerates a "Brand list" = [FOCAL_BRAND_LABEL, ...competitor labels]. The FIRST entry is the focal brand; its brand_id is ALWAYS the literal "our_brand". Each competitor's brand_id is its EXACT label string (verbatim, e.g. "Careem"). Use FOCAL_BRAND_LABEL verbatim wherever <focal_brand> appears below — never substitute a generic placeholder.
+
+Hard rules — generate the funnel in THIS order. There are 10 FIXED questions plus ONE attribute-battery question PER BRAND (focal + every competitor):
+  q1 SCREENER (isScreening=true, methodology="brand_health_tracker", funnel_stage="screener", brand_id=null) — qualifies category buyers from the brief context. type="single", 2-3 options, qualify the most relevant.
+  q2 UNAIDED AWARENESS (funnel_stage="awareness", brand_id=null) — "What <category> brands come to mind? List up to 5." type="text", options=[].
+  q3 AIDED AWARENESS (funnel_stage="awareness", brand_id=null) — "Which of these brands have you heard of? Select all." type="multi", options = the full Brand list [FOCAL_BRAND_LABEL, ...competitors] in supplied order.
+  q4 CONSIDERATION (funnel_stage="consideration", brand_id=null) — "Of the brands you've heard of, which would you consider buying next time you need a <category>?" type="multi", options = same as q3.
+  q5 PREFERENCE (funnel_stage="preference", brand_id=null) — "Of the brands you'd consider, if you had to choose ONE, which would you pick?" type="single", options = same as q3.
+  q6 CURRENT USE (funnel_stage="use", brand_id=null) — "Which of these brands do you use most often?" type="single", options = same as q3 + "None of these".
+  q7 NPS — FOCAL (funnel_stage="recommendation", brand_id="our_brand") — "How likely are you to recommend [FOCAL_BRAND_LABEL] to a friend or colleague?" type="rating" 0-10.
+  ATTRIBUTE BATTERIES — emit ONE question per brand in the Brand list, focal FIRST then each competitor in order, all with funnel_stage="attributes", type="multi", and IDENTICAL options = the supplied attribute battery (default 10 standard or user-specified). Each question's text = "Which of these attributes apply to <that brand's label>? Select all that apply." and brand_id = that brand's id ("our_brand" for focal; the exact competitor label otherwise). The options MUST be byte-for-byte identical across every battery so the brands share radar axes.
+  SWITCHING INTENT (funnel_stage="switching", brand_id=null) — "How likely are you to switch from your current <category> brand to a different one in the next 6 months?" type="rating" 1-5.
+  SWITCHING TARGET (funnel_stage="switching", brand_id=null) — "If you were to switch, which brand would you most likely switch to?" type="single", options = competitor labels (exclude the focal brand).
+  WORD-OF-MOUTH (funnel_stage="wom", brand_id="our_brand") — "In the past 2 weeks, have you talked about [FOCAL_BRAND_LABEL] with friends, family, or colleagues?" type="single", options=["Yes - positively","Yes - negatively","No, but I've thought about them","No, not at all"].
+- Give every question a unique sequential id (q1, q2, …). Funnel order: screener, awareness×2, consideration, preference, use, recommendation, the attribute batteries (focal first), switching×2, wom.
 - DO NOT include vw_band, gg_anchor_index, kano_type, feature_set, concept_id — those belong to other methodologies.
 - suggestedRespondentCount default 400 (well above the 200 brand_health_tracker bound). Per-brand cells get small below 200.
 
@@ -1460,42 +1474,98 @@ function validateCompetitorSurvey(parsed) {
   if (!parsed || typeof parsed !== 'object') return 'response is not an object';
   const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
   if (!qs) return 'questions array missing';
-  if (qs.length !== 11) return `expected 11 questions, got ${qs.length}`;
+  // PASS 47: count is no longer fixed at 11 — there is one attribute battery
+  // per brand (focal + each competitor). Validate by funnel_stage presence
+  // instead. Minimum: 10 fixed + 1 focal battery = 11.
+  if (qs.length < 11) return `expected ≥11 questions (10 fixed + ≥1 attribute battery), got ${qs.length}`;
   if (qs[0].isScreening !== true) return 'q1 must be isScreening=true';
-  const expectedStages = [
-    'screener', 'awareness', 'awareness', 'consideration', 'preference',
-    'use', 'recommendation', 'awareness', 'switching', 'switching', 'wom',
-  ];
-  for (let i = 0; i < expectedStages.length; i++) {
-    if (qs[i].funnel_stage !== expectedStages[i]) {
-      return `q${i + 1} expected funnel_stage="${expectedStages[i]}", got "${qs[i].funnel_stage}"`;
-    }
+  if (qs[0].funnel_stage !== 'screener') return `q1 expected funnel_stage="screener", got "${qs[0].funnel_stage}"`;
+
+  const byStage = (stage) => qs.filter((q) => q && q.funnel_stage === stage);
+  const need = {
+    awareness: 2, // unaided (text) + aided (multi)
+    consideration: 1,
+    preference: 1,
+    use: 1,
+    recommendation: 1,
+    switching: 2, // intent (rating) + target (single)
+    wom: 1,
+  };
+  for (const [stage, min] of Object.entries(need)) {
+    const got = byStage(stage).length;
+    if (got < min) return `expected ≥${min} funnel_stage="${stage}" question(s), got ${got}`;
   }
-  if (qs[6].type !== 'rating') return 'q7 (NPS) must be type=rating';
+
+  // Attribute batteries: ≥1, focal carries brand_id="our_brand", and every
+  // battery shares the SAME options so the radar has shared axes.
+  const attributeQs = byStage('attributes');
+  if (attributeQs.length < 1) return 'expected ≥1 funnel_stage="attributes" question';
+  if (!attributeQs.some((q) => String(q.brand_id || '').toLowerCase() === 'our_brand')) {
+    return 'focal attribute battery (brand_id="our_brand") missing';
+  }
+  const optsKey = (q) => JSON.stringify(Array.isArray(q.options) ? q.options : null);
+  const firstOpts = optsKey(attributeQs[0]);
+  if (firstOpts === 'null') return 'attribute batteries must carry an options array';
+  if (!attributeQs.every((q) => optsKey(q) === firstOpts)) {
+    return 'all attribute batteries must share IDENTICAL options (shared radar axes)';
+  }
+
+  // NPS must be a rating.
+  if (!byStage('recommendation').some((q) => q.type === 'rating')) {
+    return 'recommendation (NPS) question must be type=rating';
+  }
   return null;
 }
 
 function buildCompetitorUserPrompt({ description, clarify }) {
   const c = clarify || {};
+  // competitor_brands may arrive as a JSONB array, a JSON-string, or a
+  // pipe/comma legacy string. Normalise to a clean label array.
   let competitors = [];
-  try { competitors = JSON.parse(c.competitor_brands || '[]'); } catch { /* ignore */ }
-  if (typeof c.competitors === 'string' && c.competitors) {
-    competitors = c.competitors.split('|').filter(Boolean);
+  if (Array.isArray(c.competitor_brands)) {
+    competitors = c.competitor_brands;
+  } else if (typeof c.competitor_brands === 'string' && c.competitor_brands.trim()) {
+    try {
+      const p = JSON.parse(c.competitor_brands);
+      competitors = Array.isArray(p) ? p : [];
+    } catch { competitors = c.competitor_brands.split(/[|,]/); }
   }
+  if (!competitors.length && typeof c.competitors === 'string' && c.competitors) {
+    competitors = c.competitors.split('|');
+  }
+  competitors = competitors
+    .map((x) => (typeof x === 'string' ? x : String((x && (x.name || x.label || x.brand)) || '')))
+    .map((s) => s.trim())
+    .filter(Boolean);
+
   let attrs = [];
-  try { attrs = JSON.parse(c.attribute_battery || '[]'); } catch { /* ignore */ }
-  if (!attrs.length && typeof c.attribute_battery === 'string') {
-    attrs = c.attribute_battery.split(',').filter(Boolean);
+  if (Array.isArray(c.attribute_battery)) {
+    attrs = c.attribute_battery;
+  } else if (typeof c.attribute_battery === 'string' && c.attribute_battery.trim()) {
+    try {
+      const p = JSON.parse(c.attribute_battery);
+      attrs = Array.isArray(p) ? p : [];
+    } catch { attrs = c.attribute_battery.split(','); }
   }
+  attrs = attrs.map((s) => String(s).trim()).filter(Boolean);
+
+  // PASS 47: stable focal label even when brand_name is empty/generic so the
+  // model has FOCAL_BRAND_LABEL to use verbatim and the parser can anchor it.
+  const focalLabel = (c.brand_name && String(c.brand_name).trim()) || 'Our Brand';
+  const brandList = [focalLabel, ...competitors];
+
   const lines = [
     'Mission Goal: competitor',
     `Brief: "${description}"`,
-    `Focal brand: ${c.brand_name || '<unknown>'}`,
+    `Focal brand (FOCAL_BRAND_LABEL, brand_id="our_brand"): ${focalLabel}`,
     `Category: ${c.category || '<unknown>'}`,
     `Competitors (${competitors.length}): ${competitors.join(', ')}`,
+    `Brand list [focal first] (${brandList.length}): ${brandList.join(', ')}`,
     `Attribute battery (${attrs.length}): ${attrs.join(', ')}`,
     '',
-    'Generate the 11-question Brand Health Tracker survey JSON.',
+    'Generate the Brand Health Tracker survey JSON: 10 fixed funnel questions'
+      + ` plus ONE attribute battery per brand (${brandList.length} batteries, focal first),`
+      + ' every battery sharing IDENTICAL options.',
   ];
   return lines.join('\n');
 }

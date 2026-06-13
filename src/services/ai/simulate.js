@@ -8,6 +8,34 @@ const { callClaude, extractJSON } = require('./anthropic');
 const { WRITING_STYLE } = require('./writingStyle');
 const logger = require('../../utils/logger');
 
+/**
+ * Pass 47 — the authoritative set of question `type` values the
+ * simulator knows how to answer. EVERY type any generator emits MUST
+ * appear here AND have an explicit answer-format instruction in the
+ * prompt below. The invariant test (test/simulator_type_coverage.test.js)
+ * fails if a generator can emit a type not in this set — that's what
+ * stops the Pass-46 class of bug (specialized questions silently
+ * getting unparseable answers) from ever recurring.
+ *
+ * 'max_diff_set' (Pass 47) — best/worst trade-off; answer is an object
+ * {best, worst}. All other specialized methodologies ride the standard
+ * single/multi/rating/text types with metadata the analysis modules key
+ * on, so they're already covered here.
+ */
+const SUPPORTED_QUESTION_TYPES = ['single', 'opinion', 'multi', 'rating', 'text', 'max_diff_set'];
+
+/**
+ * Pass 47 — scale the response token budget to the survey length. The
+ * old fixed 1500 truncated the JSON for long surveys (roadmap 23Q,
+ * naming 20Q, marketing 13Q), silently dropping the TAIL questions so
+ * late-funnel stages (sharing intent, final paired comparisons,
+ * max-diff sets) got zero answers. ~220 tokens/question covers an
+ * answer + reasoning + JSON overhead; floor 1500, cap 8000.
+ */
+function tokenBudgetFor(questionCount) {
+  return Math.min(8000, Math.max(1500, (questionCount || 0) * 220));
+}
+
 const SIM_SYSTEM_PROMPT = `You are answering a market-research survey AS the persona described. Stay fully in character.
 Use the persona's vocabulary, education level, cultural context, and emotional state.
 Be honest about mixed feelings, uncertainty, and ambivalence. Real people rarely give clean answers.
@@ -38,76 +66,110 @@ async function simulateResponses(persona, questions, mission) {
     ? `\n\nIncrementality flag: this persona is in the CONTROL group. They were NOT exposed to the brand's campaign. They answer at category baseline — they may still recognize the brand if it has prior equity, but they do NOT show campaign-specific message association.`
     : '';
 
-  const userPrompt = `You are this persona:
+  // Pass 47 — answer-format guidance now covers EVERY supported type,
+  // and rating respects the question's own scale (NPS 0-10, CES 1-7,
+  // appeal 1-10) instead of the old hardcoded "1 to 5", which under-
+  // reported every non-5-point scale. max_diff_set gets an explicit
+  // best/worst object contract the roadmap analysis module consumes.
+  const formatInstructions = `Answer every question below as this persona. Match the answer FORMAT to the question's (type):
+- "single" / "opinion" → pick exactly ONE option, returned as the option's EXACT text.
+- "multi"              → an ARRAY of 1-N options the persona genuinely agrees with (exact option text).
+- "rating"            → a whole number on THIS question's scale. When options are provided they list the valid numbers (e.g. 0-10 for NPS, 1-7 for CES) — answer within that range. If no options, use 1 to 5.
+- "max_diff_set"      → from the options, choose the SINGLE MOST important and the SINGLE LEAST important. Answer as an object: {"best": "<exact option text>", "worst": "<exact option text>"} — best and worst MUST differ.
+- "text"              → 1-3 sentences in the persona's voice (free text).
+
+Answer EVERY question — do not skip any, even late ones. For EVERY answer also include a "reasoning" field: 1-2 sentences explaining why this persona answered that way given their context (job, family, anxieties, decision triggers). Be specific, never generic.`;
+
+  const buildPrompt = (qs) => `You are this persona:
 ${JSON.stringify(persona, null, 2)}
 
 Mission brief: ${mission.brief || mission.mission_statement || ''}${exposureBlock}
 
-Answer every question below as this persona. For each question:
-- "single" / "opinion" → pick ONE option from the provided options
-- "multi"              → pick 1-N options from the provided options (only select what the persona actually agrees with)
-- "rating"             → a whole number 1 to 5
-- "text"               → 1-3 sentences in the persona's voice (free text)
-
-For EVERY answer, also include a "reasoning" field: 1 to 2 sentences explaining
-why this persona answered that way given their context. Be specific to the
-persona (their job, family, anxieties, decision triggers). Do not be generic.
+${formatInstructions}
 
 Questions:
-${questions.map((q, i) => {
+${qs.map((q, i) => {
   const opts = (q.options && q.options.length) ? `\n   options: ${JSON.stringify(q.options)}` : '';
   return `${i + 1}. [${q.id}] (${q.type}) ${q.text}${opts}`;
 }).join('\n')}
 
-Return ONLY this JSON:
+Return ONLY this JSON (answer shape matches each question's type):
 {
   "responses": [
-    { "question_id": "q1", "answer": "Option A", "reasoning": "1-2 sentences in persona's voice." },
+    { "question_id": "q1", "answer": "Option A", "reasoning": "..." },
     { "question_id": "q2", "answer": ["Option A", "Option C"], "reasoning": "..." },
     { "question_id": "q3", "answer": 4, "reasoning": "..." },
-    { "question_id": "q4", "answer": "I'm honestly torn. The price feels high but...", "reasoning": "..." }
+    { "question_id": "q_maxdiff", "answer": { "best": "Feature X", "worst": "Feature Y" }, "reasoning": "..." },
+    { "question_id": "q_text", "answer": "I'm honestly torn. The price feels high but...", "reasoning": "..." }
   ]
 }`;
 
+  // Pass 47 — dedup + parse a single model response into {question_id → row}.
+  const parseInto = (text, acc) => {
+    try {
+      const parsed = extractJSON(text);
+      const raw = Array.isArray(parsed.responses) ? parsed.responses : [];
+      for (const r of raw) {
+        if (!r || typeof r.question_id !== 'string') continue;
+        if (acc.has(r.question_id)) continue; // first answer per id wins (Pass 32 X1)
+        acc.set(r.question_id, r);
+      }
+    } catch (err) {
+      logger.warn('Response sim parse failed', { personaId: persona.id, err: err.message });
+    }
+  };
+
+  const answersById = new Map();
   const response = await callClaude({
     callType:  'response_sim',
     missionId: mission.id,
     userId:    mission.user_id,
-    messages:  [{ role: 'user', content: userPrompt }],
+    messages:  [{ role: 'user', content: buildPrompt(questions) }],
     systemPrompt: SIM_SYSTEM_PROMPT,
-    maxTokens: 1500,
+    maxTokens: tokenBudgetFor(questions.length),
     enablePromptCache: true,
   });
+  parseInto(response.text, answersById);
 
-  try {
-    const parsed = extractJSON(response.text);
-    const raw = Array.isArray(parsed.responses) ? parsed.responses : [];
-    // Pass 32 X1 — DEDUPLICATE by question_id. Production audit
-    // (May 7 2026) found mission 23389bb1 had 100 response rows for
-    // 10 personas × 5 questions (expected 50). Root cause: Claude
-    // sometimes returns multiple entries with the same question_id
-    // (e.g. an answer + a "thinking out loud" duplicate, or a retry
-    // inside one response). Keeping the first answer per question_id
-    // gives the contract-correct N rows per persona; downstream code
-    // already assumes uniqueness.
-    const seenQuestionIds = new Set();
-    const deduped = [];
-    for (const r of raw) {
-      if (!r || typeof r.question_id !== 'string') continue;
-      if (seenQuestionIds.has(r.question_id)) continue;
-      seenQuestionIds.add(r.question_id);
-      deduped.push(r);
+  // Pass 47 — retry ONCE for any questions left unanswered (truncation,
+  // a dropped tail, or a parse hiccup). Re-ask only the missing ones so
+  // the retry is cheap and can't itself truncate. This is what lifts
+  // late-funnel stages (sharing intent, final paired comparisons) and
+  // big max-diff batteries from "0 answers" to fully covered.
+  const missing = questions.filter((q) => !answersById.has(q.id));
+  if (missing.length > 0) {
+    logger.info('Response sim: retrying missing questions', {
+      personaId: persona.id, missing: missing.length, total: questions.length,
+    });
+    try {
+      const retry = await callClaude({
+        callType:  'response_sim',
+        missionId: mission.id,
+        userId:    mission.user_id,
+        messages:  [{ role: 'user', content: buildPrompt(missing) }],
+        systemPrompt: SIM_SYSTEM_PROMPT,
+        maxTokens: tokenBudgetFor(missing.length),
+        enablePromptCache: true,
+      });
+      parseInto(retry.text, answersById);
+    } catch (err) {
+      logger.warn('Response sim retry failed (non-fatal)', { personaId: persona.id, err: err.message });
     }
-    if (deduped.length !== raw.length) {
-      logger.warn('Response sim: deduplicated duplicate question_ids', {
-        personaId: persona.id,
-        raw: raw.length,
-        deduped: deduped.length,
+  }
+
+  // answersById is already deduped (first answer per question_id wins,
+  // Pass 32 X1) and merged across the initial call + the missing-question
+  // retry. Return rows in question order.
+  try {
+    const ordered = questions.map((q) => answersById.get(q.id)).filter(Boolean);
+    if (ordered.length < questions.length) {
+      logger.warn('Response sim: persona still under-answered after retry', {
+        personaId: persona.id, answered: ordered.length, total: questions.length,
       });
     }
-    return deduped;
+    return ordered;
   } catch (err) {
-    logger.warn('Response sim parse failed', { personaId: persona.id, err: err.message });
+    logger.warn('Response sim assembly failed', { personaId: persona.id, err: err.message });
     return [];
   }
 }
@@ -240,4 +302,11 @@ async function simulateAllResponses(personas, questions, mission, onProgress) {
 // Pass 42 A2 — passesScreening exported so the recruitment loop in
 // services/ai/recruitLoop.js can apply the same screening logic
 // without duplicating it.
-module.exports = { simulateResponses, simulateAllResponses, passesScreening };
+module.exports = {
+  simulateResponses,
+  simulateAllResponses,
+  passesScreening,
+  // Pass 47 — exported for the type-coverage invariant test + reuse.
+  SUPPORTED_QUESTION_TYPES,
+  tokenBudgetFor,
+};

@@ -54,7 +54,39 @@ const {
 
 const norm = (v) => String(v ?? '').trim().toLowerCase();
 
+// Label recovery from a battery question's text. Two real-world shapes:
+//   1. bracketed  — 'Considering [<name>]: <desc>. How appealing…'
+//   2. unbracketed — 'Considering <name>: <desc>. How appealing…'
+// (the live generator emits #2; cf. mission 86d4b8c6's q2/q7). The first
+// [bracketed] token wins when present; otherwise we take the run between
+// 'Considering ' and the first ':' .
 const BRACKET_RE = /\[([^\]]+)\]/;
+const CONSIDERING_RE = /considering\s+(.+?)\s*:/i;
+
+// Answers that mean "no concept" in a forced choice — kept in a separate
+// bucket so concept shares + none sum to 100%.
+const NONE_RE = /^(none|none of these|neither|no preference|n\/a)$/i;
+const isNoneAnswer = (v) => {
+  const s = norm(v);
+  return s === '' || NONE_RE.test(s);
+};
+
+/**
+ * Recover a concept's display name from its battery questions when the
+ * mission.concepts registry has no usable name. Tries the APPEAL text
+ * first (it carries the name per claudeAI.js:1188), then any battery
+ * question. Returns null when nothing parseable is found.
+ */
+function labelFromBattery(qs) {
+  for (const q of qs) {
+    const t = String(q.text || '');
+    const b = BRACKET_RE.exec(t);
+    if (b && b[1].trim()) return b[1].trim();
+    const c = CONSIDERING_RE.exec(t);
+    if (c && c[1].trim()) return c[1].trim();
+  }
+  return null;
+}
 
 // claudeAI.js:1188-1192 — battery emission order, used as positional
 // fallback when funnel_stage is missing.
@@ -134,17 +166,12 @@ function computeCompareInner(rows, questions, mission) {
     conceptQs.get(id).push(q);
     if (!registry.has(id)) registry.set(id, null);
   }
-  // Label fallback: first [bracketed] token in the concept's battery —
-  // the APPEAL question text carries 'Considering [<concept name>]: …'
-  // (claudeAI.js:1188).
+  // Label fallback: recover the concept name from its battery text — the
+  // APPEAL question carries 'Considering <concept name>: …'
+  // (claudeAI.js:1188), bracketed or not.
   for (const [id, qs] of conceptQs) {
     if (registry.get(id)) continue;
-    let label = null;
-    for (const q of qs) {
-      const m = BRACKET_RE.exec(String(q.text || ''));
-      if (m) { label = m[1].trim(); break; }
-    }
-    registry.set(id, label || id);
+    registry.set(id, labelFromBattery(qs) || id);
   }
   for (const [id, label] of registry) {
     if (!label) registry.set(id, id); // mission entry without a usable name
@@ -206,19 +233,53 @@ function computeCompareInner(rows, questions, mission) {
 
   // ── Final choice (forced choice) ─────────────────────────────────────
   // Both final questions carry is_final_choice=true (claudeAI.js:1193);
-  // the forced choice is the non-text one.
+  // the forced choice is the non-text one. Persisted answers are concept
+  // NAMES (claudeAI.js:1194, simulate.js:47) — NOT concept_ids — so each
+  // answer is resolved to a concept_id through a name→id map built from
+  // the registry labels (case-insensitive, trimmed). Anything that maps
+  // to no concept ("None of these"/blank/unknown) lands in a none bucket
+  // so per-concept shares + none sum to 100%.
+  const nameToId = new Map();
+  // Map the bare id first, then the resolved label (label takes
+  // precedence), so answers persisted as either the id or the name resolve.
+  for (const [id] of registry) {
+    if (id) nameToId.set(norm(id), id);
+  }
+  for (const [id, label] of registry) {
+    if (label) nameToId.set(norm(label), id);
+  }
+  const resolveChoice = (answer) => {
+    if (isNoneAnswer(answer)) return null; // explicit none / blank
+    return nameToId.get(norm(answer)) || null; // unknown string → none bucket
+  };
+
   const fcQ = questions.find((q) => q && q.is_final_choice === true && q.type !== 'text') || null;
   let finalChoice = null;
   if (fcQ) {
     const fRows = answered(fcQ.id);
     const base = personaCount(fRows);
     if (base > 0) {
-      const s = shares(distribution(fRows), base);
-      finalChoice = { question_id: fcQ.id, base, options: s.shares };
+      // Tally votes by resolved concept_id; everything unresolved → none.
+      const votes = new Map(); // concept_id → count
+      let noneCount = 0;
+      for (const r of fRows) {
+        const id = resolveChoice(r.answer);
+        if (id && registry.has(id)) votes.set(id, (votes.get(id) || 0) + 1);
+        else noneCount += 1;
+      }
       for (const c of concepts) {
-        const count = fRows.filter((r) => norm(r.answer) === norm(c.label)).length;
+        const count = votes.get(c.concept_id) || 0;
         c.final_choice_pct = { pct: round4((count / base) * 100), count, base };
       }
+      // options table: raw answer-string distribution (verbatim, incl.
+      // "None of these") — keeps the Pass 46 shape for the renderer.
+      const s = shares(distribution(fRows), base);
+      finalChoice = {
+        question_id: fcQ.id,
+        base,
+        options: s.shares,
+        none: { count: noneCount, pct: round4((noneCount / base) * 100) },
+      };
     }
   }
 
