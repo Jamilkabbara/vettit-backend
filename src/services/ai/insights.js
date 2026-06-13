@@ -127,9 +127,94 @@ function aggregate(responses, questions) {
 }
 
 /**
+ * Pass 47 — build a factual executive summary from the deterministic
+ * analysis object when the LLM narrator fails. Methodology-aware,
+ * fully null-safe (any missing field is skipped). Returns a string, or
+ * null when there's nothing computable to say.
+ */
+function buildComputedSummary(analysis, mission) {
+  if (!analysis || typeof analysis !== 'object') return null;
+  const n = analysis.n != null ? `n=${analysis.n}` : null;
+  const parts = [];
+  try {
+    switch (analysis.methodology) {
+      case 'brand_lift': {
+        const ex = analysis.cells?.exposed?.n, co = analysis.cells?.control?.n;
+        const big = (analysis.funnel || []).filter((f) => f && f.lift_abs != null)
+          .sort((a, b) => Math.abs(b.lift_abs) - Math.abs(a.lift_abs))[0];
+        parts.push(`Brand lift measured across an exposed cell (n=${ex ?? '?'}) versus a control cell (n=${co ?? '?'}).`);
+        if (big) {
+          const pts = big.type === 'mean' ? `${big.lift_abs}` : `${Math.round(big.lift_abs * 100)} pts`;
+          const sig = big.significance?.sig95 ? 'significant at 95%' : big.significance?.sig90 ? 'significant at 90%' : 'directional';
+          parts.push(`The largest movement was on "${big.text || big.funnel_stage}" (+${pts}, ${sig}).`);
+        }
+        break;
+      }
+      case 'pricing': {
+        const opp = analysis.van_westendorp?.points?.opp;
+        const range = analysis.acceptable_range;
+        const gg = analysis.gabor_granger?.optimal_price;
+        if (opp != null) parts.push(`The Van Westendorp optimal price point is ${opp}${range ? ` (acceptable range ${range.low}–${range.high})` : ''}.`);
+        if (gg != null) parts.push(`Gabor-Granger revenue is maximized at ${gg}.`);
+        break;
+      }
+      case 'satisfaction': {
+        if (analysis.nps?.score != null) parts.push(`NPS is ${analysis.nps.score}.`);
+        if (analysis.csat?.top2_pct != null) parts.push(`CSAT top-2-box is ${analysis.csat.top2_pct}%.`);
+        if (analysis.ces?.top2_pct != null) parts.push(`CES top-2-box is ${analysis.ces.top2_pct}%.`);
+        break;
+      }
+      case 'validate': {
+        if (analysis.scores?.reaction?.mean != null) parts.push(`Concept reaction scores ${analysis.scores.reaction.mean}/10.`);
+        if (analysis.intent?.top2_pct != null) parts.push(`Top-2-box purchase intent is ${analysis.intent.top2_pct}%.`);
+        break;
+      }
+      case 'roadmap': {
+        const top = analysis.maxdiff?.features?.[0];
+        if (top) parts.push(`"${top.label || top.feature_id}" ranks highest on MaxDiff utility (${top.utility}).`);
+        const must = (analysis.kano?.features || []).filter((f) => f.classification === 'must_be').map((f) => f.label || f.feature_id);
+        if (must.length) parts.push(`Kano must-haves: ${must.join(', ')}.`);
+        break;
+      }
+      case 'naming': {
+        const w = analysis.winner?.candidate_id;
+        const wc = (analysis.candidates || []).find((c) => c.candidate_id === w);
+        if (wc) parts.push(`"${wc.label || w}" is the preferred name (${wc.pairwise_win_rate?.pct ?? wc.composite}${wc.pairwise_win_rate ? '% win rate' : ' composite'}).`);
+        break;
+      }
+      case 'compare': {
+        const w = analysis.overall_winner?.concept_id;
+        const wc = (analysis.concepts || []).find((c) => c.concept_id === w);
+        if (wc) parts.push(`"${wc.label || w}" is the preferred concept (${wc.final_choice_pct?.pct ?? '?'}% forced choice).`);
+        break;
+      }
+      case 'competitor': {
+        if (analysis.focal_brand) parts.push(`Competitive position assessed for ${analysis.focal_brand}.`);
+        const gap = (analysis.gaps || [])[0];
+        if (gap) parts.push(`Largest attribute gap vs ${gap.best_competitor}: "${gap.attribute}" (${gap.gap} pts).`);
+        break;
+      }
+      case 'churn': {
+        const d = analysis.drivers?.ranked?.[0];
+        if (d) parts.push(`The leading churn driver is "${d.reason}" (${d.pct_of_respondents}% of respondents).`);
+        if (analysis.winback?.winnable_pct != null) parts.push(`${analysis.winback.winnable_pct}% appear winnable.`);
+        break;
+      }
+      default:
+        break;
+    }
+  } catch { /* fully defensive — fall through to the generic line */ }
+  if (parts.length === 0) {
+    return n ? `Your computed results below are complete (${n}). A written narrative summary was unavailable for this run.` : null;
+  }
+  return `${parts.join(' ')}${n ? ` (${n})` : ''} A fuller written narrative was unavailable for this run; the computed results below are complete and accurate.`;
+}
+
+/**
  * Synthesize a full insight report from aggregated responses.
  * @param {object} mission
  * @param {Array}  responses  rows from mission_responses
+ * @param {object} [analysis] deterministic methodology analysis (Pass 46 Phase 3)
  * @returns {Promise<object>} { executive_summary, kpis, per_question_insights, recommendations, follow_ups, contradictions }
  */
 async function synthesizeInsights(mission, responses, analysis = null) {
@@ -351,18 +436,49 @@ Pass 42 B1 — also emit the chart_data block. Frontend renders charts (distribu
 
 If chart_data cannot be reliably emitted (very small sample, malformed responses), omit the whole chart_data block. Frontend treats absence as "no charts" not "broken charts".${methodologySpecificInstr}`;
 
-  const response = await callClaude({
-    callType: 'insight_synth',
-    missionId: mission.id,
-    userId:    mission.user_id,
-    messages:  [{ role: 'user', content: userPrompt }],
-    systemPrompt: INSIGHT_SYSTEM_PROMPT,
-    maxTokens: 4000,
-    enablePromptCache: true,
-  });
+  // Pass 47 — scale the synthesis token budget to the survey length.
+  // The fixed 4000 truncated the synthesis JSON for any real survey
+  // (per_question_insights for 9-23 questions + chart_data + an 800-word
+  // executive summary), so extractJSON threw and EVERY mission with >=9
+  // questions fell back to "contact support" — verified across 10/11
+  // Phase-2 missions. ~350 tokens/question (insight prose is heavier
+  // than a raw answer), floor 4000, cap 8000.
+  const synthMaxTokens = Math.min(8000, Math.max(4000, (questions.length || 0) * 350));
+
+  // Pass 47 — retry once on a parse failure (truncation/hiccup) before
+  // giving up. Returns a parsed object or null.
+  const callAndParse = async () => {
+    const response = await callClaude({
+      callType: 'insight_synth',
+      missionId: mission.id,
+      userId:    mission.user_id,
+      messages:  [{ role: 'user', content: userPrompt }],
+      systemPrompt: INSIGHT_SYSTEM_PROMPT,
+      maxTokens: synthMaxTokens,
+      enablePromptCache: true,
+    });
+    try {
+      return extractJSON(response.text);
+    } catch (err) {
+      logger.warn('Insight synthesis parse failed (will assess retry)', {
+        missionId: mission.id, err: err.message,
+      });
+      return null;
+    }
+  };
 
   try {
-    const parsed = extractJSON(response.text);
+    let parsed = await callAndParse();
+    if (!parsed) {
+      logger.info('Insight synthesis: retrying once', { missionId: mission.id });
+      parsed = await callAndParse();
+    }
+    if (!parsed) {
+      // Both attempts failed to parse. Throw into the catch below, which
+      // now builds a COMPUTED fallback from the deterministic analysis
+      // instead of the useless "contact support" string.
+      throw new Error('synthesis JSON unparseable after retry');
+    }
     // Defensive defaults in case the model omits these optional fields.
     if (!Array.isArray(parsed.contradictions))     parsed.contradictions     = [];
     if (!Array.isArray(parsed.segment_breakdowns)) parsed.segment_breakdowns = [];
@@ -404,10 +520,19 @@ If chart_data cannot be reliably emitted (very small sample, malformed responses
     // every JSONB field stamped to missions.insights is clean.
     return sanitizeAIOutputDeep(parsed);
   } catch (err) {
-    logger.error('Insight synthesis parse failed', { missionId: mission.id, err: err.message });
-    // Fallback minimum-viable insight object so the mission can still complete
+    logger.error('Insight synthesis failed; using computed fallback', { missionId: mission.id, err: err.message });
+    // Pass 47 — NEVER overwrite a successful deterministic analysis with a
+    // "contact support" string. When the LLM narrator can't produce
+    // parseable JSON, synthesize a factual executive summary from the
+    // computed analysis object (the numbers are real and already
+    // persisted to mission.analysis) so the result page shows genuine
+    // content + its centerpiece instead of an error. The narrator is a
+    // nice-to-have prose layer; the computed analysis is the product.
+    const computedSummary = buildComputedSummary(analysis, mission);
     return {
-      executive_summary: 'Analysis could not be generated automatically. Please contact support.',
+      executive_summary: computedSummary
+        || 'A full written summary is being finalized. Your computed results below are complete and accurate.',
+      narration_failed: true, // signal for ops/telemetry; renderer ignores
       kpis: [],
       per_question_insights: [],
       recommendations: [],
@@ -461,4 +586,6 @@ module.exports = {
   computeRatingStats,
   sanitizeAIString,
   sanitizeAIOutputDeep,
+  // Pass 47 — exported for the narrator-fallback unit test.
+  buildComputedSummary,
 };
