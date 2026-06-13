@@ -422,6 +422,30 @@ function computeFilteredBrandLiftResults({ blr, filtered, questions, lift_mode, 
 
 // ─── GET /api/results/:missionId/status ──────────────────────
 // Lightweight poll — used by the progress UI while a mission is running.
+// Pass 48 — THE canonical report endpoint. Web results page + the
+// results-page chatbot both read this; the export builders build it
+// internally. One source of truth → surfaces can't disagree.
+router.get('/:missionId/report', authenticate, async (req, res, next) => {
+  try {
+    const { buildCanonicalReport } = require('../services/report/buildReport');
+    const pack = await loadMissionForExport(req.params.missionId, req.user.id);
+    if (!pack) return res.status(404).json({ error: 'Mission not found' });
+    if (pack.error) return res.status(400).json({ error: pack.error });
+
+    const mission = pack.mission;
+    // Use clean (non-screened-out) responses for survey shaping — matches
+    // how the deterministic analysis was computed. Fall back to all rows
+    // for legacy missions that flagged everything screened_out.
+    const all = pack.responses || [];
+    const clean = all.filter((r) =>
+      r && r.screened_out !== true && !(r.persona_profile && r.persona_profile.screened_out === true));
+    const rows = clean.length > 0 ? clean : all;
+
+    const report = buildCanonicalReport(mission, mission.analysis || null, rows);
+    res.json({ report });
+  } catch (err) { next(err); }
+});
+
 router.get('/:missionId/status', authenticate, async (req, res, next) => {
   try {
     const { data: mission, error } = await supabase
