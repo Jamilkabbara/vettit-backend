@@ -477,7 +477,10 @@ router.post('/:missionId/summaries/regenerate', authenticate, async (req, res, n
       .from('missions')
       .update({ insights: newInsights, executive_summary: summaries.executive_summary || null })
       .eq('id', mission.id).eq('user_id', req.user.id);
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) {
+      logger.error('summaries/regenerate: persist failed', { missionId: mission.id, err: error.message });
+      return res.status(500).json({ error: 'Failed to save summaries' });
+    }
 
     res.json({
       ok: true,
