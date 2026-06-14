@@ -12,6 +12,7 @@
  */
 
 const logger = require('../../utils/logger');
+const { detectScale, scaleNum } = require('../report/buildReport');
 
 /**
  * Pure compute: distributions + segments from raw responses.
@@ -58,27 +59,28 @@ function computeChartData(mission, responses) {
     }
 
     if (q.type === 'rating' || q.type === 'scale') {
+      // Pass 49 — reuse the canonical scale detection so cached chart_data
+      // shares ONE source of truth with the report + exports. Was: scale_max
+      // defaulted to 5 (truncating 1-7 / 0-10) and buckets held only observed
+      // values (no scale_min, no zero-count bars).
+      const nums = answers.map((a) => scaleNum(a)).filter((v) => v !== null);
+      if (nums.length === 0) continue;
+      const scale = detectScale(q, nums);
       const buckets = {};
-      const numeric = [];
-      for (const a of answers) {
-        const n = Number(a);
-        if (!Number.isFinite(n)) continue;
-        numeric.push(n);
-        buckets[String(n)] = (buckets[String(n)] || 0) + 1;
-      }
-      if (numeric.length === 0) continue;
-      const sum = numeric.reduce((s, n) => s + n, 0);
-      const mean = Math.round((sum / numeric.length) * 100) / 100;
-      const sorted = [...numeric].sort((a, b) => a - b);
+      for (let i = scale.min; i <= scale.max; i += 1) buckets[i] = 0;
+      for (const v of nums) if (buckets[v] !== undefined) buckets[v] += 1;
+      const sum = nums.reduce((s, n) => s + n, 0);
+      const mean = Math.round((sum / nums.length) * 100) / 100;
+      const sorted = [...nums].sort((a, b) => a - b);
       const median = sorted.length % 2 === 0
         ? (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
         : sorted[Math.floor(sorted.length / 2)];
-      const scale_max = q.scale_max || q.max || Math.max(...numeric, 5);
       per_question_distributions.push({
         question_id: qid,
         question: q.text || q.question || qid,
         type: 'rating',
-        scale_max,
+        scale_min: scale.min,
+        scale_max: scale.max,
         buckets,
         mean,
         median,
