@@ -1,0 +1,190 @@
+{{!-- Pass 48 Phase 3 — THE shared canonical report body.
+     Rendered identically by general_research.hbs and brand_lift_study.hbs
+     (both just {{> canonicalBody}}). Renders, in the uniform order shared by
+     every export format: exec summary → headline metrics → centerpiece
+     instrument (brand-lift exposed/control funnel) → key findings → THE FULL
+     SURVEY (every question by its renderer with the CORRECT scale) →
+     data-quality notes → methodology disclaimer.
+
+     `report` is the buildRenderModel() output. The cover (title/brief/sample)
+     is rendered by _base.hbs above this partial. --}}
+
+{{!-- ─── 01 · EXECUTIVE SUMMARY ────────────────────────────────── --}}
+<section class="page">
+  <div class="section-eyebrow">01 · Executive Summary</div>
+  <div class="section-divider"></div>
+  {{#if report.execSummary}}
+  <p class="lede">{{report.execSummary}}</p>
+  {{else}}
+  <p class="empty">Executive summary not available for this mission.</p>
+  {{/if}}
+
+  {{#if hasHeadline}}
+  <div class="section-eyebrow trailing-block">· Headline Metrics</div>
+  <div class="section-divider"></div>
+  <table style="width:100%; border-collapse:collapse; font-size:10.5pt;">
+    <tbody>
+      {{#each report.headline.all}}
+      <tr style="border-bottom: 0.5pt solid var(--border);">
+        <td style="padding:5pt 8pt 5pt 0; color: var(--text2); vertical-align:top;">{{this.label}}</td>
+        <td style="padding:5pt 0; text-align:right; color: var(--lime); font-weight:700; font-variant-numeric: tabular-nums; white-space:nowrap;">{{this.value}}</td>
+      </tr>
+      {{/each}}
+    </tbody>
+  </table>
+  {{/if}}
+</section>
+
+{{!-- ─── 02 · CENTERPIECE (brand-lift exposed-vs-control funnel) ─── --}}
+{{#if hasCenterpiece}}
+<section class="page">
+  <div class="section-eyebrow">02 · {{report.centerpiece.title}}</div>
+  <div class="section-divider"></div>
+  <table style="width:100%; border-collapse:collapse; font-size:10pt;">
+    <thead>
+      <tr style="border-bottom: 1pt solid var(--border);">
+        {{#each report.centerpiece.columns}}
+        <th style="text-align:{{#if @first}}left{{else}}right{{/if}}; padding:6pt 0; color: var(--text3);">{{this}}</th>
+        {{/each}}
+      </tr>
+    </thead>
+    <tbody>
+      {{#each report.centerpiece.rows}}
+      <tr style="border-bottom: 0.5pt solid var(--border);">
+        {{#each this}}
+        <td style="padding:5pt 0; text-align:{{#if @first}}left{{else}}right{{/if}}; font-variant-numeric: tabular-nums; color: {{#if @first}}var(--text1){{else}}var(--text2){{/if}};">{{this}}</td>
+        {{/each}}
+      </tr>
+      {{/each}}
+    </tbody>
+  </table>
+</section>
+{{/if}}
+
+{{!-- ─── 03 · KEY FINDINGS ─────────────────────────────────────── --}}
+{{#if hasKeyFindings}}
+<section class="page">
+  <div class="section-eyebrow">03 · Key Findings</div>
+  <div class="section-divider"></div>
+  {{#each report.keyFindings}}
+  <div class="followup">
+    <h3 class="followup-title">{{this.title}}{{#if this.value}} — {{this.value}}{{/if}}</h3>
+    {{#if this.body}}<p class="followup-rationale">{{this.body}}</p>{{/if}}
+  </div>
+  {{/each}}
+</section>
+{{/if}}
+
+{{!-- ─── THE FULL SURVEY — every question, correct renderer + scale ── --}}
+<section class="page">
+  <div class="section-eyebrow">· The Full Survey</div>
+  <div class="section-divider"></div>
+  <p class="lede" style="font-size: 10pt; color: var(--text3); margin-bottom: 16pt;">Every question asked, with its responses. {{report.survey.length}} questions.</p>
+
+  {{#each report.survey}}
+  <div class="question">
+    <div class="survey-q-head">
+      <span class="survey-q-num">Q{{this.number}}</span>
+      <span class="survey-q-text">{{this.text}}{{#if this.isScreening}} <span class="survey-q-screener">screener</span>{{/if}}</span>
+      <span class="survey-q-renderer">{{this.renderer_label}}</span>
+    </div>
+
+    {{#ifKind this.body.kind "scale"}}
+      <div class="question-rating-summary">{{this.body.headline}}</div>
+      {{#each this.body.bars}}
+      <div class="bar-row">
+        <div></div>
+        <div class="bar-row-label">{{this.label}}</div>
+        <div class="bar-track"><div class="bar-fill" style="width: {{this.pct}}%"></div></div>
+        <div class="bar-row-meta">{{this.count}} · {{this.pct}}%</div>
+      </div>
+      {{/each}}
+    {{/ifKind}}
+
+    {{#ifKind this.body.kind "bars"}}
+      {{#if this.body.empty}}
+      <p class="empty">{{this.body.empty_message}}</p>
+      {{else}}
+      {{#if this.body.note}}<div class="question-screener-note">{{this.body.note}}</div>{{/if}}
+      {{#each this.body.bars}}
+      <div class="bar-row">
+        <div></div>
+        <div class="bar-row-label">{{this.label}}</div>
+        <div class="bar-track"><div class="bar-fill" style="width: {{this.pct}}%"></div></div>
+        <div class="bar-row-meta">{{this.count}} · {{this.pct}}%</div>
+      </div>
+      {{/each}}
+      {{/if}}
+    {{/ifKind}}
+
+    {{#ifKind this.body.kind "matrix"}}
+      <div class="question-screener-note">Per-attribute averages (out of 5, n={{this.body.n}})</div>
+      {{#each this.body.rows}}
+      <div class="bar-row">
+        <div></div>
+        <div class="bar-row-label">{{this.label}}</div>
+        <div class="bar-track"><div class="bar-fill" style="width: {{this.pct}}%"></div></div>
+        <div class="bar-row-meta">{{this.average}} (n={{this.n}})</div>
+      </div>
+      {{/each}}
+    {{/ifKind}}
+
+    {{#ifKind this.body.kind "maxdiff"}}
+      {{#if this.body.empty}}
+      <p class="empty">{{this.body.empty_message}}</p>
+      {{else}}
+      <table style="width:100%; border-collapse:collapse; font-size:10pt;">
+        <thead><tr style="border-bottom: 1pt solid var(--border);">
+          <th style="text-align:left; padding:5pt 0; color: var(--text3);">Feature</th>
+          <th style="text-align:right; padding:5pt 0; color: var(--text3);">Best</th>
+          <th style="text-align:right; padding:5pt 0; color: var(--text3);">Worst</th>
+        </tr></thead>
+        <tbody>
+          {{#each this.body.rows}}
+          <tr><td style="padding:4pt 0; color: var(--text1);">{{this.label}}</td>
+          <td style="padding:4pt 0; text-align:right; color: var(--lime); font-variant-numeric: tabular-nums;">{{this.best}}</td>
+          <td style="padding:4pt 0; text-align:right; color: var(--text2); font-variant-numeric: tabular-nums;">{{this.worst}}</td></tr>
+          {{/each}}
+        </tbody>
+      </table>
+      {{/if}}
+    {{/ifKind}}
+
+    {{#ifKind this.body.kind "verbatims"}}
+      {{#if this.body.empty}}
+      <p class="empty">{{this.body.empty_message}}</p>
+      {{else}}
+      <ul class="verbatim-list">
+        {{#each this.body.items}}
+        <li class="verbatim">"{{this}}"</li>
+        {{/each}}
+      </ul>
+      {{/if}}
+    {{/ifKind}}
+  </div>
+  {{/each}}
+</section>
+
+{{!-- ─── DATA QUALITY NOTES (canonical — cleaned, one-per-question) ── --}}
+{{#if hasDataQualityNotes}}
+<section class="page">
+  <div class="section-eyebrow">· Data Quality Notes</div>
+  <div class="section-divider"></div>
+  <p class="lede" style="margin-bottom: 10pt; font-size: 10pt;">A few items in this report may warrant follow-up. The findings above still reflect the data as recorded.</p>
+  {{#each report.dataQualityNotes}}
+  <div class="followup">
+    <h3 class="followup-title">Question {{this.question_number}}</h3>
+    <p class="followup-rationale">{{this.note}}</p>
+  </div>
+  {{/each}}
+</section>
+{{/if}}
+
+{{!-- ─── METHODOLOGY DISCLAIMER ────────────────────────────────── --}}
+{{#if report.disclaimer}}
+<section class="page">
+  <div class="section-eyebrow">· Methodology</div>
+  <div class="section-divider"></div>
+  <p class="lede">{{report.disclaimer}}</p>
+</section>
+{{/if}}

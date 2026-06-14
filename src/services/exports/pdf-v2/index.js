@@ -1,14 +1,23 @@
 /**
  * VETT — PDF export entry point.
  * Pass 25 Phase 0: drop-in replacement for ../pdf.js (pdfkit-based).
+ * Pass 48 Phase 3: REBUILT on the CanonicalReport. The general_research and
+ * brand_lift body templates now render the SAME report the web results page
+ * renders (buildCanonicalReport → buildRenderModel), in the uniform section
+ * order shared by every export format:
+ *   header → exec summary → headline metrics → centerpiece (brand-lift
+ *   exposed-vs-control funnel) → key findings → THE FULL SURVEY (every
+ *   question by its renderer with the CORRECT scale — kills the "7/5"/"0/5"
+ *   bug) → data-quality notes (canonical, cleaned) → methodology disclaimer.
+ * Both templates render identical structure from the same `report` model.
+ *
+ * The creative_attention template is a separate goal type (its own analysis
+ * shape `ca`) and is out of Pass-48 scope; its view-model fields are preserved.
  *
  * Public API:
  *   buildPDF(pack, res)
- *     pack — { mission, insights, aggregatedByQuestion } from loadMissionForExport
+ *     pack — { mission, responses, insights, ... } from loadMissionForExport
  *     res  — Express response (we set headers + write the PDF buffer)
- *
- * The signature matches the old pdfkit version so the route handler swaps
- * one line.
  */
 
 const fs   = require('fs');
@@ -16,10 +25,9 @@ const path = require('path');
 const Handlebars = require('handlebars');
 const logger = require('../../../utils/logger');
 const { renderPdfFromHtml, getFontFaceCss } = require('./engine');
-const { resolveQuestionInsight } = require('../screenerInsights');
-const { buildIntegrityWarnings } = require('../integrity');
 const { getReportMetadata } = require('../reportMetadata');
-const { analysisHeadlines, brandLiftStageTable } = require('../analysisHeadlines');
+const { buildCanonicalReport } = require('../../report/buildReport');
+const { buildRenderModel } = require('../../report/reportRenderModel');
 
 /* ─── Template + CSS loading (once per process) ─────────────────────────── */
 
@@ -44,14 +52,19 @@ function loadBaseTemplate() {
 }
 
 function loadBodyPartial(name) {
+  // Pass 48 — the shared canonical body partial. general_research and
+  // brand_lift both {{> canonicalBody}}, so their structure is guaranteed
+  // identical (the Pass-48 requirement that exports be structurally the
+  // same across methodologies). Registered once; safe to re-register.
+  if (!_bodyTemplates.__canonical) {
+    _bodyTemplates.__canonical = fs.readFileSync(path.join(TEMPLATE_DIR, '_canonical_body.hbs'), 'utf8');
+  }
+  Handlebars.registerPartial('canonicalBody', _bodyTemplates.__canonical);
+
   // Pass 44 P0 — ALWAYS re-register the 'body' partial, even on cache
   // hit. The old early-return skipped registerPartial, so whichever
   // template was exported FIRST after process boot stayed registered
   // as 'body' for every subsequent PDF regardless of mission type.
-  // Production forensics: one brand_lift export poisoned all research
-  // PDFs (3-page brand-lift shell, zero question sections) until the
-  // dyno restarted. The cache only saves the disk read; the partial
-  // registration is per-render state and must track `name`.
   if (_bodyTemplates[name]) {
     Handlebars.registerPartial('body', _bodyTemplates[name]);
     return _bodyTemplates[name];
@@ -69,34 +82,24 @@ function loadBodyPartial(name) {
 function registerHelpers() {
   if (_helpersReg) return;
 
-  // Equality helper for {{#ifEq this.type "rating"}}
   Handlebars.registerHelper('ifEq', function (a, b, options) {
     return a === b ? options.fn(this) : options.inverse(this);
   });
 
-  // "single" mission types — anything that's not rating/multi/text gets bars
-  Handlebars.registerHelper('ifSingle', function (type, options) {
-    const isSingle = type !== 'rating' && type !== 'multi' && type !== 'text';
-    return isSingle ? options.fn(this) : options.inverse(this);
-  });
-
-  // KPI trend → CSS class
+  // KPI trend → CSS class (creative_attention + key findings)
   Handlebars.registerHelper('kpiClass', function (trend) {
     if (trend === 'negative') return 'kpi-value--negative';
     if (trend === 'neutral')  return 'kpi-value--neutral';
-    return '';  // positive / undefined → default (lime)
+    return '';
   });
 
-  // Question eyebrow text: "02 · QUESTION 1"
-  // Pass 27 H — frame numbering on the CA template
   Handlebars.registerHelper('add', function (a, b) {
     return Number(a) + Number(b);
   });
 
-  Handlebars.registerHelper('questionEyebrow', function (idx) {
-    const sectionNum = String(idx + 2).padStart(2, '0');
-    const qNum       = idx + 1;
-    return new Handlebars.SafeString(`${sectionNum} · Question ${qNum}`);
+  // Pass 48 — render-model survey body dispatch by `body.kind`.
+  Handlebars.registerHelper('ifKind', function (kind, expected, options) {
+    return kind === expected ? options.fn(this) : options.inverse(this);
   });
 
   _helpersReg = true;
@@ -104,154 +107,51 @@ function registerHelpers() {
 
 /* ─── View-model construction ───────────────────────────────────────────── */
 
+/** Clean responses the same way results.js /report does (mirror the web). */
+function cleanResponses(responses) {
+  const all = responses || [];
+  const clean = all.filter((r) =>
+    r && r.screened_out !== true && !(r.persona_profile && r.persona_profile.screened_out === true));
+  return clean.length > 0 ? clean : all;
+}
+
 /**
- * Convert raw mission data into a flat, render-ready view model.
- * The template gets the data already shaped for it — no logic in the template.
+ * Convert the canonical report into a flat, render-ready view model for the
+ * Handlebars templates. The template gets data already shaped for it.
  */
 function buildViewModel(pack) {
-  const { mission, insights, aggregatedByQuestion } = pack;
+  const { mission } = pack;
 
-  // KPIs
-  const kpis = Array.isArray(insights?.kpis) ? insights.kpis.slice(0, 3) : [];
+  // STEP 1 — canonical report once, then the shared render model.
+  const report = buildCanonicalReport(mission, mission.analysis || null, cleanResponses(pack.responses));
+  const model = buildRenderModel(report);
 
-  // Per-question data
-  const questions = (mission.questions || []).map(q => {
-    const agg = aggregatedByQuestion[q.id] || {};
-
-    let ratingRows = [];
-    let distRows   = [];
-    let verbatims  = [];
-
-    if (q.type === 'rating') {
-      const dist = agg.distribution || {};
-      const total = Object.values(dist).reduce((s, v) => s + v, 0) || 1;
-      for (let r = 5; r >= 1; r--) {
-        const c = dist[r] || 0;
-        ratingRows.push({
-          rating: r,
-          count:  c,
-          pct:    Math.round((c / total) * 100),
-        });
-      }
-    } else if (q.type === 'multi') {
-      const dist = agg.distribution || {};
-      const nResp = agg.n_respondents || agg.n || 1;
-      distRows = Object.entries(dist)
-        .sort((a, b) => b[1] - a[1])
-        .map(([opt, count]) => ({
-          label: String(opt),
-          count,
-          pct: Math.round((count / nResp) * 100),
-        }));
-    } else if (q.type === 'text') {
-      verbatims = (agg.verbatims || []).slice(0, 5).map(v => String(v));
-    } else {
-      // single / opinion / fallback
-      // Pass 26 Minor 5 — for screener questions, render every schema option
-      // (including ones at 0 count) so the reader sees the screener's full
-      // option set, not just the qualifying choice. For non-screener single-
-      // choice questions, keep the prior behaviour (only show options that
-      // received at least one response, sorted descending).
-      const dist = agg.distribution || {};
-      const total = Object.values(dist).reduce((s, v) => s + v, 0) || 1;
-      const isScreener = q.isScreening === true || q.type === 'screening';
-      if (isScreener && Array.isArray(q.options) && q.options.length > 0) {
-        const qualifying = q.qualifyingAnswer;
-        distRows = q.options.map(opt => {
-          const c = Number(dist[opt] || 0);
-          return {
-            label: String(opt) + (qualifying === opt ? '  (qualifying)' : ''),
-            count: c,
-            pct: Math.round((c / total) * 100),
-          };
-        });
-      } else {
-        distRows = Object.entries(dist)
-          .sort((a, b) => b[1] - a[1])
-          .map(([opt, count]) => ({
-            label: String(opt),
-            count,
-            pct: Math.round((count / total) * 100),
-          }));
-      }
-    }
-
-    // Per-question insight pullquote
-    // Pass 25 Phase 0.1 Bug B — screener questions where 100% qualified get a
-    // sample-composition note instead of the (often tautological) AI insight.
-    const piList = insights?.per_question_insights || [];
-    const rawInsight = piList.find(pi => pi.question_id === q.id) || null;
-    const resolvedInsight = resolveQuestionInsight(
-      q,
-      agg,
-      rawInsight ? { headline: rawInsight.headline, body: rawInsight.body || '' } : null,
-      pack.sampleMetrics,
-    );
-
-    return {
-      id:           q.id,
-      text:         q.text,
-      type:         q.type,
-      aggregation:  agg,
-      ratingRows,
-      distRows,
-      verbatims,
-      insight: resolvedInsight ? {
-        headline: resolvedInsight.headline,
-        body:     resolvedInsight.body || '',
-      } : null,
-    };
-  });
-
-  // Pass 25 Phase 0.1 Bug H + A — integrity warnings rendered as appendix page
-  const integrityWarnings = buildIntegrityWarnings(mission, aggregatedByQuestion);
-
-  // Pass 25 Phase 0.1 Minor 1 — distinct mission_completed vs report_generated
   const meta = getReportMetadata(mission);
 
-  // Pass 47 Phase 4 — methodology key-results (computed centerpiece numbers
-  // from mission.analysis). Rendered as a "Key Results" section near the top
-  // of the body templates so the research-grade metrics aren't absent from
-  // the PDF. brandLiftHeadlineTable feeds the per-stage lift table on the
-  // brand_lift template. NUMBERS only; full chart-visual parity → Pass 48.
-  const analysisObj = mission.analysis || null;
-  const keyResults = analysisHeadlines(analysisObj);
-  const brandLiftHeadlineTable = brandLiftStageTable(analysisObj);
-
   return {
+    // Cover (shared by every body template via _base.hbs)
     mission: {
       id:                mission.id,
-      title:             mission.title || 'Research Report',
-      brief:             mission.brief || mission.mission_statement || '',
+      title:             model.header.title,
+      brief:             model.header.brief,
       respondent_count:  mission.respondent_count || '—',
     },
-    insights: insights || {},
-    kpis,
-    hasKpis:            kpis.length > 0,
-    keyResults,
-    hasKeyResults:      keyResults.length > 0,
-    brandLiftHeadlineTable,
-    hasBrandLiftHeadlineTable: brandLiftHeadlineTable.length > 0,
-    questions,
-    hasRecommendations: Array.isArray(insights?.recommendations) && insights.recommendations.length > 0,
-    hasFollowUps:       Array.isArray(insights?.follow_ups)      && insights.follow_ups.length > 0,
-    integrityWarnings,
-    hasIntegrityWarnings: integrityWarnings.length > 0,
-    hasTrailingContent: (Array.isArray(insights?.recommendations) && insights.recommendations.length > 0)
-                        || (Array.isArray(insights?.follow_ups) && insights.follow_ups.length > 0)
-                        || integrityWarnings.length > 0,
+    // Pass 48 canonical render model — the single source the body renders.
+    report: model,
+    hasHeadline:        !!model.headline,
+    hasCenterpiece:     !!model.centerpiece,
+    hasKeyFindings:     model.keyFindings.length > 0,
+    hasDataQualityNotes: model.dataQualityNotes.length > 0,
+
     missionCompletedLabel: meta.mission_completed_label,
     reportGeneratedLabel:  meta.report_generated_label,
     generatedDate:      meta.report_generated_label,
-    // Pass 25 Phase 1G — surface the pre-aggregated brand-lift payload
-    // (score / funnel / channels / geography / competitors / waves /
-    // recommendations) so the brand_lift_study.hbs body can render it.
-    blr: mission?.brand_lift_results || null,
-    // Pass 27 H — Creative Attention payload for the creative_attention.hbs
-    // body. Schema documented in docs/PASS_24_BUG_01_LOG.md.
+
+    // Creative-attention body (separate goal type, out of Pass-48 scope).
     ca: mission?.creative_analysis || null,
     media_url: mission?.media_url || null,
     brand_name: mission?.brand_name || null,
+
     fontFaceCss:        getFontFaceCss(),
     baseCss:            loadBaseCss(),
   };
@@ -260,15 +160,12 @@ function buildViewModel(pack) {
 /* ─── Mission-type → body-template selection ────────────────────────────── */
 
 function bodyTemplateForMission(mission) {
-  // Pass 25 Phase 1G — brand_lift missions use a brand-lift-specific
-  // body partial that includes the score dial, funnel, channel
-  // performance, geo, competitor comparison, wave comparison, and AI
-  // recs sections.
-  if (mission?.goal_type === 'brand_lift') return 'brand_lift_study';
-  // Pass 27 H — Creative Attention missions get their own body partial.
-  // Was falling through to general_research which renders nothing for
-  // creative_analysis-shaped data.
+  // Creative Attention keeps its bespoke body (frame-by-frame, emotion, etc.).
   if (mission?.goal_type === 'creative_attention') return 'creative_attention';
+  // Pass 48 — brand_lift and EVERY other methodology render the SAME canonical
+  // report body. brand_lift uses its own partial only so the centerpiece funnel
+  // is framed under a brand-lift heading; structurally it is identical.
+  if (mission?.goal_type === 'brand_lift') return 'brand_lift_study';
   return 'general_research';
 }
 
@@ -294,7 +191,7 @@ async function buildPDF(pack, res) {
     return;
   }
 
-  const safeName = (pack.mission.title || pack.mission.id)
+  const safeName = (viewModel.mission.title || pack.mission.id)
     .toString()
     .slice(0, 40)
     .replace(/[^a-z0-9]+/gi, '-')

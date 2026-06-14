@@ -79,6 +79,24 @@ test('shapeQuestionData: 0-10 NPS builds 0..10 buckets + real mean (no 7/5)', ()
   expect(data.n).toBe(5);
 });
 
+test('shapeQuestionData: LABELLED scale answers ("3 - Neutral") parse to their leading integer (kills 0/5 n=0)', () => {
+  // Pass 48 Phase 3 — production pricing Q13: a genuine 1-5 rating whose
+  // synthetic answers are the labelled option text, not bare numbers. Plain
+  // numeric coercion collapsed it to "Average 0 / 5 (n=0)" — the 0/5 bug.
+  const q = {
+    id: 'q1', type: 'rating',
+    options: ['1 - Very unlikely', '2 - Unlikely', '3 - Neutral', '4 - Likely', '5 - Very likely'],
+  };
+  const responses = ['3 - Neutral', '3 - Neutral', '3 - Neutral', '4 - Likely', '4 - Likely']
+    .map((v, i) => ({ persona_id: `p${i}`, question_id: 'q1', answer: v }));
+  const data = shapeQuestionData(q, 'scale_1_5_star', responses, null);
+  expect(data.n).toBe(5);                 // not 0
+  expect(data.average).toBeCloseTo(3.4, 1); // not 0
+  expect(data.distribution['3']).toBe(3);
+  expect(data.distribution['4']).toBe(2);
+  expect(Object.keys(data.distribution)).toHaveLength(5); // 1..5
+});
+
 test('shapeQuestionData: 1-7 CES builds 1..7 buckets (no 0/5 collapse)', () => {
   const q = { id: 'q1', type: 'rating', options: opts(1, 7) };
   const responses = [7, 6, 6, 5, 1].map((v, i) => ({ persona_id: `p${i}`, question_id: 'q1', answer: v }));

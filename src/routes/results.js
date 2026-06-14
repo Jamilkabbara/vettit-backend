@@ -554,78 +554,52 @@ router.get('/:missionId/brand-lift-benchmarks', authenticate, async (req, res, n
 });
 
 // ─── GET /api/results/:missionId/export/raw ──────────────────
-// JSON dump of everything — useful for data-science use cases.
+// JSON dump — useful for data-science use cases.
+// Pass 48 Phase 3 — the JSON export now carries the SAME CanonicalReport the
+// web page and the other export formats render (built once, from clean
+// responses, exactly like /report). `report` is the canonical object;
+// `responses` + `analysis` are kept alongside for raw data-science access.
+// The old spammy integrity-warning generator and the per-question screener-
+// insight rewriter are dropped — the canonical report.data_quality_notes
+// (cleaned, one-per-question) and report.survey replace them.
 router.get('/:missionId/export/raw', authenticate, async (req, res, next) => {
   try {
+    const { buildCanonicalReport } = require('../services/report/buildReport');
     const pack = await loadMissionForExport(req.params.missionId, req.user.id);
     if (!pack)      return res.status(404).json({ error: 'Mission not found' });
     if (pack.error) return res.status(400).json({ error: pack.error });
 
-    // Pass 25 Phase 0.1 Bug B + Pass 26 dead-content cleanup — tag screener
-    // per-question insights with is_screener_insight: true AND, when the AI
-    // returned tautological prose for a 100%-qualified screener, replace
-    // headline/body with the sample-composition note used by PDF/PPTX. Keeps
-    // every consumer aligned on the same content for screener questions.
-    const { isScreener, getSampleCompositionNote } = require('../services/exports/screenerInsights');
-    const taggedInsights = pack.insights ? { ...pack.insights } : {};
-    if (Array.isArray(taggedInsights.per_question_insights)) {
-      const qById = {};
-      for (const q of (pack.mission.questions || [])) qById[q.id] = q;
-      const sm = pack.sampleMetrics || {};
-      const fullyQualified = (Number(sm.completed) || 0) === (Number(sm.total_respondents) || 0)
-        && (Number(sm.total_respondents) || 0) > 0;
-      taggedInsights.per_question_insights = taggedInsights.per_question_insights.map(pi => {
-        const q = qById[pi?.question_id];
-        if (!q || !isScreener(q)) return pi;
-        if (!fullyQualified) return { ...pi, is_screener_insight: true };
-        const note = getSampleCompositionNote(q, pack.aggregatedByQuestion?.[q.id], sm);
-        return {
-          question_id: pi.question_id,
-          headline: note.headline,
-          body: note.body,
-          significance: pi.significance || 'low',
-          is_screener_insight: true,
-        };
-      });
-    }
+    const mission = pack.mission;
+    // Clean (non-screened-out) responses for survey shaping — mirrors /report.
+    const all = pack.responses || [];
+    const clean = all.filter((r) =>
+      r && r.screened_out !== true && !(r.persona_profile && r.persona_profile.screened_out === true));
+    const rows = clean.length > 0 ? clean : all;
 
-    // Pass 25 Phase 0.1 Bug H + A — surface schema drift and option overlap as
-    // top-level _integrity_warnings (never blocks the export).
-    const { buildIntegrityWarnings } = require('../services/exports/integrity');
-    const integrityWarnings = buildIntegrityWarnings(pack.mission, pack.aggregatedByQuestion);
+    const report = buildCanonicalReport(mission, mission.analysis || null, rows);
 
-    // Pass 25 Phase 0.1 Minor 1 — distinct mission_completed vs report_generated
     const { getReportMetadata } = require('../services/exports/reportMetadata');
-    const reportMeta = getReportMetadata(pack.mission);
+    const reportMeta = getReportMetadata(mission);
 
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition',
       `attachment; filename="vett-raw-${req.params.missionId}.json"`);
-    // Pass 47 Phase 4 — include the deterministic methodology analysis
-    // (missions.analysis: VW optimal price, brand-lift funnel + significance,
-    // NPS/CSAT/CES, MaxDiff/Kano, naming win-rates, etc.) so the JSON dump
-    // carries the research-grade centerpiece numbers, not just per-question
-    // tables. analysisHeadlines is the flat label/value summary alongside it.
-    const { analysisHeadlines } = require('../services/exports/analysisHeadlines');
-    const analysis = pack.mission.analysis || null;
-
     res.json({
+      // THE canonical report — identical to the web page + other exports.
+      report,
+      // Raw access for data-science consumers.
       mission: {
-        id:               pack.mission.id,
-        title:            pack.mission.title,
-        brief:            pack.mission.brief || pack.mission.mission_statement,
-        goal_type:        pack.mission.goal_type,
-        respondent_count: pack.mission.respondent_count,
-        targeting:        pack.mission.targeting,
-        questions:        pack.mission.questions,
-        completed_at:     pack.mission.completed_at,
+        id:               mission.id,
+        title:            mission.title,
+        brief:            mission.brief || mission.mission_statement,
+        goal_type:        mission.goal_type,
+        respondent_count: mission.respondent_count,
+        targeting:        mission.targeting,
+        questions:        mission.questions,
+        completed_at:     mission.completed_at,
       },
-      insights:            taggedInsights,
-      analysis,
-      analysis_headlines:  analysisHeadlines(analysis),
-      aggregatedByQuestion: pack.aggregatedByQuestion,
+      analysis:            mission.analysis || null,
       responses:           pack.responses,
-      _integrity_warnings: integrityWarnings,
       mission_completed_at: reportMeta.mission_completed_at,
       report_generated_at:  reportMeta.report_generated_at,
       exportedAt:          new Date().toISOString(),
