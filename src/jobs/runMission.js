@@ -434,6 +434,28 @@ async function runMission(missionId, opts = {}) {
       }).eq('id', missionId);
     }
 
+    // ─── Pass 49 — deterministic chart_data ────────────────────────────────
+    // The LLM synthesis may emit chart_data, but its scale buckets aren't
+    // trustworthy (truncated axes, hallucinated counts). Recompute it from the
+    // raw responses via the shared canonical scale logic (detectScale) so the
+    // web distribution charts always match the report + exports. Clean
+    // responses only (drop screened-out), matching how the report is built.
+    if (insights) {
+      try {
+        const { computeChartData } = require('../services/backfills/chartData');
+        const clean = (responses || []).filter(
+          (r) => r && !r.screened_out && !((r.persona_profile || {}).screened_out));
+        const cd = computeChartData(mission, clean.length ? clean : (responses || []));
+        if (cd && Array.isArray(cd.per_question_distributions) && cd.per_question_distributions.length) {
+          insights.chart_data = cd;
+        }
+      } catch (cdErr) {
+        logger.warn('Mission run: deterministic chart_data override failed (non-fatal)', {
+          missionId, err: cdErr.message,
+        });
+      }
+    }
+
     // Targeting brief (non-fatal).
     try {
       const brief = await generateTargetingBrief({ mission, responses, insights });
