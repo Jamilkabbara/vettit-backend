@@ -244,7 +244,7 @@ app.get('/version', (req, res) => {
     sha:        process.env.RAILWAY_GIT_COMMIT_SHA || 'unknown',
     branch:     process.env.RAILWAY_GIT_BRANCH || 'unknown',
     deployedAt: process.env.RAILWAY_DEPLOYMENT_CREATED_AT || 'unknown',
-    pass:       47,
+    pass:       48,
     methodologies: SHIPPED_METHODOLOGIES,
   });
 });
