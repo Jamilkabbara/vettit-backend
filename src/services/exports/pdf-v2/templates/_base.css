@@ -216,12 +216,16 @@ p, li {
 
 /* ─── Per-question section ────────────────────────────────────────────────── */
 .question {
-  /* Pass 26 Bug C — page-break-inside: avoid here was forcing the whole
-   * question block to a new page when it didn't fit, stranding the
-   * .section-eyebrow and .section-divider on the prior page. The smaller
-   * atoms below (.bar-row, .verbatim, .insight-callout, .kpi-card) keep
-   * their own avoid rules, so a long question now flows across pages
-   * cleanly without orphaning its header. */
+  /* Pass 49 Phase 2 — each question is an ATOMIC block: its text + chart +
+   * answer rows + insight move whole to the next page rather than splitting
+   * across a page boundary (the user-reported "question continues on another
+   * page" bug). Pass 26 had removed this to stop stranding the section header,
+   * but the eyebrow + divider now carry their own `page-break-after: avoid`
+   * (below), so they follow the question to the next page instead of being
+   * orphaned. A question taller than one page still breaks gracefully
+   * (avoid is best-effort), so this never produces blank pages. */
+  page-break-inside: avoid;
+  break-inside: avoid;
   page-break-before: auto;
   margin-bottom: 22pt;
 }
