@@ -53,8 +53,10 @@ router.delete('/image', authenticate, async (req, res, next) => {
     const { filename } = req.body;
     if (!filename) return res.status(400).json({ error: 'filename is required' });
 
-    // Security: ensure user can only delete their own files
-    if (!filename.startsWith(req.user.id)) {
+    // Security: ensure user can only delete their own files. Pass 49 (P2):
+    // require the trailing slash so the prefix matches a full path segment
+    // ({userId}/...) and can never collide with another user's id as a prefix.
+    if (!filename.startsWith(req.user.id + '/')) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
