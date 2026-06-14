@@ -319,6 +319,13 @@ function buildPPTX(pack, res) {
     const eyebrow = `${String(qi + 5).padStart(2, '0')} · QUESTION ${q.number}  ·  ${q.renderer_label.toUpperCase()}${q.isScreening ? '  · SCREENER' : ''}`;
     addSectionHeader(slide, eyebrow, q.text);
     renderSurveyBody(slide, q);
+    // Pass 49 — per-question "what this means" footer (same canonical insight).
+    if (q.insight) {
+      slide.addText([
+        { text: 'WHAT THIS MEANS   ', options: { bold: true, color: hex(BRAND.lime), fontSize: 9 } },
+        { text: q.insight, options: { color: hex(BRAND.text2), fontSize: 11, italic: true } },
+      ], { x: 0.5, y: 6.95, w: 12.3, h: 0.5, fontFace: 'Calibri', valign: 'top' });
+    }
   });
 
   // ── DATA QUALITY NOTES (canonical cleaned notes) ──

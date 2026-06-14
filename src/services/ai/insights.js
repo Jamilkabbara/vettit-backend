@@ -204,10 +204,13 @@ function buildComputedSummary(analysis, mission) {
         break;
     }
   } catch { /* fully defensive — fall through to the generic line */ }
+  // Pass 49 — NO hedge strings. A clean computed summary reads as a complete
+  // finding, not an apology. (The dedicated reportSummaries generator is the
+  // primary path; this stays a clean last resort.)
   if (parts.length === 0) {
-    return n ? `Your computed results below are complete (${n}). A written narrative summary was unavailable for this run.` : null;
+    return n ? `The computed results below summarise responses from ${n}.` : null;
   }
-  return `${parts.join(' ')}${n ? ` (${n})` : ''} A fuller written narrative was unavailable for this run; the computed results below are complete and accurate.`;
+  return `${parts.join(' ')}${n ? ` (${n})` : ''}`.trim();
 }
 
 /**

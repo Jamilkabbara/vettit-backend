@@ -240,6 +240,12 @@ function buildXLSX(pack, res) {
         });
       }
     }
+    // Pass 49 — per-question "what this means" (same canonical insight).
+    if (q.insight) {
+      const iRow = sv.addRow({ q: '', question: 'What this means:', renderer: '', answer: q.insight, value: '', share: '' });
+      iRow.getCell('question').font = { name: 'Calibri', size: 10, italic: true, color: { argb: argb(BRAND.lime) } };
+      iRow.getCell('answer').font = { name: 'Calibri', size: 10, italic: true };
+    }
     sv.addRow({}); // spacer
   });
 

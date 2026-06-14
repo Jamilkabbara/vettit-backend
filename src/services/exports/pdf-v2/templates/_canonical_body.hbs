@@ -161,6 +161,13 @@
       </ul>
       {{/if}}
     {{/ifKind}}
+
+    {{#if this.insight}}
+    <div class="insight-callout">
+      <div class="insight-eyebrow">What this means</div>
+      <div style="font-size:10pt; color: var(--text1); line-height:1.5;">{{this.insight}}</div>
+    </div>
+    {{/if}}
   </div>
   {{/each}}
 </section>

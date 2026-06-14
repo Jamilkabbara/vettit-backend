@@ -446,6 +446,48 @@ router.get('/:missionId/report', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ─── POST /api/results/:missionId/summaries/regenerate ───────
+// Pass 49 — (re)generate the cached report summaries (executive + per-question
+// "what this means") from the canonical report and persist them onto insights,
+// so web + exports + chat all read identical, grounded, hedge-free text.
+// Owner-scoped; one generation pass (not per page load).
+router.post('/:missionId/summaries/regenerate', authenticate, async (req, res, next) => {
+  try {
+    const { buildCanonicalReport } = require('../services/report/buildReport');
+    const { generateReportSummaries } = require('../services/ai/reportSummaries');
+    const pack = await loadMissionForExport(req.params.missionId, req.user.id);
+    if (!pack) return res.status(404).json({ error: 'Mission not found' });
+    if (pack.error) return res.status(400).json({ error: pack.error });
+
+    const mission = pack.mission;
+    const all = pack.responses || [];
+    const clean = all.filter((r) => r && r.screened_out !== true && !(r.persona_profile && r.persona_profile.screened_out === true));
+    const report = buildCanonicalReport(mission, mission.analysis || null, clean.length ? clean : all);
+    const summaries = await generateReportSummaries(report, { missionId: mission.id, userId: req.user.id });
+
+    // Merge onto existing insights (fetch fresh so we never drop kpis/etc.).
+    const { data: mrow } = await supabase
+      .from('missions').select('insights').eq('id', mission.id).eq('user_id', req.user.id).single();
+    const newInsights = { ...((mrow && mrow.insights) || {}) };
+    if (summaries.executive_summary) newInsights.executive_summary = summaries.executive_summary;
+    newInsights.per_question_insights = summaries.per_question_insights;
+    newInsights.narration_failed = false;
+
+    const { error } = await supabase
+      .from('missions')
+      .update({ insights: newInsights, executive_summary: summaries.executive_summary || null })
+      .eq('id', mission.id).eq('user_id', req.user.id);
+    if (error) return res.status(500).json({ error: error.message });
+
+    res.json({
+      ok: true,
+      exec_summary_source: summaries.exec_summary_source,
+      exec_summary: summaries.executive_summary,
+      per_question_count: summaries.per_question_insights.length,
+    });
+  } catch (err) { next(err); }
+});
+
 router.get('/:missionId/status', authenticate, async (req, res, next) => {
   try {
     const { data: mission, error } = await supabase
