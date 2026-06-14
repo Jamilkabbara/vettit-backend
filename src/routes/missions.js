@@ -6,7 +6,6 @@ const supabase = require('../db/supabase');
 const { calculateMissionPrice, extractCountriesFromMission } = require('../utils/pricingEngine');
 const { runMission } = require('../jobs/runMission');
 const { sanitizeMissionPatch, updateMission } = require('../db/missionSchema');
-const { detectScale, scaleNum } = require('../services/report/buildReport');
 const logger = require('../utils/logger');
 
 // ── Generate-responses idempotency guard ──────────────────────────────
@@ -875,13 +874,12 @@ router.get('/:id/chart_data', authenticate, async (req, res, next) => {
       return res.status(403).json({ error: 'forbidden' });
     }
 
-    // Fast path: synthesis already emitted chart_data (B1 missions).
-    const existing = mission.insights?.chart_data;
-    if (existing && typeof existing === 'object' && Object.keys(existing).length > 0) {
-      return res.json({ ...existing, _source: 'cached' });
-    }
-
-    // Slow path: compute from mission_responses.
+    // Pass 49 — always recompute deterministically from responses via the
+    // shared computeChartData (canonical detectScale/scaleNum + respondent-based
+    // multi-select %). The old LLM-emitted "fast path" forked from the canonical
+    // report (truncated scales, selection-based %), so the same question could
+    // render different numbers in "Response Distributions" vs "The full survey".
+    // One builder → the web charts always agree with the report + exports.
     const { data: responses, error: respErr } = await supabase
       .from('mission_responses')
       .select('question_id, answer, persona_profile')
@@ -894,127 +892,9 @@ router.get('/:id/chart_data', authenticate, async (req, res, next) => {
     if (!responses || responses.length === 0) {
       return res.json({ _source: 'empty', per_question_distributions: [] });
     }
-
-    // Build per-question distributions.
-    const questions = Array.isArray(mission.questions) ? mission.questions : [];
-    const qById = new Map(questions.map((q) => [q.id, q]));
-    const byQuestion = new Map();
-    for (const r of responses) {
-      if (!byQuestion.has(r.question_id)) byQuestion.set(r.question_id, []);
-      byQuestion.get(r.question_id).push(r.answer);
-    }
-
-    const per_question_distributions = [];
-    for (const [qid, answers] of byQuestion.entries()) {
-      const q = qById.get(qid);
-      if (!q) continue;
-
-      // Single-choice / multi-select: count occurrences.
-      if (q.type === 'single' || q.type === 'multi' || q.type === 'multi_select' || q.type === 'single_choice') {
-        const counts = new Map();
-        for (const a of answers) {
-          const values = Array.isArray(a) ? a : [a];
-          for (const v of values) {
-            if (v == null) continue;
-            counts.set(String(v), (counts.get(String(v)) || 0) + 1);
-          }
-        }
-        const options = Array.from(counts.keys());
-        const countsArr = options.map((o) => counts.get(o));
-        const total = countsArr.reduce((s, c) => s + c, 0);
-        const percentages = total > 0 ? countsArr.map((c) => Math.round((c / total) * 1000) / 10) : countsArr.map(() => 0);
-        per_question_distributions.push({
-          question_id: qid,
-          question: q.text || q.question || qid,
-          type: q.type === 'multi' || q.type === 'multi_select' ? 'multi_select' : 'single_choice',
-          options,
-          counts: countsArr,
-          percentages,
-        });
-        continue;
-      }
-
-      // Rating: bucket by value over the question's TRUE scale range.
-      // Pass 49 — reuse the canonical scale detection (detectScale/scaleNum)
-      // so the web distribution chart shares ONE source of truth with the
-      // canonical report + exports. Was: scale_max defaulted to 5 (truncating
-      // 1-7 / 0-10 axes) and buckets held only observed values (no zero-count
-      // bars, no scale_min) — the "axis stops at 6, single bar" web bug.
-      if (q.type === 'rating' || q.type === 'scale') {
-        const nums = answers.map((a) => scaleNum(a)).filter((v) => v !== null);
-        if (nums.length === 0) continue;
-        const scale = detectScale(q, nums);
-        const buckets = {};
-        for (let i = scale.min; i <= scale.max; i += 1) buckets[i] = 0;
-        for (const v of nums) if (buckets[v] !== undefined) buckets[v] += 1;
-        const sum = nums.reduce((s, n) => s + n, 0);
-        const mean = Math.round((sum / nums.length) * 100) / 100;
-        const sorted = [...nums].sort((a, b) => a - b);
-        const median = sorted.length % 2 === 0
-          ? (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
-          : sorted[Math.floor(sorted.length / 2)];
-        per_question_distributions.push({
-          question_id: qid,
-          question: q.text || q.question || qid,
-          type: 'rating',
-          scale_min: scale.min,
-          scale_max: scale.max,
-          buckets,
-          mean,
-          median,
-        });
-        continue;
-      }
-
-      // text: skip from distributions (flows through sentiment_breakdown instead)
-    }
-
-    // Segment distributions: by country if available.
-    const segment_distributions = [];
-    const byCountry = new Map();
-    for (const r of responses) {
-      const c = r.persona_profile?.country || r.persona_profile?.location;
-      if (!c) continue;
-      if (!byCountry.has(c)) byCountry.set(c, 0);
-      byCountry.set(c, byCountry.get(c) + 1);
-    }
-    if (byCountry.size > 1) {
-      // De-duplicate persona_id counts: count unique personas per country.
-      const personasByCountry = new Map();
-      for (const r of responses) {
-        const c = r.persona_profile?.country || r.persona_profile?.location;
-        if (!c) continue;
-        if (!personasByCountry.has(c)) personasByCountry.set(c, new Set());
-        // mission_responses has question_id × persona_id; use persona_profile.persona_id
-        const pid = r.persona_profile?.persona_id;
-        if (pid) personasByCountry.get(c).add(pid);
-      }
-      for (const [country, ids] of personasByCountry.entries()) {
-        segment_distributions.push({
-          segment_name: country,
-          n: ids.size,
-          key_metric_values: {},
-        });
-      }
-    }
-
-    const chart_data = {
-      per_question_distributions,
-      ...(segment_distributions.length >= 2 ? { segment_distributions } : {}),
-      _source: 'computed',
-    };
-
-    // Cache back into insights so the next call is fast.
-    // Avoid clobbering: read current insights, merge chart_data in.
-    const currentInsights = mission.insights && typeof mission.insights === 'object' ? mission.insights : {};
-    const newInsights = { ...currentInsights, chart_data: { ...chart_data } };
-    delete newInsights.chart_data._source; // _source is response-only metadata
-    await supabase
-      .from('missions')
-      .update({ insights: newInsights })
-      .eq('id', missionId);
-
-    return res.json(chart_data);
+    const { computeChartData } = require('../services/backfills/chartData');
+    const chart_data = computeChartData(mission, responses);
+    return res.json({ ...chart_data, _source: 'computed' });
   } catch (err) {
     logger.error('GET /missions/:id/chart_data failed', { err: err.message, stack: err.stack });
     next(err);

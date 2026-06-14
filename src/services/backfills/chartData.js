@@ -33,27 +33,31 @@ function computeChartData(mission, responses) {
     if (!q) continue;
 
     if (q.type === 'single' || q.type === 'multi' || q.type === 'multi_select' || q.type === 'single_choice') {
+      const isMulti = q.type === 'multi' || q.type === 'multi_select';
       const counts = new Map();
+      let nRespondents = 0;
       for (const a of answers) {
-        const values = Array.isArray(a) ? a : [a];
-        for (const v of values) {
-          if (v == null) continue;
-          counts.set(String(v), (counts.get(String(v)) || 0) + 1);
-        }
+        const values = (Array.isArray(a) ? a : [a]).filter((v) => v != null && v !== '');
+        if (values.length) nRespondents += 1;
+        for (const v of values) counts.set(String(v), (counts.get(String(v)) || 0) + 1);
       }
       const options = Array.from(counts.keys());
       const countsArr = options.map((o) => counts.get(o));
-      const total = countsArr.reduce((s, c) => s + c, 0);
-      const percentages = total > 0
-        ? countsArr.map((c) => Math.round((c / total) * 1000) / 10)
+      // Pass 49 — multi-select % must be over RESPONDENTS (a person can pick
+      // several), matching the canonical MultiDist. Was count/total-selections,
+      // which disagreed with "The full survey" on the same page.
+      const denom = isMulti ? nRespondents : (countsArr.reduce((s, c) => s + c, 0) || nRespondents);
+      const percentages = denom > 0
+        ? countsArr.map((c) => Math.round((c / denom) * 1000) / 10)
         : countsArr.map(() => 0);
       per_question_distributions.push({
         question_id: qid,
         question: q.text || q.question || qid,
-        type: q.type === 'multi' || q.type === 'multi_select' ? 'multi_select' : 'single_choice',
+        type: isMulti ? 'multi_select' : 'single_choice',
         options,
         counts: countsArr,
         percentages,
+        n_respondents: nRespondents,
       });
       continue;
     }
