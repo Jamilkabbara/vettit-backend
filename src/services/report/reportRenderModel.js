@@ -204,6 +204,7 @@ function buildRenderModel(report) {
     renderer: q.renderer,
     renderer_label: q.renderer_label,
     isScreening: !!q.isScreening,
+    insight: q.insight || null,
     body: shapeSurveyBody(q),
   }));
 

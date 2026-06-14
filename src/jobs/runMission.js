@@ -456,6 +456,26 @@ async function runMission(missionId, opts = {}) {
       }
     }
 
+    // ─── Pass 49 — dedicated report summaries (exec + per-question) ─────────
+    // The monolithic synthesis is unreliable (narration_failed). Generate the
+    // audience-facing summaries directly from the canonical report so they're
+    // always present, grounded, and hedge-free; cache onto insights so
+    // web/export/chat read identical text.
+    try {
+      const { buildCanonicalReport } = require('../services/report/buildReport');
+      const { generateReportSummaries } = require('../services/ai/reportSummaries');
+      const cleanForReport = (responses || []).filter(
+        (r) => r && !r.screened_out && !((r.persona_profile || {}).screened_out));
+      const report = buildCanonicalReport(mission, analysis || null, cleanForReport.length ? cleanForReport : (responses || []));
+      const summaries = await generateReportSummaries(report, { missionId, userId: mission.user_id });
+      insights = insights || {};
+      if (summaries.executive_summary) insights.executive_summary = summaries.executive_summary;
+      insights.per_question_insights = summaries.per_question_insights;
+      insights.narration_failed = false;
+    } catch (sumErr) {
+      logger.warn('Mission run: report summaries failed (non-fatal)', { missionId, err: sumErr.message });
+    }
+
     // Targeting brief (non-fatal).
     try {
       const brief = await generateTargetingBrief({ mission, responses, insights });

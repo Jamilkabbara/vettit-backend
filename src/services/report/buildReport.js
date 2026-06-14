@@ -290,6 +290,15 @@ function buildCanonicalReport(mission, analysis, responses) {
   const questions = Array.isArray(mission.questions) ? mission.questions : [];
   const rows = Array.isArray(responses) ? responses : [];
 
+  // Pass 49 — per-question micro-summaries, generated once at synthesis and
+  // cached on insights.per_question_insights, attached to each survey question
+  // so web + exports + chat render identical "what this means" text.
+  const insights = (mission.insights && typeof mission.insights === 'object') ? mission.insights : {};
+  const pqiMap = new Map(
+    (Array.isArray(insights.per_question_insights) ? insights.per_question_insights : [])
+      .filter((p) => p && p.question_id)
+      .map((p) => [p.question_id, typeof p === 'string' ? p : (p.insight || p.body || p.headline || null)]));
+
   // ── survey: every question, correct renderer + correctly-shaped data ──
   const survey = questions.map((q, i) => {
     // Observed numeric answers inform scale detection (NPS/CES often carry
@@ -309,11 +318,11 @@ function buildCanonicalReport(mission, analysis, responses) {
       options: q.options || [],
       isScreening: !!q.isScreening,
       data: shapeQuestionData(q, renderer, rows, analysis),
+      insight: pqiMap.get(q.id) || null,
     };
   });
 
   const headlines = analysisHeadlines(analysis);
-  const insights = (mission.insights && typeof mission.insights === 'object') ? mission.insights : {};
   // Pass 48 — drop the Pass-47 hedge tail ("A fuller written narrative was
   // unavailable…") from any computed-fallback summary; surfaces show a
   // clean computed summary with no apology.
