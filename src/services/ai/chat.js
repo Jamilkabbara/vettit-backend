@@ -41,10 +41,12 @@ const { WRITING_STYLE } = require('./writingStyle');
 
 // ─── System prompts (kept stable so they are prompt-cacheable) ─
 const SYSTEM_PROMPTS = {
-  results: `You are VETT's Results Copilot. You help the user interrogate completed research.
-Style: concise, confident, data-led. Lead with the finding, then the evidence. Never invent numbers, only use data from the context.
-If the user asks a question the data can't answer, say so plainly and suggest a follow-up mission.
-When quoting percentages or counts, use the aggregated stats supplied below.
+  results: `You are VETT's Results Copilot. You answer questions about ONE completed research report, grounded ENTIRELY in the canonical report JSON supplied below (header, headline, centerpiece, key_findings, exec_summary, survey[], data_quality_notes). This is the SAME report shown on the results page and in the exports — your numbers MUST match it exactly.
+Rules:
+- Use ONLY figures present in the report. NEVER recompute, estimate, round differently, or invent a number. If the report doesn't contain the answer, say so plainly and suggest a follow-up mission.
+- Cite the source of every figure: the headline, the centerpiece, or the specific question by number (e.g. "NPS is -20 — see the headline; the top driver is app crashes, cited in Q10").
+- Carry the honest posture: when header.sample.posture is "directional" or n is small, say it ("directional, n=5 — treat as signal, not verdict").
+- Lead with the answer, then the evidence. Concise, confident, data-led.
 ${WRITING_STYLE}`,
 
   dashboard: `You are VETT's Dashboard Copilot. You help the user understand their research portfolio:
@@ -153,21 +155,22 @@ async function buildResultsContext(missionId, userId) {
 
   const { data: responses } = await supabase
     .from('mission_responses')
-    .select('persona_id, persona_profile, question_id, answer')
+    .select('persona_id, persona_profile, question_id, answer, screened_out')
     .eq('mission_id', missionId);
 
-  const agg = aggregate(responses || [], mission.questions || []);
-  return {
-    mission: {
-      id: mission.id, title: mission.title,
-      brief: mission.brief || mission.mission_statement,
-      respondent_count: mission.respondent_count,
-      questions: mission.questions,
-    },
-    insights: mission.insights || {},
-    aggregated: agg,
-    responseCount: (responses || []).length,
-  };
+  // Pass 48 — ground the copilot on the SAME CanonicalReport the web page
+  // and exports render, so the chat can never cite a number that differs
+  // from what the user sees. (Was the old aggregate() with hardcoded 1-5
+  // buckets — it could quote NPS as x/5.) Clean responses match how the
+  // page builds the report.
+  const { buildCanonicalReport } = require('../report/buildReport');
+  const all = responses || [];
+  const clean = all.filter((r) =>
+    r && r.screened_out !== true && !(r.persona_profile && r.persona_profile.screened_out === true));
+  const rows = clean.length > 0 ? clean : all;
+  const report = buildCanonicalReport(mission, mission.analysis || null, rows);
+
+  return { report, responseCount: all.length };
 }
 
 async function buildDashboardContext(userId) {
