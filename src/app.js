@@ -100,6 +100,16 @@ const aiLimiter = rateLimit({
   max: 10,
   message: { error: 'AI rate limit reached. Please wait a moment.' }
 });
+// Pass 49 security (P2): the per-minute limiter alone permits 600 LLM calls/hr
+// per IP on the anon-callable setup-funnel endpoints (clarify/refine/suggest/
+// generate-survey) — real cost-abuse potential. Stack a sustained hourly cap:
+// a genuine setup session uses ~5-15 AI calls, so 80/hr/IP is generous for
+// humans while capping a single source's spend.
+const aiHourlyLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 80,
+  message: { error: 'Hourly AI limit reached. Please try again later.' }
+});
 // Chat allows a higher burst — quota enforcement happens inside the service
 const chatLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -136,7 +146,7 @@ const paymentErrorsLogLimiter = rateLimit({
 app.use('/api/payments/errors/log', paymentErrorsLogLimiter);
 
 app.use('/api/', limiter);
-app.use('/api/ai', aiLimiter);
+app.use('/api/ai', aiLimiter, aiHourlyLimiter);
 app.use('/api/chat', chatLimiter);
 
 // ─── Routes ──────────────────────────────────────────────────

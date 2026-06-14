@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { optionalAuthenticate } = require('../middleware/auth');
+const { optionalAuthenticate, authenticate } = require('../middleware/auth');
 const ai = require('../services/claudeAI');
 const { callClaude, extractJSON } = require('../services/ai/anthropic');
 const logger = require('../utils/logger');
@@ -254,7 +254,12 @@ router.post('/suggest-targeting', optionalAuthenticate, async (req, res, next) =
 });
 
 // POST /api/ai/analyse-results
-router.post('/analyse-results', optionalAuthenticate, async (req, res, next) => {
+// Pass 49 security (P2): require auth. This analyses a user's own results and
+// accepts arbitrary questions+resultData (the costliest LLM call here) — it has
+// no anonymous funnel use, so gating it closes the main token-cost abuse vector
+// while the lighter setup-funnel endpoints (clarify/refine/suggest) stay
+// optionally-authenticated behind a tightened rate limit.
+router.post('/analyse-results', authenticate, async (req, res, next) => {
   try {
     const { missionId, questions, resultData, missionStatement, targetingUsed } = req.body;
     if (!questions || !resultData) return res.status(400).json({ error: 'questions and resultData are required' });

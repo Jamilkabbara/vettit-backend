@@ -275,7 +275,14 @@ router.get('/users', async (req, res, next) => {
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
 
-    if (search) q = q.or(`full_name.ilike.%${search}%,company_name.ilike.%${search}%`);
+    // Pass 49 security (P2): `search` is interpolated into a PostgREST raw
+    // filter string, so strip the metacharacters that could break out of the
+    // intended `column.ilike.%value%` shape ( , . ( ) * % \ ). Admin-only, but
+    // defense-in-depth against filter-injection.
+    if (search) {
+      const safe = String(search).replace(/[,.()*%\\]/g, ' ').trim();
+      if (safe) q = q.or(`full_name.ilike.%${safe}%,company_name.ilike.%${safe}%`);
+    }
 
     const { data: profiles, error, count } = await q;
     if (error) throw error;

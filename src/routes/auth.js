@@ -5,11 +5,20 @@ const supabase = require('../db/supabase');
 const emailService = require('../services/email');
 const logger = require('../utils/logger');
 
-// POST /api/auth/register — called after Supabase signup to send welcome email
-router.post('/register', async (req, res, next) => {
+// POST /api/auth/register — called after Supabase signup to send welcome email.
+// Pass 49 security (P2): was UNAUTHENTICATED and trusted body-supplied userId +
+// email, so anyone who knew a victim's user UUID could overwrite their profile
+// name and trigger welcome emails to arbitrary addresses. Now requires a valid
+// session and derives identity from the JWT (req.user) — a caller can only ever
+// touch their OWN profile and only email their OWN address. The frontend already
+// calls this with the post-signup session attached (email confirmation is
+// disabled — signup lands straight on /missions).
+router.post('/register', authenticate, async (req, res, next) => {
   try {
-    const { userId, email, name } = req.body;
-    if (!userId || !email) return res.status(400).json({ error: 'userId and email are required' });
+    const userId = req.user.id;
+    const email = req.user.email;
+    const { name } = req.body;
+    if (!userId || !email) return res.status(400).json({ error: 'authenticated user required' });
 
     // Pass 21 Bug 10: do NOT upsert with full_name: name || ''. The
     // public.handle_new_user() trigger has already populated the profile
