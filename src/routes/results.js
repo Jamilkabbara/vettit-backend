@@ -441,7 +441,32 @@ router.get('/:missionId/report', authenticate, async (req, res, next) => {
       r && r.screened_out !== true && !(r.persona_profile && r.persona_profile.screened_out === true));
     const rows = clean.length > 0 ? clean : all;
 
+    // Pass 49 Phase 4 — response/segment filter. Always offer the segment list;
+    // with ?segment=, rebuild the canonical report over the matching
+    // respondents so the survey distributions recompute for the subset from the
+    // SAME builder (no fork). analysis/headline/centerpiece/exec/insight are
+    // whole-sample, so they're dropped for a segment view — the recomputed
+    // distributions + the surfaced n are the segment's honest signal.
+    const { buildSegments, filterResponsesBySegment } = require('../services/report/segments');
+    const segments = buildSegments(mission, rows);
+    const segKey = typeof req.query.segment === 'string' ? req.query.segment : null;
+
+    if (segKey) {
+      const subset = filterResponsesBySegment(mission, rows, segKey);
+      if (!subset) return res.status(400).json({ error: 'Unknown segment' });
+      const seg = segments.find((s) => s.key === segKey);
+      const report = buildCanonicalReport(mission, null, subset);
+      report.exec_summary = null;
+      report.key_findings = [];
+      report.survey = (report.survey || []).map((q) => ({ ...q, insight: null }));
+      report.segments = segments;
+      report.active_segment = seg || { key: segKey, label: segKey, n: subset.length };
+      return res.json({ report });
+    }
+
     const report = buildCanonicalReport(mission, mission.analysis || null, rows);
+    report.segments = segments;
+    report.active_segment = null;
     res.json({ report });
   } catch (err) { next(err); }
 });
