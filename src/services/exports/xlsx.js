@@ -1,13 +1,25 @@
 /**
  * VETT — Excel export using exceljs.
- * Sheets:
- *   1. Cover                — title, brief, meta, executive summary
- *   2. Key Results          — methodology's computed centerpiece metrics (Pass 47 Phase 4)
- *   3. Raw responses        — every persona/question row from mission_responses
- *   4. Summary              — per-question aggregated distribution / averages / verbatims
- *   5. Insights             — narrative findings + recommended next actions from AI
- *   6. Demographic breakdown — age / country / gender / occupation tables
- *   (Key Results is omitted when the mission has no computed analysis.)
+ *
+ * Pass 48 Phase 3 — REBUILT on the CanonicalReport. Every sheet renders
+ * the SAME report the web results page renders (buildCanonicalReport →
+ * buildRenderModel), in the uniform order shared by all export formats:
+ *
+ *   1. Report          — header (title+brief+sample) → exec summary →
+ *                        headline metrics → centerpiece instrument
+ *                        (brand-lift exposed/control funnel) → key findings
+ *   2. Full survey     — EVERY question rendered by its renderer with the
+ *                        CORRECT scale (0-10 NPS shows 0-10, 1-7 CES shows
+ *                        1-7, attribute battery shows a per-attribute table,
+ *                        max_diff shows best/worst). This is the fix that
+ *                        kills the export "7/5" / "0/5" bug.
+ *   3. Raw responses   — every persona/question row (data-science use).
+ *   4. Demographic breakdown — age / country / gender / occupation tables.
+ *   5. Data quality notes — the canonical (cleaned, one-per-question) notes.
+ *
+ * The OLD per-question 5-star Summary sheet and the spammy integrity-warning
+ * sheet are GONE — the canonical report's correctly-shaped survey and cleaned
+ * data-quality notes replace them.
  *
  * Dark-theme styling isn't truly visual in spreadsheets, but we adopt the
  * VETT palette for headers and banding so the file feels on-brand.
@@ -15,12 +27,12 @@
 
 const ExcelJS = require('exceljs');
 const { BRAND } = require('./shared');
-const { buildIntegrityWarnings } = require('./integrity');
-const { getReportMetadata } = require('./reportMetadata');
-const { analysisHeadlines, brandLiftStageTable } = require('./analysisHeadlines');
+const { buildCanonicalReport } = require('../report/buildReport');
+const { buildRenderModel } = require('../report/reportRenderModel');
 
 // exceljs uses ARGB with leading alpha FF
 const argb = (c) => 'FF' + (c || '').replace('#', '').toUpperCase();
+const BAND = 'FFF8F9FC';
 
 function styleHeader(cell, color = BRAND.lime, bg = BRAND.bg) {
   cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: argb(color) } };
@@ -34,126 +46,204 @@ function styleHeader(cell, color = BRAND.lime, bg = BRAND.bg) {
   };
 }
 
+/** Clean responses the same way results.js /report does (mirror the web). */
+function cleanResponses(responses) {
+  const all = responses || [];
+  const clean = all.filter((r) =>
+    r && r.screened_out !== true && !(r.persona_profile && r.persona_profile.screened_out === true));
+  return clean.length > 0 ? clean : all;
+}
+
 function buildXLSX(pack, res) {
-  const { mission, responses, insights, aggregatedByQuestion } = pack;
+  const { mission, responses } = pack;
+
+  // STEP 1 — build the canonical report once, then the shared render model.
+  const report = buildCanonicalReport(mission, mission.analysis || null, cleanResponses(responses));
+  const model = buildRenderModel(report);
 
   const wb = new ExcelJS.Workbook();
   wb.creator = 'VETT';
   wb.lastModifiedBy = 'VETT';
   wb.created = new Date();
-  wb.title = mission.title || 'VETT Research Report';
+  wb.title = model.header.title || 'VETT Research Report';
 
-  // ── SHEET 1: COVER ─────────────────────────────────────────
-  const cover = wb.addWorksheet('Cover', {
+  // ── SHEET 1: REPORT (header → exec → headline → centerpiece → findings) ──
+  const rep = wb.addWorksheet('Report', {
     views: [{ showGridLines: false }],
     properties: { tabColor: { argb: argb(BRAND.lime) } },
   });
-  cover.columns = [
-    { width: 28 }, { width: 28 }, { width: 28 }, { width: 28 },
-  ];
+  rep.columns = [{ width: 42 }, { width: 30 }, { width: 18 }, { width: 18 }, { width: 18 }, { width: 16 }];
 
-  cover.mergeCells('A1:D2');
-  const title = cover.getCell('A1');
-  title.value = 'VETT';
-  title.font = { name: 'Calibri', size: 36, bold: true, color: { argb: argb(BRAND.lime) } };
-  title.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: argb(BRAND.bg) } };
-  title.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+  rep.mergeCells('A1:F1');
+  const wm = rep.getCell('A1');
+  wm.value = 'VETT  ·  AI-POWERED MARKET RESEARCH';
+  wm.font = { name: 'Calibri', size: 12, bold: true, color: { argb: argb(BRAND.lime) } };
 
-  cover.mergeCells('A3:D3');
-  const sub = cover.getCell('A3');
-  sub.value = 'AI-POWERED MARKET RESEARCH';
-  sub.font = { name: 'Calibri', size: 10, bold: true, color: { argb: argb(BRAND.text2) } };
-  sub.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: argb(BRAND.bg) } };
-  sub.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
-
-  cover.mergeCells('A5:D6');
-  const titleCell = cover.getCell('A5');
-  titleCell.value = mission.title || 'Research Report';
+  rep.mergeCells('A2:F3');
+  const titleCell = rep.getCell('A2');
+  titleCell.value = model.header.title;
   titleCell.font = { name: 'Calibri', size: 20, bold: true };
   titleCell.alignment = { vertical: 'middle', wrapText: true };
 
-  cover.mergeCells('A7:D9');
-  const briefCell = cover.getCell('A7');
-  briefCell.value = mission.brief || mission.mission_statement || '';
-  briefCell.font = { name: 'Calibri', size: 11, color: { argb: argb(BRAND.text3) } };
-  briefCell.alignment = { vertical: 'top', wrapText: true };
-
-  // Meta strip — Pass 25 Phase 0.1 Minor 1 uses shared getReportMetadata util
-  const reportMeta = getReportMetadata(mission);
-  const meta = [
-    ['Respondents', String(mission.respondent_count || '—')],
-    ['Mission completed', reportMeta.mission_completed_label],
-    ['Report generated', reportMeta.report_generated_label],
-    ['Mission ID', String(mission.id || '—')],
-    ['Goal', mission.goal_type || '—'],
-  ];
-  let metaRow = 11;
-  meta.forEach(([k, v]) => {
-    const a = cover.getCell(`A${metaRow}`); a.value = k;
-    a.font = { name: 'Calibri', size: 10, bold: true, color: { argb: argb(BRAND.text2) } };
-    const b = cover.getCell(`B${metaRow}`); b.value = v;
-    b.font = { name: 'Calibri', size: 10 };
-    metaRow++;
-  });
-
-  // Executive summary
-  metaRow += 2;
-  const esHead = cover.getCell(`A${metaRow}`);
-  esHead.value = 'EXECUTIVE SUMMARY';
-  esHead.font = { name: 'Calibri', size: 10, bold: true, color: { argb: argb(BRAND.lime) } };
-  metaRow++;
-  cover.mergeCells(`A${metaRow}:D${metaRow + 4}`);
-  const esBody = cover.getCell(`A${metaRow}`);
-  esBody.value = insights.executive_summary || 'Executive summary unavailable.';
-  esBody.font = { name: 'Calibri', size: 11 };
-  esBody.alignment = { vertical: 'top', wrapText: true };
-
-  // ── SHEET 2: KEY RESULTS (Pass 47 Phase 4) ────────────────
-  // The methodology's computed centerpiece numbers (VW optimal price,
-  // brand-lift exposed/control funnel + significance, NPS/CSAT/CES,
-  // MaxDiff/Kano, naming win-rates, …). Placed 2nd (right after the
-  // cover) so the research-grade headline metrics are the first thing a
-  // reader sees, not buried behind raw rows. Skipped entirely when there
-  // is no computed analysis (legacy missions) so the tab strip stays clean.
-  const analysisObj = mission.analysis || null;
-  const headlines = analysisHeadlines(analysisObj);
-  if (headlines.length > 0) {
-    const kr = wb.addWorksheet('Key Results', {
-      views: [{ state: 'frozen', ySplit: 1 }],
-      properties: { tabColor: { argb: argb(BRAND.lime) } },
-    });
-    kr.columns = [
-      { header: 'Metric', key: 'metric', width: 52 },
-      { header: 'Value',  key: 'value',  width: 44 },
-    ];
-    kr.getRow(1).eachCell((c) => styleHeader(c));
-
-    headlines.forEach((h, idx) => {
-      const row = kr.addRow({ metric: h.label, value: h.value });
-      row.getCell('value').font = { name: 'Calibri', size: 11, bold: true };
-      if (idx % 2 === 0) {
-        row.eachCell((c) => {
-          c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8F9FC' } };
-        });
-      }
-    });
-
-    // Brand-lift per-stage lift table — richer than the flat headlines.
-    const liftRows = brandLiftStageTable(analysisObj);
-    if (liftRows.length > 0) {
-      kr.addRow({});
-      const hdr = kr.addRow({ metric: 'Funnel stage', value: 'Exposed / Control / Lift / Significance / n' });
-      hdr.eachCell((c) => styleHeader(c));
-      liftRows.forEach((r) => {
-        kr.addRow({
-          metric: r.stage,
-          value: `${r.exposed} vs ${r.control}  ·  ${r.lift}  ·  ${r.significance}  ·  n=${r.n}`,
-        });
-      });
-    }
+  let row = 5;
+  if (model.header.brief) {
+    rep.mergeCells(`A${row}:F${row + 2}`);
+    const briefCell = rep.getCell(`A${row}`);
+    briefCell.value = model.header.brief;
+    briefCell.font = { name: 'Calibri', size: 11, color: { argb: argb(BRAND.text3) } };
+    briefCell.alignment = { vertical: 'top', wrapText: true };
+    row += 4;
   }
 
-  // ── SHEET 3: RAW ───────────────────────────────────────────
+  // Sample / meta strip
+  model.header.metaRows.forEach(([k, v]) => {
+    const a = rep.getCell(`A${row}`); a.value = k;
+    a.font = { name: 'Calibri', size: 10, bold: true, color: { argb: argb(BRAND.text2) } };
+    const b = rep.getCell(`B${row}`); b.value = v;
+    b.font = { name: 'Calibri', size: 10 };
+    row += 1;
+  });
+  row += 1;
+
+  // Executive summary (STEP 3 — canonical exec_summary; no "fuller narrative" hedge)
+  rep.getCell(`A${row}`).value = 'EXECUTIVE SUMMARY';
+  rep.getCell(`A${row}`).font = { name: 'Calibri', size: 11, bold: true, color: { argb: argb(BRAND.lime) } };
+  row += 1;
+  rep.mergeCells(`A${row}:F${row + 4}`);
+  const es = rep.getCell(`A${row}`);
+  es.value = model.execSummary || 'Executive summary not available for this mission.';
+  es.font = { name: 'Calibri', size: 11 };
+  es.alignment = { vertical: 'top', wrapText: true };
+  row += 6;
+
+  // Headline metrics (the methodology's key computed numbers)
+  if (model.headline) {
+    rep.getCell(`A${row}`).value = 'HEADLINE METRICS';
+    rep.getCell(`A${row}`).font = { name: 'Calibri', size: 11, bold: true, color: { argb: argb(BRAND.lime) } };
+    row += 1;
+    const hHdr = rep.getRow(row);
+    hHdr.getCell(1).value = 'Metric'; hHdr.getCell(2).value = 'Value';
+    [1, 2].forEach((c) => styleHeader(hHdr.getCell(c)));
+    row += 1;
+    model.headline.all.forEach((m, i) => {
+      const r = rep.getRow(row);
+      r.getCell(1).value = m.label;
+      r.getCell(2).value = m.value;
+      r.getCell(2).font = { name: 'Calibri', size: 11, bold: true };
+      if (i % 2 === 0) [1, 2].forEach((c) => { r.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BAND } }; });
+      row += 1;
+    });
+    row += 1;
+  }
+
+  // Centerpiece instrument (brand-lift exposed/control funnel — full, all stages)
+  if (model.centerpiece) {
+    rep.getCell(`A${row}`).value = model.centerpiece.title.toUpperCase();
+    rep.getCell(`A${row}`).font = { name: 'Calibri', size: 11, bold: true, color: { argb: argb(BRAND.lime) } };
+    row += 1;
+    const cHdr = rep.getRow(row);
+    model.centerpiece.columns.forEach((c, i) => { cHdr.getCell(i + 1).value = c; styleHeader(cHdr.getCell(i + 1)); });
+    row += 1;
+    model.centerpiece.rows.forEach((cells, ri) => {
+      const r = rep.getRow(row);
+      cells.forEach((v, ci) => { r.getCell(ci + 1).value = v; });
+      if (ri % 2 === 0) cells.forEach((_, ci) => { r.getCell(ci + 1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BAND } }; });
+      row += 1;
+    });
+    row += 1;
+  }
+
+  // Key findings
+  if (model.keyFindings.length > 0) {
+    rep.getCell(`A${row}`).value = 'KEY FINDINGS';
+    rep.getCell(`A${row}`).font = { name: 'Calibri', size: 11, bold: true, color: { argb: argb(BRAND.lime) } };
+    row += 1;
+    model.keyFindings.forEach((f) => {
+      rep.mergeCells(`A${row}:F${row}`);
+      const t = rep.getCell(`A${row}`);
+      t.value = f.value ? `• ${f.title}: ${f.value}` : `• ${f.title}`;
+      t.font = { name: 'Calibri', size: 11, bold: true };
+      row += 1;
+      if (f.body) {
+        rep.mergeCells(`A${row}:F${row}`);
+        const b = rep.getCell(`A${row}`);
+        b.value = f.body;
+        b.font = { name: 'Calibri', size: 10, color: { argb: argb(BRAND.text3) } };
+        b.alignment = { wrapText: true };
+        row += 1;
+      }
+    });
+  }
+
+  // ── SHEET 2: FULL SURVEY (every question, correct renderer + scale) ──
+  const sv = wb.addWorksheet('Full survey', {
+    views: [{ state: 'frozen', ySplit: 1 }],
+    properties: { tabColor: { argb: argb(BRAND.lime) } },
+  });
+  sv.columns = [
+    { header: 'Q',        key: 'q',        width: 6  },
+    { header: 'Question', key: 'question', width: 50 },
+    { header: 'Renderer', key: 'renderer', width: 18 },
+    { header: 'Answer / attribute', key: 'answer', width: 38 },
+    { header: 'Value',    key: 'value',    width: 16 },
+    { header: 'Share',    key: 'share',    width: 10 },
+  ];
+  sv.getRow(1).eachCell((c) => styleHeader(c));
+
+  model.survey.forEach((q) => {
+    // Question header row.
+    const qRow = sv.addRow({
+      q: `Q${q.number}`,
+      question: q.text + (q.isScreening ? '  (screener)' : ''),
+      renderer: q.renderer_label,
+      answer: '', value: '', share: '',
+    });
+    qRow.getCell('question').font = { name: 'Calibri', size: 11, bold: true };
+    qRow.getCell('q').font = { name: 'Calibri', size: 11, bold: true, color: { argb: argb(BRAND.lime) } };
+
+    const body = q.body;
+    if (body.kind === 'scale') {
+      sv.addRow({ q: '', question: '', renderer: '', answer: body.headline, value: '', share: '' });
+      body.bars.forEach((bar) => {
+        sv.addRow({ q: '', question: '', renderer: '', answer: bar.label, value: bar.count, share: `${bar.pct}%` });
+      });
+    } else if (body.kind === 'matrix') {
+      sv.addRow({ q: '', question: '', renderer: '', answer: `Per-attribute averages (n=${body.n})`, value: '', share: '' });
+      body.rows.forEach((mr) => {
+        sv.addRow({ q: '', question: '', renderer: '', answer: mr.label, value: mr.average, share: `n=${mr.n}` });
+      });
+    } else if (body.kind === 'maxdiff') {
+      if (body.empty) {
+        sv.addRow({ q: '', question: '', renderer: '', answer: body.empty_message, value: '', share: '' });
+      } else {
+        sv.addRow({ q: '', question: '', renderer: '', answer: 'Feature (best / worst counts)', value: '', share: '' });
+        body.rows.forEach((mr) => {
+          sv.addRow({ q: '', question: '', renderer: '', answer: mr.label, value: `best ${mr.best}`, share: `worst ${mr.worst}` });
+        });
+      }
+    } else if (body.kind === 'verbatims') {
+      if (body.empty) {
+        sv.addRow({ q: '', question: '', renderer: '', answer: body.empty_message, value: '', share: '' });
+      } else {
+        sv.addRow({ q: '', question: '', renderer: '', answer: `Verbatims (n=${body.n})`, value: '', share: '' });
+        body.items.forEach((v) => {
+          sv.addRow({ q: '', question: '', renderer: '', answer: String(v), value: '', share: '' });
+        });
+      }
+    } else { // bars (choice / multi / endorsement)
+      if (body.empty) {
+        sv.addRow({ q: '', question: '', renderer: '', answer: body.empty_message, value: '', share: '' });
+      } else {
+        if (body.note) sv.addRow({ q: '', question: '', renderer: '', answer: body.note, value: '', share: '' });
+        body.bars.forEach((bar) => {
+          sv.addRow({ q: '', question: '', renderer: '', answer: bar.label, value: bar.count, share: `${bar.pct}%` });
+        });
+      }
+    }
+    sv.addRow({}); // spacer
+  });
+
+  // ── SHEET 3: RAW RESPONSES ──────────────────────────────────
   const raw = wb.addWorksheet('Raw responses', {
     properties: { tabColor: { argb: argb(BRAND.lime) } },
   });
@@ -191,166 +281,14 @@ function buildXLSX(pack, res) {
     });
   });
 
-  // Banding
-  raw.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+  raw.eachRow({ includeEmpty: false }, (r, rowNumber) => {
     if (rowNumber === 1) return;
     if (rowNumber % 2 === 0) {
-      row.eachCell((c) => {
-        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8F9FC' } };
-      });
+      r.eachCell((c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BAND } }; });
     }
   });
 
-  // ── SHEET 4: SUMMARY ───────────────────────────────────────
-  const summary = wb.addWorksheet('Summary', {
-    properties: { tabColor: { argb: argb(BRAND.lime) } },
-  });
-  summary.columns = [
-    { header: 'Question', key: 'question', width: 48 },
-    { header: 'Type',     key: 'type',     width: 10 },
-    { header: 'n',        key: 'n',        width: 8  },
-    { header: 'Metric',   key: 'metric',   width: 24 },
-    { header: 'Value',    key: 'value',    width: 14 },
-    { header: 'Share',    key: 'share',    width: 10 },
-  ];
-  summary.getRow(1).eachCell((c) => styleHeader(c));
-  summary.views = [{ state: 'frozen', ySplit: 1 }];
-
-  (mission.questions || []).forEach((q) => {
-    const a = aggregatedByQuestion[q.id] || {};
-    if (q.type === 'rating') {
-      summary.addRow({ question: q.text, type: q.type, n: a.n || 0, metric: 'Average (1–5)', value: a.average || 0, share: '' });
-      const dist = a.distribution || {};
-      const total = Object.values(dist).reduce((s, v) => s + v, 0) || 1;
-      for (let r = 5; r >= 1; r--) {
-        const c = dist[r] || 0;
-        summary.addRow({ question: '', type: '', n: '', metric: `★ ${r}`, value: c, share: `${Math.round((c/total)*100)}%` });
-      }
-    } else if (q.type === 'text') {
-      summary.addRow({ question: q.text, type: q.type, n: a.n || 0, metric: 'Verbatims (sample)', value: '', share: '' });
-      // Bug 7: no String.slice — full verbatim text in XLSX
-      (a.verbatims || []).slice(0, 10).forEach((v) => {
-        summary.addRow({ question: '', type: '', n: '', metric: String(v), value: '', share: '' });
-      });
-    } else if (q.type === 'multi') {
-      // Bug 3: percentage = selections / n_respondents (not / total_clicks)
-      const dist = a.distribution || {};
-      const nRespondents = a.n_respondents || a.n || 1;
-      const entries = Object.entries(dist).sort((x, y) => y[1] - x[1]);
-      summary.addRow({ question: q.text, type: q.type, n: nRespondents, metric: 'Distribution (multi-select)', value: '', share: '' });
-      entries.forEach(([opt, count]) => {
-        summary.addRow({
-          question: '', type: '', n: '',
-          metric: String(opt),  // Bug 7: no slice
-          value: count,
-          share: `${Math.round((count / nRespondents) * 100)}%`,
-        });
-      });
-    } else {
-      const dist = a.distribution || {};
-      const entries = Object.entries(dist).sort((x, y) => y[1] - x[1]);
-      const total = entries.reduce((s, [, v]) => s + v, 0) || 1;
-      summary.addRow({ question: q.text, type: q.type, n: a.n || 0, metric: 'Distribution', value: '', share: '' });
-      entries.forEach(([opt, count]) => {
-        summary.addRow({
-          question: '', type: '', n: '',
-          metric: String(opt),  // Bug 7: no slice
-          value: count,
-          share: `${Math.round((count/total)*100)}%`,
-        });
-      });
-    }
-    // spacer row
-    summary.addRow({});
-  });
-
-  // ── SHEET 5: INSIGHTS ──────────────────────────────────────
-  const insightsSheet = wb.addWorksheet('Insights', {
-    views: [{ state: 'frozen', ySplit: 1 }],
-    properties: { tabColor: { argb: argb(BRAND.lime) } },
-  });
-  insightsSheet.getColumn('A').width = 100;
-  insightsSheet.getColumn('B').width = 20;
-  insightsSheet.getColumn('C').width = 20;
-  insightsSheet.getColumn('D').width = 20;
-
-  // Title row
-  insightsSheet.mergeCells('A1:D1');
-  const insTitle = insightsSheet.getCell('A1');
-  // Pass 25 Phase 0.1 Minor 3 — title only mentions Key Findings if we have any
-  insTitle.value = (Array.isArray(insights?.key_findings) && insights.key_findings.length)
-    ? 'Executive Summary & Key Findings'
-    : 'Executive Summary';
-  insTitle.font  = { name: 'Calibri', size: 16, bold: true, color: { argb: argb(BRAND.lime) } };
-  insTitle.fill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: argb(BRAND.bg) } };
-  insTitle.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
-  insightsSheet.getRow(1).height = 32;
-
-  const ai = insights || {};
-  const execSummary = ai.executive_summary || ai.summary || 'Insights not available for this mission.';
-
-  // Executive summary block
-  insightsSheet.mergeCells('A3:D7');
-  const esCell = insightsSheet.getCell('A3');
-  esCell.value = execSummary;
-  esCell.font = { name: 'Calibri', size: 11 };
-  esCell.alignment = { wrapText: true, vertical: 'top' };
-  insightsSheet.getRow(3).height = 80;
-
-  let insRow = 9;
-
-  // Key Findings
-  const findings = ai.key_findings || ai.findings || [];
-  if (findings.length > 0) {
-    insightsSheet.mergeCells(`A${insRow}:D${insRow}`);
-    insightsSheet.getCell(`A${insRow}`).value = 'Key Findings';
-    insightsSheet.getCell(`A${insRow}`).font = { name: 'Calibri', size: 14, bold: true };
-    insRow += 2;
-
-    findings.forEach((f) => {
-      const titleText = typeof f === 'string' ? f : (f.title || f.headline || '');
-      const bodyText  = typeof f === 'string' ? '' : (f.description || f.body || '');
-
-      if (titleText) {
-        insightsSheet.mergeCells(`A${insRow}:D${insRow}`);
-        const tCell = insightsSheet.getCell(`A${insRow}`);
-        tCell.value = `• ${titleText}`;
-        tCell.font  = { name: 'Calibri', size: 11, bold: true };
-        insRow++;
-      }
-      if (bodyText) {
-        insightsSheet.mergeCells(`A${insRow}:D${insRow}`);
-        const bCell = insightsSheet.getCell(`A${insRow}`);
-        bCell.value = bodyText;
-        bCell.font  = { name: 'Calibri', size: 10, color: { argb: argb(BRAND.text3) } };
-        bCell.alignment = { wrapText: true };
-        insightsSheet.getRow(insRow).height = 40;
-        insRow += 2;
-      }
-    });
-  }
-
-  // Recommended Next Actions
-  const actions = ai.recommendations || ai.next_actions || [];
-  if (actions.length > 0) {
-    insRow += 1;
-    insightsSheet.mergeCells(`A${insRow}:D${insRow}`);
-    insightsSheet.getCell(`A${insRow}`).value = 'Recommended Next Actions';
-    insightsSheet.getCell(`A${insRow}`).font = { name: 'Calibri', size: 14, bold: true };
-    insRow += 2;
-
-    actions.forEach((a, i) => {
-      const text = typeof a === 'string' ? a : (a.text || a.action || JSON.stringify(a));
-      insightsSheet.mergeCells(`A${insRow}:D${insRow}`);
-      const aCell = insightsSheet.getCell(`A${insRow}`);
-      aCell.value = `${i + 1}. ${text}`;
-      aCell.font  = { name: 'Calibri', size: 11 };
-      aCell.alignment = { wrapText: true };
-      insRow++;
-    });
-  }
-
-  // ── SHEET 6: DEMOGRAPHIC BREAKDOWN ────────────────────────
+  // ── SHEET 4: DEMOGRAPHIC BREAKDOWN ────────────────────────
   const demoSheet = wb.addWorksheet('Demographic breakdown', {
     properties: { tabColor: { argb: argb(BRAND.lime) } },
   });
@@ -358,13 +296,11 @@ function buildXLSX(pack, res) {
   demoSheet.getColumn('B').width = 12;
   demoSheet.getColumn('C').width = 10;
 
-  // Build distributions from responses
   const ageBuckets   = { '18-24': 0, '25-34': 0, '35-44': 0, '45-54': 0, '55+': 0 };
   const countryDist  = {};
   const genderDist   = {};
   const occupDist    = {};
 
-  // Deduplicate by persona_id — persona appears once per question
   const seenPersona = new Set();
   (responses || []).forEach((r) => {
     if (seenPersona.has(r.persona_id)) return;
@@ -383,46 +319,36 @@ function buildXLSX(pack, res) {
   const totalPersonas = seenPersona.size || 1;
 
   function addDemoTable(sheet, startRow, sectionTitle, entries) {
-    // Section header
     sheet.getCell(`A${startRow}`).value = sectionTitle;
     sheet.getCell(`A${startRow}`).font  = { name: 'Calibri', size: 14, bold: true };
     startRow += 2;
-    // Column headers
-    ['Category', 'Count', '%'].forEach((h, i) => {
-      const col = ['A','B','C'][i];
+    ['Category', 'Count', '%'].forEach((hh, i) => {
+      const col = ['A', 'B', 'C'][i];
       const hCell = sheet.getCell(`${col}${startRow}`);
-      hCell.value = h;
+      hCell.value = hh;
       hCell.font  = { name: 'Calibri', size: 10, bold: true, color: { argb: argb(BRAND.lime) } };
       hCell.fill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: argb(BRAND.bg) } };
     });
     startRow++;
     entries.forEach(([label, count], idx) => {
-      const pct = Math.round((count / totalPersonas) * 100);
+      const p = Math.round((count / totalPersonas) * 100);
       sheet.getCell(`A${startRow}`).value = label;
       sheet.getCell(`B${startRow}`).value = count;
-      sheet.getCell(`C${startRow}`).value = `${pct}%`;
+      sheet.getCell(`C${startRow}`).value = `${p}%`;
       if (idx % 2 === 0) {
-        ['A','B','C'].forEach(col => {
-          sheet.getCell(`${col}${startRow}`).fill = {
-            type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8F9FC' },
-          };
+        ['A', 'B', 'C'].forEach((col) => {
+          sheet.getCell(`${col}${startRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BAND } };
         });
       }
       startRow++;
     });
-    return startRow + 2; // gap before next table
+    return startRow + 2;
   }
 
   let dr = 1;
-  dr = addDemoTable(demoSheet, dr, 'Age Distribution',
-    Object.entries(ageBuckets));
-  dr = addDemoTable(demoSheet, dr, 'Country Distribution',
-    Object.entries(countryDist).sort((a, b) => b[1] - a[1]));
-  dr = addDemoTable(demoSheet, dr, 'Gender Distribution',
-    Object.entries(genderDist).sort((a, b) => b[1] - a[1]));
-  // Pass 25 Phase 0.1 Minor 2 — drop the "Top 10" framing for small samples
-  // where every value is unique; ranking is meaningless. Keep "Top 10" only
-  // when n >= 10 AND there's actual ranking signal (more rows than slots).
+  dr = addDemoTable(demoSheet, dr, 'Age Distribution', Object.entries(ageBuckets));
+  dr = addDemoTable(demoSheet, dr, 'Country Distribution', Object.entries(countryDist).sort((a, b) => b[1] - a[1]));
+  dr = addDemoTable(demoSheet, dr, 'Gender Distribution', Object.entries(genderDist).sort((a, b) => b[1] - a[1]));
   const occEntries = Object.entries(occupDist).sort((a, b) => b[1] - a[1]);
   const totalOccCount = occEntries.reduce((s, [, v]) => s + v, 0);
   const occLabel = (totalOccCount >= 10 && occEntries.length > 10)
@@ -430,33 +356,37 @@ function buildXLSX(pack, res) {
     : `Occupation distribution (n=${totalOccCount})`;
   addDemoTable(demoSheet, dr, occLabel, occEntries.slice(0, 10));
 
-  // ── SHEET 7: DATA INTEGRITY (Pass 25 Phase 0.1 Bug H + A) ─
-  // Hidden sheet — surfaces schema drift and option overlap warnings without
-  // cluttering the primary tab strip. Users find via "View hidden sheets".
-  const integrityWarnings = buildIntegrityWarnings(mission, aggregatedByQuestion);
-  if (integrityWarnings.length > 0) {
-    const intSheet = wb.addWorksheet('Data integrity', {
-      state: 'hidden',
+  // ── SHEET 5: DATA QUALITY NOTES (canonical, cleaned, one-per-question) ──
+  if (model.dataQualityNotes.length > 0) {
+    const dq = wb.addWorksheet('Data quality notes', {
+      views: [{ state: 'frozen', ySplit: 1 }],
       properties: { tabColor: { argb: argb(BRAND.orange || '#fb923c') } },
     });
-    intSheet.columns = [
-      { header: 'Type', width: 32 },
-      { header: 'Question', width: 16 },
-      { header: 'Detail A', width: 60 },
-      { header: 'Detail B', width: 60 },
+    dq.columns = [
+      { header: 'Question', key: 'q', width: 12 },
+      { header: 'Note',     key: 'note', width: 100 },
     ];
-    const headerRow = intSheet.getRow(1);
-    headerRow.eachCell((c) => styleHeader(c));
-    integrityWarnings.forEach((w) => {
-      const row = w.type === 'unknown_distribution_key'
-        ? [w.type, w.question_id, `drifted keys: ${w.drifted_keys.join(' | ')}`, `schema options: ${w.schema_options.join(' | ')}`]
-        : [w.type, w.question_id, `option A: ${w.option_a}`, `option B: ${w.option_b} (ratio ${w.overlap_ratio})`];
-      intSheet.addRow(row);
+    dq.getRow(1).eachCell((c) => styleHeader(c));
+    model.dataQualityNotes.forEach((n) => {
+      dq.addRow({ q: `Q${n.question_number}`, note: n.note });
     });
   }
 
+  // ── Methodology disclaimer as a trailing note on the Report sheet ──
+  if (model.disclaimer) {
+    row += 2;
+    rep.getCell(`A${row}`).value = 'METHODOLOGY';
+    rep.getCell(`A${row}`).font = { name: 'Calibri', size: 11, bold: true, color: { argb: argb(BRAND.lime) } };
+    row += 1;
+    rep.mergeCells(`A${row}:F${row + 3}`);
+    const dis = rep.getCell(`A${row}`);
+    dis.value = model.disclaimer;
+    dis.font = { name: 'Calibri', size: 10, color: { argb: argb(BRAND.text3) }, italic: true };
+    dis.alignment = { vertical: 'top', wrapText: true };
+  }
+
   // Stream to response
-  const fname = `vett-report-${(mission.title || mission.id).toString().slice(0, 40).replace(/[^a-z0-9]+/gi, '-')}.xlsx`;
+  const fname = `vett-report-${(model.header.title || mission.id).toString().slice(0, 40).replace(/[^a-z0-9]+/gi, '-')}.xlsx`;
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
   return wb.xlsx.write(res).then(() => res.end());

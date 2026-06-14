@@ -45,6 +45,7 @@ const STATIC_ORIGINS = [
   'https://vettit.ai',
   'https://www.vettit.ai',
   'http://localhost:5173',
+  'http://localhost:5174', // Pass 48 — main-worktree vite dev port (see .claude/launch.json)
   'http://localhost:3000',
 ];
 if (process.env.FRONTEND_URL) STATIC_ORIGINS.push(process.env.FRONTEND_URL);

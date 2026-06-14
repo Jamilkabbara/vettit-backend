@@ -35,6 +35,29 @@ function num(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * Pass 48 Phase 3 — numeric coercion for SCALE ANSWERS specifically.
+ * Synthetic respondents often answer a numeric scale with the LABELLED
+ * option text ("3 - Neutral", "5 - Very likely", "4: Likely") rather than
+ * the bare number. Plain num() returns null for those, which collapsed the
+ * scale to an empty distribution → "Average 0 / 5 (n=0)" — the exact "0/5"
+ * bug class. This extracts the LEADING integer from such labels so the
+ * scale renders its real distribution + mean. Falls back to strict num()
+ * for anything without a leading number, and never extracts a number from
+ * the MIDDLE of a label (e.g. "Buy 2 get 1" stays null, not 2).
+ */
+function scaleNum(v) {
+  const n = num(v);
+  if (n !== null) return n;
+  if (typeof v !== 'string') return null;
+  const m = v.trim().match(/^(-?\d+(?:\.\d+)?)\s*(?:[-–—:.)]|\s)/);
+  if (m) {
+    const parsed = Number(m[1]);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 /** Derive {min,max} numeric scale from a question's options; null when not numeric. */
 function numericScale(options) {
   if (!Array.isArray(options) || options.length === 0) return null;
@@ -145,7 +168,7 @@ function shapeQuestionData(q, renderer, responses, analysis) {
   const n = answers.length;
 
   if (renderer.startsWith('scale_')) {
-    const nums = answers.map((a) => num(a)).filter((v) => v !== null);
+    const nums = answers.map((a) => scaleNum(a)).filter((v) => v !== null);
     const scale = detectScale(q, nums);
     const buckets = {};
     for (let i = scale.min; i <= scale.max; i += 1) buckets[i] = 0;
@@ -273,7 +296,7 @@ function buildCanonicalReport(mission, analysis, responses) {
     // empty options — the scale lives in the answers + text).
     const numericAnswers = rows
       .filter((r) => r.question_id === q.id)
-      .map((r) => num(r.answer))
+      .map((r) => scaleNum(r.answer))
       .filter((v) => v !== null);
     const renderer = pickRenderer(q, numericAnswers);
     return {

@@ -255,6 +255,44 @@ p, li {
   margin-bottom: 12pt;
 }
 
+/* ─── Full-survey question head (Pass 48) ─────────────────────────────────── */
+.survey-q-head {
+  display: grid;
+  grid-template-columns: 28pt 1fr auto;
+  gap: 8pt;
+  align-items: baseline;
+  margin-bottom: 10pt;
+  page-break-after: avoid;
+}
+.survey-q-num {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 10pt;
+  color: var(--text3);
+}
+.survey-q-text {
+  font-size: 11.5pt;
+  color: #ffffff;
+  line-height: 1.35;
+}
+.survey-q-screener {
+  font-size: 8pt;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.survey-q-renderer {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 7.5pt;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border: 0.5pt solid var(--border);
+  border-radius: 8pt;
+  padding: 1pt 6pt;
+  white-space: nowrap;
+}
+
 /* ─── Bar rows ────────────────────────────────────────────────────────────── */
 /* Pass 26 Bug J — single/multi templates emit 4 children (empty / label /
  * track / meta) but .bar-row used a 3-column grid, so the meta cell wrapped

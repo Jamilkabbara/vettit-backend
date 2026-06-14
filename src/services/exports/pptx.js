@@ -1,84 +1,70 @@
 /**
  * VETT — PowerPoint export using pptxgenjs.
- * Dark-theme slide deck that mirrors the HTML prototype aesthetic:
- *   - Near-black slide background (#0B0C15)
- *   - Lime (#BEF264) accents and headline colour
- *   - Inter-like sans (Calibri fallback — pptx uses system fonts)
  *
- * Slide outline:
- *   1. Cover              (VETT wordmark + title + meta)
- *   2. Executive summary  (big paragraph — autoFit)
- *   3. KPI snapshot       (exactly 3 stat cards)
- *   4..N. One slide per question (chart + insight pullquote)
- *   N+1. Recommendations
- *   N+2. Follow-ups
+ * Pass 48 Phase 3 — REBUILT on the CanonicalReport. The deck renders the
+ * SAME report the web results page renders (buildCanonicalReport →
+ * buildRenderModel), in the uniform order shared by every export format:
  *
- * Bug 3 fix:  multi-select % uses n_respondents denominator, not total clicks.
- * Bug 6 fix:  recommendations/follow-ups use breakLine for real paragraph breaks.
- * Bug 7 fix:  chart labels and verbatims no longer truncated at 28/220 chars.
- * Bug 8 fix:  exactly 3 KPIs (prompt already capped; layout positions 3 evenly).
- * Bug 11 fix: exec summary text box has autoFit: true.
+ *   1. Cover                 (VETT wordmark + title + brief + sample meta)
+ *   2. Executive summary     (canonical exec_summary — no "fuller narrative")
+ *   3. Headline metrics      (the methodology's key computed numbers)
+ *   4. Centerpiece           (brand-lift exposed-vs-control funnel table —
+ *                             FULL funnel, every stage, not one numeric stage)
+ *   5. Key findings          (insights.kpis)
+ *   6..N. THE FULL SURVEY    (one slide per question, rendered by its
+ *                             renderer with the CORRECT scale — 0-10 NPS is
+ *                             a 0-10 bar chart, 1-7 CES is 1-7, attribute
+ *                             battery is a per-attribute table, max_diff is
+ *                             best/worst, verbatims are quotes). This kills
+ *                             the export "7/5" / "0/5" bug.
+ *   N+1. Data quality notes  (canonical cleaned notes — one per question)
+ *   N+2. Methodology         (disclaimer)
+ *
+ * The OLD per-question 5-star rendering and the spammy integrity-warning
+ * slide are GONE — the canonical report replaces both.
+ *
+ * Dark-theme slide deck mirroring the web aesthetic: near-black background,
+ * lime accents, manually-drawn bar shapes (pptxgenjs's native addChart()
+ * renders empty in Keynote / some Google Slides versions).
  */
 
 const PptxGenJS = require('pptxgenjs');
 const { BRAND } = require('./shared');
-const { resolveQuestionInsight } = require('./screenerInsights');
-const { buildIntegrityWarnings } = require('./integrity');
-const { getReportMetadata } = require('./reportMetadata');
-const { analysisHeadlines } = require('./analysisHeadlines');
+const { buildCanonicalReport } = require('../report/buildReport');
+const { buildRenderModel } = require('../report/reportRenderModel');
 
 // pptxgenjs uses hex codes without the leading '#'
 const hex = (c) => (c || '').replace('#', '');
 
 function addDarkBackground(slide) {
   slide.background = { color: hex(BRAND.bg) };
-  // Thin lime accent bar across the very top
   slide.addShape('rect', {
     x: 0, y: 0, w: '100%', h: 0.06,
-    fill: { color: hex(BRAND.lime) },
-    line: { color: hex(BRAND.lime) },
+    fill: { color: hex(BRAND.lime) }, line: { color: hex(BRAND.lime) },
   });
-  // Footer — bottom of 7.5" wide slide, well clear of chart content
   slide.addText('VETT  ·  vettit.ai', {
     x: 0.5, y: 7.15, w: 12.3, h: 0.3,
-    fontSize: 9, color: hex(BRAND.text3), fontFace: 'Calibri',
-    align: 'center',
+    fontSize: 9, color: hex(BRAND.text3), fontFace: 'Calibri', align: 'center',
   });
 }
 
 function addSectionHeader(slide, eyebrow, title) {
-  // Pass 26 Bug K — pptxgenjs renders charSpacing as spc = charSpacing*100 in
-  // 1/100 pt (ECMA-376). Prior values (80/120/200) yielded spc="8000"/"12000"/
-  // "20000" = 80–200 pt of tracking, which broke wrap in LibreOffice and
-  // overflowed text frames in PowerPoint. Target 1–2 pt tracking on uppercase
-  // labels: charSpacing 1 → spc=100 (1 pt), charSpacing 2 → spc=200 (2 pt).
   slide.addText(eyebrow, {
-    x: 0.5, y: 0.35, w: 9, h: 0.3,
-    fontSize: 10, bold: true, color: hex(BRAND.lime),
-    fontFace: 'Calibri', charSpacing: 2,
+    x: 0.5, y: 0.35, w: 12.3, h: 0.3,
+    fontSize: 10, bold: true, color: hex(BRAND.lime), fontFace: 'Calibri', charSpacing: 2,
   });
-  // Pass 26 Bug N — title h was 0.6 (bottom at y=1.25) and divider was also
-  // at y=1.25, leaving zero gap. Long Q-titles crashed into the lime band.
-  // Title height bumped to 0.7 and divider pushed to y=1.40 to give 9pt of
-  // breathing room between the title baseline and the band.
   slide.addText(title, {
-    x: 0.5, y: 0.65, w: 9, h: 0.7,
+    x: 0.5, y: 0.65, w: 12.3, h: 0.7,
     fontSize: 24, bold: true, color: 'FFFFFF', fontFace: 'Calibri',
+    shrinkText: true, autoFit: true,
   });
   slide.addShape('rect', {
-    x: 0.5, y: 1.40, w: 9, h: 0.03,
+    x: 0.5, y: 1.40, w: 12.3, h: 0.03,
     fill: { color: hex(BRAND.lime) }, line: { color: hex(BRAND.lime) },
   });
 }
 
-// Pass 26 chart-rendering fix — replace pptxgenjs's addChart() with manually
-// drawn shapes. Keynote (and several Google Slides versions) silently fail
-// to render the OOXML <c:barChart> emitted by pptxgenjs; the chart frame
-// renders as empty plot area. Drawing rect shapes + text frames is universally
-// supported. Same visual layout as the PDF bar rows.
-//
-// items: array of { label: string, value: number /* 0-100 */, count?: number }
-// opts:  { x, y, w, h, title, subtitle, showCount }
+// Manually-drawn horizontal bar chart. items: [{ label, value(0-100), count? }]
 function drawBars(slide, items, opts) {
   const { x, y, w, h, title, subtitle, showCount } = opts;
   let cursorY = y;
@@ -98,19 +84,20 @@ function drawBars(slide, items, opts) {
     cursorY += 0.28;
   }
 
+  if (!items.length) return;
   const remaining = h - (cursorY - y);
   const rowGap = 0.08;
-  const rowH = Math.min(0.45, (remaining - rowGap * (items.length - 1)) / items.length);
+  const rowH = Math.min(0.45, Math.max(0.2, (remaining - rowGap * (items.length - 1)) / items.length));
   const labelW = Math.min(2.7, w * 0.4);
   const trackX = x + labelW + 0.15;
-  const metaW = 0.85;
+  const metaW = 0.95;
   const trackW = w - labelW - 0.15 - metaW - 0.1;
   const barTrackH = Math.min(0.18, rowH * 0.45);
 
   items.forEach((it, i) => {
     const rowY = cursorY + i * (rowH + rowGap);
     const barCenterY = rowY + (rowH - barTrackH) / 2;
-    const pct = Math.max(0, Math.min(100, Number(it.value) || 0));
+    const p = Math.max(0, Math.min(100, Number(it.value) || 0));
     slide.addText(String(it.label || ''), {
       x, y: rowY, w: labelW, h: rowH,
       fontSize: 10, color: hex(BRAND.text1), fontFace: 'Calibri', valign: 'middle',
@@ -118,17 +105,15 @@ function drawBars(slide, items, opts) {
     });
     slide.addShape('rect', {
       x: trackX, y: barCenterY, w: trackW, h: barTrackH,
-      fill: { color: hex(BRAND.bg3) },
-      line: { type: 'none' },
+      fill: { color: hex(BRAND.bg3) }, line: { type: 'none' },
     });
-    if (pct > 0) {
+    if (p > 0) {
       slide.addShape('rect', {
-        x: trackX, y: barCenterY, w: trackW * (pct / 100), h: barTrackH,
-        fill: { color: hex(BRAND.lime) },
-        line: { type: 'none' },
+        x: trackX, y: barCenterY, w: trackW * (p / 100), h: barTrackH,
+        fill: { color: hex(BRAND.lime) }, line: { type: 'none' },
       });
     }
-    const meta = showCount && it.count != null ? `${it.count} · ${pct}%` : `${pct}%`;
+    const meta = showCount && it.count != null ? `${it.count} · ${p}%` : `${p}%`;
     slide.addText(meta, {
       x: trackX + trackW + 0.05, y: rowY, w: metaW, h: rowH,
       fontSize: 10, color: hex(BRAND.text2), fontFace: 'Calibri', valign: 'middle', align: 'left',
@@ -142,347 +127,229 @@ function statCard(slide, x, y, w, h, label, value, trendColor = BRAND.lime) {
     fill: { color: hex(BRAND.bg2) }, line: { color: hex(BRAND.border) },
   });
   slide.addText(String(label || '').toUpperCase(), {
-    x: x + 0.15, y: y + 0.1, w: w - 0.3, h: 0.3,
-    fontSize: 9, color: hex(BRAND.text3), fontFace: 'Calibri', charSpacing: 1,
+    x: x + 0.15, y: y + 0.1, w: w - 0.3, h: 0.5,
+    fontSize: 9, color: hex(BRAND.text3), fontFace: 'Calibri', charSpacing: 1, valign: 'top',
+    shrinkText: true,
   });
   slide.addText(String(value || '—'), {
-    x: x + 0.15, y: y + 0.4, w: w - 0.3, h: h - 0.5,
-    fontSize: 28, bold: true, color: hex(trendColor), fontFace: 'Calibri',
+    x: x + 0.15, y: y + 0.6, w: w - 0.3, h: h - 0.7,
+    fontSize: 24, bold: true, color: hex(trendColor), fontFace: 'Calibri',
+    shrinkText: true, autoFit: true,
+  });
+}
+
+/** Clean responses the same way results.js /report does (mirror the web). */
+function cleanResponses(responses) {
+  const all = responses || [];
+  const clean = all.filter((r) =>
+    r && r.screened_out !== true && !(r.persona_profile && r.persona_profile.screened_out === true));
+  return clean.length > 0 ? clean : all;
+}
+
+// Render one survey question's body onto its slide (left column; the slide
+// header already carries the eyebrow + question text).
+function renderSurveyBody(slide, q) {
+  const body = q.body;
+  const FRAME = { x: 0.5, y: 1.65, w: 12.3, h: 5.2 };
+
+  if (body.kind === 'scale') {
+    drawBars(slide, body.bars.map((b) => ({ label: b.label, value: b.pct, count: b.count })), {
+      ...FRAME, title: body.headline, showCount: true,
+    });
+    return;
+  }
+  if (body.kind === 'matrix') {
+    drawBars(slide, body.rows.map((r) => ({ label: r.label, value: r.pct, count: r.average })), {
+      ...FRAME, title: `Per-attribute averages (out of 5, n=${body.n})`, showCount: true,
+    });
+    return;
+  }
+  if (body.kind === 'maxdiff') {
+    if (body.empty) {
+      slide.addText(body.empty_message, { ...FRAME, fontSize: 13, italic: true, color: hex(BRAND.text3), fontFace: 'Calibri' });
+      return;
+    }
+    const rows = [[
+      { text: 'Feature', options: { bold: true, color: hex(BRAND.text3) } },
+      { text: 'Best', options: { bold: true, color: hex(BRAND.text3), align: 'right' } },
+      { text: 'Worst', options: { bold: true, color: hex(BRAND.text3), align: 'right' } },
+    ]];
+    body.rows.forEach((r) => rows.push([
+      { text: String(r.label), options: { color: hex(BRAND.text1) } },
+      { text: String(r.best), options: { color: hex(BRAND.lime), align: 'right' } },
+      { text: String(r.worst), options: { color: hex(BRAND.text2), align: 'right' } },
+    ]));
+    slide.addTable(rows, {
+      ...FRAME, fontSize: 11, fontFace: 'Calibri', colW: [8.3, 2.0, 2.0],
+      border: { type: 'solid', color: hex(BRAND.border), pt: 0.5 },
+    });
+    return;
+  }
+  if (body.kind === 'verbatims') {
+    if (body.empty) {
+      slide.addText(body.empty_message, { ...FRAME, fontSize: 13, italic: true, color: hex(BRAND.text3), fontFace: 'Calibri' });
+      return;
+    }
+    const items = [];
+    body.items.slice(0, 10).forEach((v, i) => {
+      if (i > 0) items.push({ text: '', options: { breakLine: true } });
+      items.push({ text: `“${String(v)}”`, options: { italic: true, color: hex(BRAND.text2), fontSize: 12, bullet: { code: '25CF' }, paraSpaceAfter: 6 } });
+    });
+    slide.addText(items, { ...FRAME, fontFace: 'Calibri', valign: 'top' });
+    return;
+  }
+  // bars (choice / multi / endorsement)
+  if (body.empty) {
+    slide.addText(body.empty_message, { ...FRAME, fontSize: 13, italic: true, color: hex(BRAND.text3), fontFace: 'Calibri' });
+    return;
+  }
+  drawBars(slide, body.bars.map((b) => ({ label: b.label, value: b.pct, count: b.count })), {
+    ...FRAME, subtitle: body.note || undefined, showCount: true,
   });
 }
 
 function buildPPTX(pack, res) {
-  const { mission, insights, aggregatedByQuestion } = pack;
+  const { mission } = pack;
+
+  // STEP 1 — canonical report once, then the shared render model.
+  const report = buildCanonicalReport(mission, mission.analysis || null, cleanResponses(pack.responses));
+  const model = buildRenderModel(report);
 
   const pptx = new PptxGenJS();
   pptx.layout = 'LAYOUT_WIDE';     // 13.333 × 7.5 in
-  pptx.title = mission.title || 'VETT Research Report';
+  pptx.title = model.header.title || 'VETT Research Report';
   pptx.company = 'VETT';
-  pptx.subject = mission.brief || mission.mission_statement || '';
+  pptx.subject = model.header.brief || '';
 
   // ── COVER ─────────────────────────────────────────────────
   const cover = pptx.addSlide();
   cover.background = { color: hex(BRAND.bg) };
-  cover.addShape('rect', {
-    x: 0, y: 0, w: '100%', h: 0.1,
-    fill: { color: hex(BRAND.lime) }, line: { color: hex(BRAND.lime) },
+  cover.addShape('rect', { x: 0, y: 0, w: '100%', h: 0.1, fill: { color: hex(BRAND.lime) }, line: { color: hex(BRAND.lime) } });
+  cover.addText('VETT', { x: 0.7, y: 0.6, w: 6, h: 1.2, fontSize: 72, bold: true, color: hex(BRAND.lime), fontFace: 'Calibri' });
+  cover.addText('AI-POWERED MARKET RESEARCH', { x: 0.7, y: 1.8, w: 11, h: 0.4, fontSize: 12, color: hex(BRAND.text2), fontFace: 'Calibri', charSpacing: 2 });
+  cover.addText(model.header.title, { x: 0.7, y: 2.6, w: 12, h: 1.2, fontSize: 36, bold: true, color: 'FFFFFF', fontFace: 'Calibri', shrinkText: true });
+  if (model.header.brief) {
+    cover.addText(model.header.brief, { x: 0.7, y: 3.9, w: 12, h: 1.2, fontSize: 14, color: hex(BRAND.text2), fontFace: 'Calibri', valign: 'top' });
+  }
+  // Sample / meta strip
+  const metaRuns = [];
+  model.header.metaRows.forEach(([k, v]) => {
+    metaRuns.push({ text: `${k}: `, options: { color: hex(BRAND.text3) } });
+    metaRuns.push({ text: `${v}    `, options: { color: 'FFFFFF', bold: true } });
   });
-  cover.addText('VETT', {
-    x: 0.7, y: 0.6, w: 6, h: 1.2,
-    fontSize: 72, bold: true, color: hex(BRAND.lime), fontFace: 'Calibri',
-  });
-  cover.addText('AI-POWERED MARKET RESEARCH', {
-    x: 0.7, y: 1.8, w: 10, h: 0.4,
-    fontSize: 12, color: hex(BRAND.text2), fontFace: 'Calibri', charSpacing: 2,
-  });
-  cover.addText(mission.title || 'Research Report', {
-    x: 0.7, y: 2.8, w: 12, h: 1.2,
-    fontSize: 36, bold: true, color: 'FFFFFF', fontFace: 'Calibri',
-  });
-  cover.addText(mission.brief || mission.mission_statement || '', {
-    x: 0.7, y: 4.2, w: 12, h: 1.4,
-    fontSize: 14, color: hex(BRAND.text2), fontFace: 'Calibri',
-  });
-  // Pass 25 Phase 0.1 Minor 1 — distinct mission_completed vs report_generated
-  const reportMeta = getReportMetadata(mission);
-  cover.addText(
-    [
-      { text: 'Respondents: ', options: { color: hex(BRAND.text3) } },
-      { text: `${mission.respondent_count || '—'}    `, options: { color: 'FFFFFF', bold: true } },
-      { text: 'Mission completed: ', options: { color: hex(BRAND.text3) } },
-      { text: `${reportMeta.mission_completed_label}    `, options: { color: 'FFFFFF', bold: true } },
-      { text: 'Report generated: ', options: { color: hex(BRAND.text3) } },
-      { text: `${reportMeta.report_generated_label}    `, options: { color: 'FFFFFF', bold: true } },
-      { text: 'Mission: ', options: { color: hex(BRAND.text3) } },
-      { text: String(mission.id || '').slice(0, 8), options: { color: 'FFFFFF', bold: true } },
-    ],
-    { x: 0.7, y: 6.4, w: 12, h: 0.4, fontSize: 10, fontFace: 'Calibri' }
-  );
+  if (metaRuns.length) cover.addText(metaRuns, { x: 0.7, y: 6.2, w: 12, h: 0.8, fontSize: 10, fontFace: 'Calibri', valign: 'top' });
 
   // ── EXECUTIVE SUMMARY ─────────────────────────────────────
   const summary = pptx.addSlide();
   addDarkBackground(summary);
   addSectionHeader(summary, '01 · EXECUTIVE SUMMARY', 'What the research says');
-  // Pass 26 Bug P — frame h was 4.5 (bottom y=6.1), too short for long
-  // summaries; autoFit shrinkage alone didn't recover. Frame extended to
-  // h=5.3 (bottom y=6.95, well clear of the y=7.15 footer), font dropped
-  // from 16 to 14 to give more text capacity at full size. autoFit kept
-  // so unusually long summaries still shrink rather than overflow.
-  summary.addText(insights.executive_summary || 'Executive summary unavailable.', {
+  summary.addText(model.execSummary || 'Executive summary not available for this mission.', {
     x: 0.5, y: 1.65, w: 12.3, h: 5.3,
-    fontSize: 14, color: hex(BRAND.text1), fontFace: 'Calibri',
-    paraSpaceAfter: 8, valign: 'top',
-    autoFit: true,
+    fontSize: 14, color: hex(BRAND.text1), fontFace: 'Calibri', paraSpaceAfter: 8, valign: 'top', autoFit: true,
   });
 
-  // ── KEY RESULTS (Pass 47 Phase 4) ─────────────────────────
-  // The methodology's computed centerpiece numbers from mission.analysis
-  // (VW optimal price, brand-lift funnel + significance, NPS/CSAT/CES,
-  // MaxDiff/Kano, naming win-rates, …). Rendered as a label/value list
-  // right after the exec summary so the research-grade headline metrics
-  // are front-and-centre. Paginated (12 rows/slide) so long brand-lift
-  // funnels don't overflow the frame. Skipped when no computed analysis.
-  const headlines = analysisHeadlines(mission.analysis || null);
-  if (headlines.length > 0) {
+  // ── HEADLINE METRICS ──────────────────────────────────────
+  if (model.headline) {
     const PER_SLIDE = 12;
-    const pageCount = Math.ceil(headlines.length / PER_SLIDE);
+    const pageCount = Math.ceil(model.headline.all.length / PER_SLIDE);
     for (let pageIdx = 0; pageIdx < pageCount; pageIdx += 1) {
-      const krSlide = pptx.addSlide();
-      addDarkBackground(krSlide);
-      addSectionHeader(
-        krSlide,
-        '· KEY RESULTS',
-        pageCount > 1 ? `The numbers that matter (${pageIdx + 1}/${pageCount})` : 'The numbers that matter',
-      );
-      const slotRows = headlines.slice(pageIdx * PER_SLIDE, (pageIdx + 1) * PER_SLIDE);
+      const slide = pptx.addSlide();
+      addDarkBackground(slide);
+      addSectionHeader(slide, '02 · HEADLINE METRICS', pageCount > 1 ? `The numbers that matter (${pageIdx + 1}/${pageCount})` : 'The numbers that matter');
+      const slotRows = model.headline.all.slice(pageIdx * PER_SLIDE, (pageIdx + 1) * PER_SLIDE);
       const items = [];
-      slotRows.forEach((h, i) => {
+      slotRows.forEach((m, i) => {
         if (i > 0) items.push({ text: '', options: { breakLine: true } });
-        items.push({ text: `${h.label}:  `, options: { fontSize: 13, color: hex(BRAND.text2), breakLine: false } });
-        items.push({ text: String(h.value), options: { fontSize: 13, bold: true, color: hex(BRAND.lime), paraSpaceAfter: 8 } });
+        items.push({ text: `${m.label}:  `, options: { fontSize: 13, color: hex(BRAND.text2), breakLine: false } });
+        items.push({ text: String(m.value), options: { fontSize: 13, bold: true, color: hex(BRAND.lime), paraSpaceAfter: 8 } });
       });
-      krSlide.addText(items, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: 'Calibri', valign: 'top' });
+      slide.addText(items, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: 'Calibri', valign: 'top' });
     }
   }
 
-  // ── KPI SNAPSHOT ──────────────────────────────────────────
-  // Bug 8 fix: layout assumes exactly 3 KPIs (prompt instructs Claude to return 3).
-  if (Array.isArray(insights.kpis) && insights.kpis.length > 0) {
-    const kpiSlide = pptx.addSlide();
-    addDarkBackground(kpiSlide);
-    addSectionHeader(kpiSlide, '02 · HEADLINE KPIs', 'The numbers that matter');
-
-    const kpis = insights.kpis.slice(0, 3);
-    const cardW = 3.8;
-    const cardH = 2.2;
-    const totalW = kpis.length * cardW + (kpis.length - 1) * 0.3;
-    const startX = (13.333 - totalW) / 2;
-
-    kpis.forEach((kpi, i) => {
-      const tc = kpi.trend === 'negative' ? BRAND.red
-               : kpi.trend === 'neutral'  ? BRAND.text1
-               : BRAND.lime;
-      statCard(kpiSlide, startX + i * (cardW + 0.3), 2.3, cardW, cardH, kpi.label, kpi.value, tc);
+  // ── CENTERPIECE (brand-lift exposed-vs-control funnel — FULL funnel) ──
+  if (model.centerpiece) {
+    const slide = pptx.addSlide();
+    addDarkBackground(slide);
+    addSectionHeader(slide, '03 · CENTERPIECE', model.centerpiece.title);
+    const header = model.centerpiece.columns.map((c) => ({ text: c, options: { bold: true, color: hex(BRAND.text3), fill: { color: hex(BRAND.bg2) } } }));
+    const rows = [header];
+    model.centerpiece.rows.forEach((cells) => {
+      rows.push(cells.map((v, ci) => ({
+        text: String(v),
+        options: { color: ci === 3 ? hex(BRAND.lime) : hex(BRAND.text1), align: ci === 0 ? 'left' : 'right' },
+      })));
+    });
+    slide.addTable(rows, {
+      x: 0.5, y: 1.65, w: 12.3, fontSize: 11, fontFace: 'Calibri',
+      border: { type: 'solid', color: hex(BRAND.border), pt: 0.5 }, valign: 'middle',
     });
   }
 
-  // ── PER-QUESTION SLIDES ───────────────────────────────────
-  (mission.questions || []).forEach((q, qi) => {
+  // ── KEY FINDINGS ──────────────────────────────────────────
+  if (model.keyFindings.length > 0) {
     const slide = pptx.addSlide();
     addDarkBackground(slide);
-    addSectionHeader(slide, `${String(qi + 3).padStart(2, '0')} · QUESTION ${qi + 1}`, q.text);
-
-    const qAgg = aggregatedByQuestion[q.id] || {};
-    // Pass 25 Phase 0.1 Bug B — replace screener tautology with sample-composition note
-    const rawInsight = (insights.per_question_insights || []).find(pi => pi.question_id === q.id);
-    const qInsight = resolveQuestionInsight(q, qAgg, rawInsight, pack.sampleMetrics);
-
-    if (q.type === 'rating') {
-      const dist = qAgg.distribution || {};
-      const total = Object.values(dist).reduce((s, v) => s + v, 0) || 1;
-      // Order: 5★ at top, 1★ at bottom (descending so highest rating reads first)
-      const items = [5,4,3,2,1].map(r => {
-        const c = dist[r] || 0;
-        return {
-          label: `${r} ★`.padEnd(3,'') ,
-          count: c,
-          value: Math.round((c / total) * 100),
-        };
-      });
-      drawBars(slide, items, {
-        x: 0.5, y: 1.65, w: 8, h: 4.5,
-        title: `Average: ${qAgg.average || 0} / 5  ·  n=${qAgg.n || 0}`,
-        showCount: true,
-      });
-    } else if (q.type === 'text') {
-      // Bug 7: no .slice(0, 220) — render full verbatims
-      const items = (qAgg.verbatims || []).slice(0, 5).map(v => ({
-        text: `"${String(v)}"`,
-        options: {
-          bullet: { code: '25CF' }, color: hex(BRAND.text2),
-          italic: true, fontSize: 13, paraSpaceAfter: 8,
-          breakLine: false,
-        },
-      }));
-      // Add breakLine between verbatims for proper paragraph separation
-      const separated = [];
-      items.forEach((item, i) => {
-        separated.push(item);
-        if (i < items.length - 1) {
-          separated.push({ text: '', options: { breakLine: true } });
+    addSectionHeader(slide, '04 · KEY FINDINGS', 'What stood out');
+    // First 3 as stat cards when they carry values; otherwise as a bullet list.
+    const withValues = model.keyFindings.filter((f) => f.value);
+    if (withValues.length >= 1 && withValues.length <= 3 && withValues.length === model.keyFindings.length) {
+      const cardW = 3.8; const cardH = 2.2;
+      const totalW = withValues.length * cardW + (withValues.length - 1) * 0.3;
+      const startX = (13.333 - totalW) / 2;
+      withValues.forEach((f, i) => statCard(slide, startX + i * (cardW + 0.3), 2.3, cardW, cardH, f.title, f.value));
+    } else {
+      const items = [];
+      model.keyFindings.forEach((f, i) => {
+        if (i > 0) items.push({ text: '', options: { breakLine: true } });
+        items.push({ text: f.value ? `${f.title}: ${f.value}` : f.title, options: { fontSize: 15, bold: true, color: 'FFFFFF', bullet: { code: '25CF' } } });
+        if (f.body) {
+          items.push({ text: '', options: { breakLine: true } });
+          items.push({ text: f.body, options: { fontSize: 11, color: hex(BRAND.text2), paraSpaceAfter: 10 } });
         }
       });
-      if (separated.length === 0) {
-        separated.push({ text: 'No text responses yet.', options: { color: hex(BRAND.text3), fontSize: 13 } });
-      }
-      // Pass 26 Bug M — verbatims frame previously took full slide width
-      // (w:12.3) and the right edge collided with the INSIGHT panel at x=8.7,
-      // clipping every line mid-word. Width capped at 8.0 (matches the chart
-      // frame) so verbatims wrap cleanly inside their own column.
-      slide.addText(separated, { x: 0.5, y: 1.65, w: 8.0, h: 4.4, fontFace: 'Calibri', valign: 'top' });
-    } else if (q.type === 'multi') {
-      const dist = qAgg.distribution || {};
-      const nRespondents = qAgg.n_respondents || qAgg.n || 1;
-      // Highest count first (top of slide)
-      const entries = Object.entries(dist).sort((a, b) => b[1] - a[1]).slice(0, 8);
-      const items = entries.map(([k, v]) => ({
-        label: String(k),
-        count: Number(v) || 0,
-        value: Math.round((Number(v) / nRespondents) * 100),
-      }));
-      drawBars(slide, items, {
-        x: 0.5, y: 1.65, w: 8, h: 4.5,
-        title: `n=${nRespondents} respondents`,
-        subtitle: 'multi-select — totals may exceed 100%',
-        showCount: true,
-      });
-    } else {
-      // single / opinion
-      const dist = qAgg.distribution || {};
-      const total = Object.values(dist).reduce((s, v) => s + v, 0) || 1;
-      // Pass 26 Minor 5 — render all schema options on screener questions
-      // so the reader sees the full filter design, not just the qualifying
-      // choice. Non-screener single-choice keeps the prior top-N behaviour.
-      const isScreener = q.isScreening === true || q.type === 'screening';
-      let items;
-      if (isScreener && Array.isArray(q.options) && q.options.length > 0) {
-        const qualifying = q.qualifyingAnswer;
-        items = q.options.map(opt => {
-          const c = Number(dist[opt] || 0);
-          return {
-            label: String(opt) + (qualifying === opt ? '  (qualifying)' : ''),
-            count: c,
-            value: Math.round((c / total) * 100),
-          };
-        });
-      } else {
-        const entries = Object.entries(dist).sort((a, b) => b[1] - a[1]).slice(0, 8);
-        items = entries.map(([k, v]) => ({
-          label: String(k),
-          count: Number(v) || 0,
-          value: Math.round((Number(v) / total) * 100),
-        }));
-      }
-      drawBars(slide, items, {
-        x: 0.5, y: 1.65, w: 8, h: 4.5,
-        showCount: true,
-      });
+      slide.addText(items, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: 'Calibri', valign: 'top' });
     }
+  }
 
-    // Screening context note — above footer (footer now at y:7.15)
-    if (qAgg.is_screening && qAgg.n_total) {
-      slide.addText(`Screening question · all ${qAgg.n_total} respondents shown`, {
-        x: 0.5, y: 6.6, w: 12.3, h: 0.25,
-        fontSize: 9, color: hex(BRAND.text3), italic: true, fontFace: 'Calibri',
-        align: 'left',
-      });
-    }
-
-    // Insight pullquote on the right
-    if (qInsight?.headline) {
-      slide.addShape('roundRect', {
-        x: 8.7, y: 1.65, w: 4.3, h: 4.5, rectRadius: 0.08,
-        fill: { color: hex(BRAND.bg2) }, line: { color: hex(BRAND.border) },
-      });
-      slide.addShape('rect', {
-        x: 8.7, y: 1.65, w: 0.06, h: 4.5,
-        fill: { color: hex(BRAND.lime) }, line: { color: hex(BRAND.lime) },
-      });
-      slide.addText('INSIGHT', {
-        x: 8.9, y: 1.65, w: 4, h: 0.3,
-        fontSize: 9, bold: true, color: hex(BRAND.lime), fontFace: 'Calibri', charSpacing: 2,
-      });
-      slide.addText(qInsight.headline, {
-        x: 8.9, y: 2.0, w: 4, h: 1.3,
-        fontSize: 16, bold: true, color: 'FFFFFF', fontFace: 'Calibri',
-      });
-      slide.addText(qInsight.body || '', {
-        x: 8.9, y: 3.3, w: 4, h: 2.5,
-        fontSize: 11, color: hex(BRAND.text2), fontFace: 'Calibri', valign: 'top',
-      });
-    }
+  // ── THE FULL SURVEY (one slide per question, correct renderer) ──
+  model.survey.forEach((q, qi) => {
+    const slide = pptx.addSlide();
+    addDarkBackground(slide);
+    const eyebrow = `${String(qi + 5).padStart(2, '0')} · QUESTION ${q.number}  ·  ${q.renderer_label.toUpperCase()}${q.isScreening ? '  · SCREENER' : ''}`;
+    addSectionHeader(slide, eyebrow, q.text);
+    renderSurveyBody(slide, q);
   });
 
-  // ── RECOMMENDATIONS ──────────────────────────────────────
-  // Bug 6 fix: use breakLine: true between items so paragraphs render separately.
-  // Each recommendation: bold number prefix (lime 12pt) + body text (14pt).
-  if (Array.isArray(insights.recommendations) && insights.recommendations.length) {
-    const slide = pptx.addSlide();
-    addDarkBackground(slide);
-    addSectionHeader(slide, '· RECOMMENDATIONS', 'What to do next');
-    const items = [];
-    insights.recommendations.forEach((r, i) => {
-      if (i > 0) items.push({ text: '', options: { breakLine: true } });
-      items.push({
-        text: `${String(i + 1).padStart(2, '0')}.`,
-        options: { bold: true, fontSize: 12, color: hex(BRAND.lime) },
-      });
-      items.push({
-        text: `  ${r}`,
-        options: { fontSize: 14, color: hex(BRAND.text1), paraSpaceAfter: 12 },
-      });
-    });
-    slide.addText(items, { x: 0.5, y: 1.6, w: 12.3, h: 4.5, fontFace: 'Calibri', valign: 'top' });
-  }
-
-  // ── FOLLOW-UPS ────────────────────────────────────────────
-  // Bug 6 fix: each follow-up title + rationale in its own paragraph block.
-  if (Array.isArray(insights.follow_ups) && insights.follow_ups.length) {
-    const slide = pptx.addSlide();
-    addDarkBackground(slide);
-    addSectionHeader(slide, '· RECOMMENDED FOLLOW-UPS', 'The logical next research');
-    const items = [];
-    insights.follow_ups.forEach((fu, i) => {
-      if (i > 0) items.push({ text: '', options: { breakLine: true } });
-      items.push({
-        text: fu.title || '',
-        options: { fontSize: 16, bold: true, color: 'FFFFFF', paraSpaceBefore: 4 },
-      });
-      items.push({ text: '', options: { breakLine: true } });
-      items.push({
-        text: fu.rationale || '',
-        options: { fontSize: 12, color: hex(BRAND.text2), paraSpaceAfter: 14 },
-      });
-    });
-    slide.addText(items, { x: 0.5, y: 1.6, w: 12.3, h: 4.5, fontFace: 'Calibri', valign: 'top' });
-  }
-
-  // ── DATA QUALITY NOTES (Pass 26 Minor 4 — user-friendly copy) ──
-  const integrityWarnings = buildIntegrityWarnings(mission, aggregatedByQuestion);
-  if (integrityWarnings.length > 0) {
+  // ── DATA QUALITY NOTES (canonical cleaned notes) ──
+  if (model.dataQualityNotes.length > 0) {
     const slide = pptx.addSlide();
     addDarkBackground(slide);
     addSectionHeader(slide, '· DATA QUALITY NOTES', 'Items worth a follow-up review');
-    const items = [];
-    items.push({
-      text: 'A few items in this report may warrant follow-up. The findings on the slides above still reflect the data as recorded.',
+    const items = [{
+      text: 'A few items in this report may warrant follow-up. The findings above still reflect the data as recorded.',
       options: { fontSize: 11, color: hex(BRAND.text2), italic: true, paraSpaceAfter: 14 },
-    });
-    items.push({ text: '', options: { breakLine: true } });
-    integrityWarnings.forEach((w, i) => {
+    }, { text: '', options: { breakLine: true } }];
+    model.dataQualityNotes.forEach((n, i) => {
       if (i > 0) items.push({ text: '', options: { breakLine: true } });
-      const qLabel = w.question_label || w.question_id;
-      const title = w.type === 'unknown_distribution_key'
-        ? `Question ${qLabel}: answer choice not in saved option list`
-        : `Question ${qLabel}: two answer choices overlap`;
-      const body = w.type === 'unknown_distribution_key'
-        ? `One or more answers were selected by respondents but aren't currently in the question's saved option list (${w.drifted_keys.map(k => `"${k}"`).join(', ')}). This usually happens when a question is edited after responses are generated.`
-        : `Two answer choices read very similarly ("${w.option_a}" vs "${w.option_b}"), which can confuse respondents. Consider rewording in your next mission.`;
-      items.push({
-        text: title,
-        options: { fontSize: 14, bold: true, color: hex(BRAND.lime), paraSpaceBefore: 6 },
-      });
-      items.push({ text: '', options: { breakLine: true } });
-      items.push({
-        text: body,
-        options: { fontSize: 11, color: hex(BRAND.text2), paraSpaceAfter: 10 },
-      });
+      items.push({ text: `Q${n.question_number}: `, options: { fontSize: 13, bold: true, color: hex(BRAND.lime) } });
+      items.push({ text: n.note, options: { fontSize: 12, color: hex(BRAND.text2), paraSpaceAfter: 8 } });
     });
     slide.addText(items, { x: 0.5, y: 1.6, w: 12.3, h: 5, fontFace: 'Calibri', valign: 'top' });
   }
 
+  // ── METHODOLOGY (disclaimer) ──
+  if (model.disclaimer) {
+    const slide = pptx.addSlide();
+    addDarkBackground(slide);
+    addSectionHeader(slide, '· METHODOLOGY', 'How to read this report');
+    slide.addText(model.disclaimer, {
+      x: 0.5, y: 1.65, w: 12.3, h: 5, fontSize: 13, color: hex(BRAND.text2), fontFace: 'Calibri', valign: 'top', autoFit: true,
+    });
+  }
+
   // ── Stream to response ────────────────────────────────────
-  const fname = `vett-report-${(mission.title || mission.id).toString().slice(0, 40).replace(/[^a-z0-9]+/gi, '-')}.pptx`;
+  const fname = `vett-report-${(model.header.title || mission.id).toString().slice(0, 40).replace(/[^a-z0-9]+/gi, '-')}.pptx`;
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
   res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
 
