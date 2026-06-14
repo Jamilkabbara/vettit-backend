@@ -357,6 +357,8 @@ module.exports = {
   pickRenderer,
   shapeQuestionData,
   numericScale,
+  detectScale,
+  scaleNum,
   buildDataQualityNotes,
   RENDERER_LABELS,
 };
