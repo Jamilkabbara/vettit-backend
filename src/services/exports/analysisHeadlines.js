@@ -102,11 +102,9 @@ function analysisHeadlines(analysis) {
       }
 
       case 'brand_lift': {
-        const ex = analysis.cells?.exposed?.n;
-        const co = analysis.cells?.control?.n;
-        if (ex != null) push('Exposed cell (n)', ex);
-        if (co != null) push('Control cell (n)', co);
-        // Each funnel stage with a computed lift → exposed% / control% / lift / sig.
+        // Lead with the LIFTED funnel stages — that's the actual finding.
+        // (Pass 48: cell base sizes used to lead, so the headline read
+        // "Exposed cell (n)=3" instead of the lift the study measured.)
         for (const f of analysis.funnel || []) {
           if (!f || f.lift_abs == null) continue;
           const stage = f.text || f.funnel_stage || f.question_id || 'Stage';
@@ -125,6 +123,11 @@ function analysisHeadlines(analysis) {
           push('Funnel stages lifted', analysis.summary.stages_lifted);
           push('Stages significant at 95%', analysis.summary.stages_sig95);
         }
+        // Cell base sizes are context, not the headline — surface them last.
+        const ex = analysis.cells?.exposed?.n;
+        const co = analysis.cells?.control?.n;
+        if (ex != null) push('Exposed cell (n)', ex);
+        if (co != null) push('Control cell (n)', co);
         break;
       }
 
@@ -196,10 +199,14 @@ function analysisHeadlines(analysis) {
       }
 
       case 'churn': {
-        // Ranked drivers (rankedMulti → { ranked:[{option,count,pct_of_respondents}] }).
+        // Ranked drivers. Real analysis labels the driver `reason`; older
+        // fixtures used `option`/`label` — accept all (Pass 48: `${d.option}`
+        // rendered "Churn driver: undefined" against real data).
         for (const d of (analysis.drivers?.ranked || []).slice(0, 5)) {
           if (!d) continue;
-          push(`Churn driver: ${d.option}`, pct(d.pct_of_respondents));
+          const reason = d.reason || d.option || d.label;
+          if (!reason) continue;
+          push(`Churn driver: ${reason}`, pct(d.pct_of_respondents));
         }
         if (analysis.winback?.winnable_pct != null) {
           push('Winnable (would return)', pct(analysis.winback.winnable_pct));
@@ -229,10 +236,13 @@ function analysisHeadlines(analysis) {
       }
 
       case 'research': {
-        // Generic per-question base sizes (no methodology centerpiece).
+        // No methodology centerpiece — lead with the overall base size so the
+        // top-line reads as a sample size, not a finding. (Pass 48: leading
+        // with a per-question "n — <screener text>=5" misread as an answer.)
+        if (analysis.n != null) push('Responses analyzed', analysis.n);
         for (const q of (analysis.per_question || []).slice(0, 12)) {
           if (!q) continue;
-          const label = q.text ? `n — ${String(q.text).slice(0, 60)}` : `n — ${q.question_id}`;
+          const label = q.text ? `Base — ${String(q.text).slice(0, 60)}` : `Base — ${q.question_id}`;
           push(label, q.n);
         }
         break;

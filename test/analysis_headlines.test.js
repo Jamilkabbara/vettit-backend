@@ -221,9 +221,10 @@ describe('analysisHeadlines — churn', () => {
   const analysis = {
     methodology: 'churn',
     n: 18,
+    // Real churn analysis labels each driver `reason` (not `option`).
     drivers: { ranked: [
-      { option: 'Too expensive', count: 9, pct_of_respondents: 50 },
-      { option: 'Missing features', count: 5, pct_of_respondents: 27.8 },
+      { reason: 'Too expensive', count: 9, pct_of_respondents: 50 },
+      { reason: 'Missing features', count: 5, pct_of_respondents: 27.8 },
     ] },
     winback: { winnable_pct: 33.3, n: 18, distribution: {} },
   };
