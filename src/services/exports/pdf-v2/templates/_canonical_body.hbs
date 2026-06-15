@@ -167,11 +167,36 @@
       {{#if this.body.empty}}
       <p class="empty">{{this.body.empty_message}}</p>
       {{else}}
-      <ul class="verbatim-list">
-        {{#each this.body.items}}
-        <li class="verbatim">"{{this}}"</li>
+        {{#if this.body.has_themes}}
+        <div class="question-screener-note">Themes across {{this.body.n}} open-ended responses</div>
+        {{#each this.body.themes}}
+        <div class="theme-block">
+          <div class="bar-row">
+            <div></div>
+            <div class="bar-row-label">{{this.label}}<span class="theme-sentiment theme-{{this.sentiment}}">{{this.sentiment}}</span></div>
+            <div class="bar-track"><div class="bar-fill" style="width: {{this.pct}}%"></div></div>
+            <div class="bar-row-meta">{{this.count}} · {{this.pct}}%</div>
+          </div>
+          {{#each this.quotes}}
+          <div class="theme-quote">"{{this}}"</div>
+          {{/each}}
+        </div>
         {{/each}}
-      </ul>
+        {{#if this.body.items.length}}
+        <div class="question-screener-note" style="margin-top:10pt;">Representative verbatims</div>
+        <ul class="verbatim-list">
+          {{#each this.body.items}}
+          <li class="verbatim">"{{this}}"</li>
+          {{/each}}
+        </ul>
+        {{/if}}
+        {{else}}
+        <ul class="verbatim-list">
+          {{#each this.body.items}}
+          <li class="verbatim">"{{this}}"</li>
+          {{/each}}
+        </ul>
+        {{/if}}
       {{/if}}
     {{/ifKind}}
 

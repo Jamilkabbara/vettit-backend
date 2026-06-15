@@ -303,6 +303,16 @@ function buildCanonicalReport(mission, analysis, responses) {
       .filter((p) => p && p.question_id)
       .map((p) => [p.question_id, typeof p === 'string' ? p : (p.insight || p.body || p.headline || null)]));
 
+  // P2-1 — cached open-end theme clusters, keyed by question_id, attached to
+  // each text question so the open-end renders as a visual (theme bars) on
+  // every surface instead of punting to verbatims.
+  const themesMap = new Map(
+    insights.open_end_themes && typeof insights.open_end_themes === 'object'
+      ? Object.entries(insights.open_end_themes)
+        .filter(([, v]) => v && Array.isArray(v.themes) && v.themes.length)
+        .map(([qid, v]) => [qid, v.themes])
+      : []);
+
   // ── survey: every question, correct renderer + correctly-shaped data ──
   const survey = questions.map((q, i) => {
     // Observed numeric answers inform scale detection (NPS/CES often carry
@@ -312,6 +322,10 @@ function buildCanonicalReport(mission, analysis, responses) {
       .map((r) => scaleNum(r.answer))
       .filter((v) => v !== null);
     const renderer = pickRenderer(q, numericAnswers);
+    const data = shapeQuestionData(q, renderer, rows, analysis);
+    if (renderer === 'open_text_verbatims' && themesMap.has(q.id)) {
+      data.themes = themesMap.get(q.id);
+    }
     return {
       number: i + 1,
       id: q.id,
@@ -321,7 +335,7 @@ function buildCanonicalReport(mission, analysis, responses) {
       renderer_label: RENDERER_LABELS[renderer] || renderer,
       options: q.options || [],
       isScreening: !!q.isScreening,
-      data: shapeQuestionData(q, renderer, rows, analysis),
+      data,
       insight: pqiMap.get(q.id) || null,
     };
   });

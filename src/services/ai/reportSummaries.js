@@ -24,6 +24,7 @@
  */
 
 const { callClaude } = require('./anthropic');
+const { clusterOpenEndThemes } = require('./openEndThemes');
 const logger = require('../../utils/logger');
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -316,7 +317,24 @@ async function generateReportSummaries(report, opts = {}) {
     source: perQSource.get(q.id),
   }));
 
-  return { executive_summary: execSummary, exec_summary_source: execSource, per_question_insights, kpis, recommendations };
+  // P2-1 — open-end theme clustering. Each text question with enough verbatims
+  // becomes a visual (theme-frequency bars + sentiment + quotes), cached so web
+  // + exports + chat render the SAME themes. Grounded + non-fatal: a failure
+  // leaves the question rendering verbatims, exactly as before.
+  const open_end_themes = {};
+  for (const q of survey) {
+    if (q.renderer !== 'open_text_verbatims') continue;
+    const verbatims = q.data && Array.isArray(q.data.verbatims) ? q.data.verbatims : [];
+    if (verbatims.length < 3) continue;
+    try {
+      const r = await clusterOpenEndThemes({ id: q.id, text: q.text }, verbatims, opts);
+      if (r && Array.isArray(r.themes) && r.themes.length) open_end_themes[q.id] = r;
+    } catch (e) {
+      logger.warn('reportSummaries: open-end theme clustering failed', { qid: q.id, err: e.message });
+    }
+  }
+
+  return { executive_summary: execSummary, exec_summary_source: execSource, per_question_insights, kpis, recommendations, open_end_themes };
 }
 
 module.exports = {
