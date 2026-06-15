@@ -864,7 +864,7 @@ router.get('/:id/chart_data', authenticate, async (req, res, next) => {
     // RLS-style ownership check.
     const { data: mission, error: fetchErr } = await supabase
       .from('missions')
-      .select('id, user_id, questions, insights, targeting, target_audience')
+      .select('id, user_id, questions, insights, analysis, targeting, target_audience')
       .eq('id', missionId)
       .single();
     if (fetchErr || !mission) return res.status(404).json({ error: 'mission_not_found' });
@@ -874,12 +874,11 @@ router.get('/:id/chart_data', authenticate, async (req, res, next) => {
       return res.status(403).json({ error: 'forbidden' });
     }
 
-    // Pass 49 — always recompute deterministically from responses via the
-    // shared computeChartData (canonical detectScale/scaleNum + respondent-based
-    // multi-select %). The old LLM-emitted "fast path" forked from the canonical
-    // report (truncated scales, selection-based %), so the same question could
-    // render different numbers in "Response Distributions" vs "The full survey".
-    // One builder → the web charts always agree with the report + exports.
+    // Pass 50 B3 — chart_data is a thin PROJECTION of the canonical report.
+    // computeChartData now builds buildCanonicalReport once and maps its survey
+    // into the chart shapes, so "Response Distributions", "The full survey", and
+    // every export read ONE source of truth — the fork is gone. _source reflects
+    // that. (Previously two code paths recomputed distributions independently.)
     const { data: responses, error: respErr } = await supabase
       .from('mission_responses')
       .select('question_id, answer, persona_profile')
@@ -890,11 +889,11 @@ router.get('/:id/chart_data', authenticate, async (req, res, next) => {
       return res.status(500).json({ error: 'fetch_responses_failed' });
     }
     if (!responses || responses.length === 0) {
-      return res.json({ _source: 'empty', per_question_distributions: [] });
+      return res.json({ _source: 'canonical', per_question_distributions: [] });
     }
     const { computeChartData } = require('../services/backfills/chartData');
     const chart_data = computeChartData(mission, responses);
-    return res.json({ ...chart_data, _source: 'computed' });
+    return res.json({ ...chart_data, _source: 'canonical' });
   } catch (err) {
     logger.error('GET /missions/:id/chart_data failed', { err: err.message, stack: err.stack });
     next(err);

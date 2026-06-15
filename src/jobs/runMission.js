@@ -434,12 +434,13 @@ async function runMission(missionId, opts = {}) {
       }).eq('id', missionId);
     }
 
-    // ─── Pass 49 — deterministic chart_data ────────────────────────────────
-    // The LLM synthesis may emit chart_data, but its scale buckets aren't
-    // trustworthy (truncated axes, hallucinated counts). Recompute it from the
-    // raw responses via the shared canonical scale logic (detectScale) so the
-    // web distribution charts always match the report + exports. Clean
-    // responses only (drop screened-out), matching how the report is built.
+    // ─── chart_data — projected from the canonical report (Pass 50 B3) ──────
+    // computeChartData now builds the canonical report and projects its survey
+    // into chart shapes, so the cached chart_data, the on-demand endpoint, and
+    // the web "full survey" all share ONE builder (no fork). The LLM synthesis
+    // may emit its own chart_data, but its scale buckets aren't trustworthy, so
+    // we always overwrite. Clean responses only (drop screened-out), matching
+    // how the report is built.
     if (insights) {
       try {
         const { computeChartData } = require('../services/backfills/chartData');
