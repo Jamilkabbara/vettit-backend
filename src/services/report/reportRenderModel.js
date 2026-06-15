@@ -161,7 +161,7 @@ function shapeSurveyBody(q) {
 function buildRenderModel(report) {
   if (!report || typeof report !== 'object') {
     return { header: { title: 'Untitled', metaRows: [] }, headline: null, centerpiece: null,
-      keyFindings: [], survey: [], dataQualityNotes: [], execSummary: null, disclaimer: null };
+      keyFindings: [], recommendations: [], survey: [], dataQualityNotes: [], execSummary: null, disclaimer: null };
   }
 
   const h = report.header || {};
@@ -196,8 +196,11 @@ function buildRenderModel(report) {
   // ── key findings (insights.kpis: strings or {title/headline, description/body}) ──
   const keyFindings = (report.key_findings || []).map((f) => {
     if (typeof f === 'string') return { title: f, body: '' };
-    return { title: f.title || f.headline || f.label || '', body: f.description || f.body || '', value: f.value };
+    return { title: f.title || f.headline || f.label || '', body: f.description || f.body || '', value: f.value, trend: f.trend };
   }).filter((f) => f.title || f.value);
+
+  // ── B1 — recommendations (grounded action list) ──
+  const recommendations = (report.recommendations || []).filter((r) => typeof r === 'string' && r.trim());
 
   // ── full survey: every question → uniform body ──
   const survey = (report.survey || []).map((q) => ({
@@ -222,6 +225,7 @@ function buildRenderModel(report) {
     headline,
     centerpiece,
     keyFindings,
+    recommendations,
     survey,
     dataQualityNotes: (report.data_quality_notes || []).map((n) => ({
       question_number: n.question_number,

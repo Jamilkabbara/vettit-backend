@@ -75,6 +75,19 @@
 </section>
 {{/if}}
 
+{{!-- ─── RECOMMENDATIONS (B1 — grounded action list) ──────────────── --}}
+{{#if report.recommendations.length}}
+<section class="page">
+  <div class="section-eyebrow">· Recommendations</div>
+  <div class="section-divider"></div>
+  {{#each report.recommendations}}
+  <div class="insight-callout">
+    <div style="font-size:10pt; color: var(--text1); line-height:1.55;">{{this}}</div>
+  </div>
+  {{/each}}
+</section>
+{{/if}}
+
 {{!-- ─── THE FULL SURVEY — every question, correct renderer + scale ── --}}
 <section class="page">
   <div class="section-eyebrow">· The Full Survey</div>

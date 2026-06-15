@@ -471,6 +471,11 @@ async function runMission(missionId, opts = {}) {
       insights = insights || {};
       if (summaries.executive_summary) insights.executive_summary = summaries.executive_summary;
       insights.per_question_insights = summaries.per_question_insights;
+      // B1 — the dedicated generator now also produces grounded KPI tiles +
+      // recommendations (the old monolith's job). Only overwrite when we got
+      // real content, so a mission that already has good kpis/recs isn't wiped.
+      if (Array.isArray(summaries.kpis) && summaries.kpis.length) insights.kpis = summaries.kpis;
+      if (Array.isArray(summaries.recommendations) && summaries.recommendations.length) insights.recommendations = summaries.recommendations;
       insights.narration_failed = false;
     } catch (sumErr) {
       logger.warn('Mission run: report summaries failed (non-fatal)', { missionId, err: sumErr.message });
