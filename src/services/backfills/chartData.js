@@ -12,82 +12,117 @@
  */
 
 const logger = require('../../utils/logger');
-const { detectScale, scaleNum } = require('../report/buildReport');
+const { buildCanonicalReport } = require('../report/buildReport');
 
 /**
- * Pure compute: distributions + segments from raw responses.
- * Mirrors the on-demand path in routes/missions.js GET /:id/chart_data.
+ * Pass 50 B3 — chart_data per-question distributions are now a PROJECTION of
+ * the canonical report (buildCanonicalReport), not a second computation. This
+ * collapses the long-standing fork: previously computeChartData re-derived
+ * distributions with its own loop while the web "full survey" + exports read
+ * the canonical report — two code paths that could (and did) drift. Now there
+ * is ONE builder. The endpoint returns `_source: 'canonical'`.
+ *
+ * The projection maps each canonical survey question's already-correct `data`
+ * into the chart_data shape the frontend charts consume:
+ *   scale_*            → { type:'rating', scale_min, scale_max, buckets, mean }
+ *   multi_select       → { type:'multi_select', options, counts, percentages, n_respondents }
+ *   attribute_battery  → endorsement: multi_select bars (matrix: skipped — no single distribution)
+ *   single/forced/paired/screener/kano → { type:'single_choice', ... }
+ *
+ * Free-text questions are NEVER charted: the canonical renderer can label a
+ * "Why?" open-text as forced_choice, which would paint dozens of 1-count bars.
+ * We gate on the ORIGINAL question type so that never reaches a chart. (Side
+ * benefit: endorsement batteries like "rate X on each attribute", which the
+ * old loop silently dropped because scaleNum() can't read an object answer,
+ * now render correctly — identical coverage everywhere.)
+ */
+const TEXT_TYPES = new Set(['text', 'open', 'open_text', 'open_ended', 'textarea', 'freetext', 'free_text']);
+
+function projectQuestion(sq, origType) {
+  // Never chart free text (canonical may mis-render it as forced_choice bars).
+  if (TEXT_TYPES.has(String(origType || '').toLowerCase())) return null;
+  const r = sq.renderer || '';
+  const d = sq.data || {};
+
+  if (r.startsWith('scale_')) {
+    const dist = d.distribution || {};
+    const sm = Number(d.scale_min);
+    const sx = Number(d.scale_max);
+    const buckets = {};
+    if (Number.isFinite(sm) && Number.isFinite(sx) && sx >= sm) {
+      for (let i = sm; i <= sx; i += 1) buckets[i] = dist[i] != null ? dist[i] : (dist[String(i)] || 0);
+    } else {
+      for (const k of Object.keys(dist)) buckets[k] = dist[k];
+    }
+    if (Object.keys(buckets).length === 0) return null;
+    return {
+      question_id: sq.id,
+      question: sq.text || sq.id,
+      type: 'rating',
+      scale_min: sm,
+      scale_max: sx,
+      buckets,
+      // Match the old `mean` rounding (2dp) so the histogram label is unchanged.
+      mean: d.average != null ? Math.round(Number(d.average) * 100) / 100 : null,
+    };
+  }
+
+  if (r === 'multi_select' || (r === 'attribute_battery' && d.shape !== 'matrix')) {
+    const dist = d.distribution || {};
+    const options = Object.keys(dist);
+    if (options.length === 0) return null;
+    const counts = options.map((o) => dist[o]);
+    const base = d.n_respondents || d.n || 0;
+    return {
+      question_id: sq.id,
+      question: sq.text || sq.id,
+      type: 'multi_select',
+      options,
+      counts,
+      percentages: options.map((o) => (base > 0 ? Math.round((dist[o] / base) * 1000) / 10 : 0)),
+      n_respondents: base,
+    };
+  }
+
+  // matrix attribute battery / open_text_verbatims / max_diff → no single
+  // distribution chart (the old loop didn't chart these either).
+  if (r === 'attribute_battery' || r === 'open_text_verbatims' || r === 'max_diff') return null;
+
+  // single_select / forced_choice / paired_comparison / screener / kano
+  const dist = d.distribution || {};
+  const options = Object.keys(dist);
+  if (options.length === 0) return null;
+  const counts = options.map((o) => dist[o]);
+  const total = counts.reduce((s, c) => s + c, 0);
+  return {
+    question_id: sq.id,
+    question: sq.text || sq.id,
+    type: 'single_choice',
+    options,
+    counts,
+    percentages: options.map((o) => (total > 0 ? Math.round((dist[o] / total) * 1000) / 10 : 0)),
+    n_respondents: total,
+  };
+}
+
+/**
+ * Pure compute: distributions (projected from the canonical report) + country
+ * segments from raw responses. The on-demand endpoint and the cache writer
+ * both call this, so every chart_data surface shares one source of truth.
  */
 function computeChartData(mission, responses) {
   const questions = Array.isArray(mission.questions) ? mission.questions : [];
   const qById = new Map(questions.map((q) => [q.id, q]));
-  const byQuestion = new Map();
-  for (const r of responses) {
-    if (!byQuestion.has(r.question_id)) byQuestion.set(r.question_id, []);
-    byQuestion.get(r.question_id).push(r.answer);
-  }
 
+  // ONE builder: the canonical report. analysis is only needed for the
+  // centerpiece/headline, never for per-question distributions, so passing
+  // null when a caller didn't load it is safe.
+  const report = buildCanonicalReport(mission, mission.analysis || null, responses || []);
   const per_question_distributions = [];
-  for (const [qid, answers] of byQuestion.entries()) {
-    const q = qById.get(qid);
-    if (!q) continue;
-
-    if (q.type === 'single' || q.type === 'multi' || q.type === 'multi_select' || q.type === 'single_choice') {
-      const isMulti = q.type === 'multi' || q.type === 'multi_select';
-      const counts = new Map();
-      let nRespondents = 0;
-      for (const a of answers) {
-        const values = (Array.isArray(a) ? a : [a]).filter((v) => v != null && v !== '');
-        if (values.length) nRespondents += 1;
-        for (const v of values) counts.set(String(v), (counts.get(String(v)) || 0) + 1);
-      }
-      const options = Array.from(counts.keys());
-      const countsArr = options.map((o) => counts.get(o));
-      // Pass 49 — multi-select % must be over RESPONDENTS (a person can pick
-      // several), matching the canonical MultiDist. Was count/total-selections,
-      // which disagreed with "The full survey" on the same page.
-      const denom = isMulti ? nRespondents : (countsArr.reduce((s, c) => s + c, 0) || nRespondents);
-      const percentages = denom > 0
-        ? countsArr.map((c) => Math.round((c / denom) * 1000) / 10)
-        : countsArr.map(() => 0);
-      per_question_distributions.push({
-        question_id: qid,
-        question: q.text || q.question || qid,
-        type: isMulti ? 'multi_select' : 'single_choice',
-        options,
-        counts: countsArr,
-        percentages,
-        n_respondents: nRespondents,
-      });
-      continue;
-    }
-
-    if (q.type === 'rating' || q.type === 'scale') {
-      // Pass 49 — reuse the canonical scale detection so cached chart_data
-      // shares ONE source of truth with the report + exports. Was: scale_max
-      // defaulted to 5 (truncating 1-7 / 0-10) and buckets held only observed
-      // values (no scale_min, no zero-count bars).
-      const nums = answers.map((a) => scaleNum(a)).filter((v) => v !== null);
-      if (nums.length === 0) continue;
-      const scale = detectScale(q, nums);
-      const buckets = {};
-      for (let i = scale.min; i <= scale.max; i += 1) buckets[i] = 0;
-      for (const v of nums) if (buckets[v] !== undefined) buckets[v] += 1;
-      const sum = nums.reduce((s, n) => s + n, 0);
-      const mean = Math.round((sum / nums.length) * 100) / 100;
-      // Pass 49 polish — no `median`: it's unused by every renderer and for
-      // even n landed on x.5 (off the integer axis). The canonical report
-      // doesn't emit it either.
-      per_question_distributions.push({
-        question_id: qid,
-        question: q.text || q.question || qid,
-        type: 'rating',
-        scale_min: scale.min,
-        scale_max: scale.max,
-        buckets,
-        mean,
-      });
-    }
+  for (const sq of report.survey || []) {
+    const orig = qById.get(sq.id);
+    const proj = projectQuestion(sq, orig && orig.type);
+    if (proj) per_question_distributions.push(proj);
   }
 
   const personasByCountry = new Map();
