@@ -42,6 +42,20 @@ function pct(v) {
   return `${Number.isInteger(n) ? n : n.toFixed(1)}%`;
 }
 
+/**
+ * A number rounded for DISPLAY to at most `dp` decimals, trailing zeros
+ * stripped, as a string: 2.6667 → "2.67", 234.9999 → "235", 0.1778 → "0.18".
+ * Returns null for non-finite input so push() skips it. This rounds the
+ * DISPLAYED value only — the stored analysis object keeps full precision for
+ * downstream stats. Default 2 dp suits means / scores / money / utilities;
+ * pass dp=1 for percentages embedded in a string.
+ */
+function num(v, dp = 2) {
+  if (v === null || v === undefined || !Number.isFinite(Number(v))) return null;
+  const f = 10 ** dp;
+  return String(Math.round(Number(v) * f) / f);
+}
+
 /** Significance label from a brand-lift/two-proportion significance block. */
 function sigLabel(sig) {
   if (!sig) return 'directional';
@@ -68,19 +82,19 @@ function analysisHeadlines(analysis) {
     switch (analysis.methodology) {
       case 'pricing': {
         const opp = analysis.van_westendorp?.points?.opp;
-        push('Optimal price (Van Westendorp OPP)', opp);
+        push('Optimal price (Van Westendorp OPP)', num(opp));
         const range = analysis.acceptable_range;
         if (range && range.low != null && range.high != null) {
-          push('Acceptable price range', `${range.low}–${range.high}`);
+          push('Acceptable price range', `${num(range.low)}–${num(range.high)}`);
         }
         // VW range corners (point of marginal cheapness / expensiveness).
         const pts = analysis.van_westendorp?.points || {};
-        push('Point of marginal cheapness (PMC)', pts.pmc);
-        push('Point of marginal expensiveness (PME)', pts.pme);
-        push('Indifference price point (IPP)', pts.ipp);
-        push('Gabor-Granger revenue-optimal price', analysis.gabor_granger?.optimal_price);
+        push('Point of marginal cheapness (PMC)', num(pts.pmc));
+        push('Point of marginal expensiveness (PME)', num(pts.pme));
+        push('Indifference price point (IPP)', num(pts.ipp));
+        push('Gabor-Granger revenue-optimal price', num(analysis.gabor_granger?.optimal_price));
         if (analysis.wtp_ceiling?.mean != null) {
-          push('WTP ceiling (mean)', analysis.wtp_ceiling.mean);
+          push('WTP ceiling (mean)', num(analysis.wtp_ceiling.mean));
         }
         if (analysis.currency) push('Currency', analysis.currency);
         if (analysis.van_westendorp?.n != null) push('Van Westendorp base (n)', analysis.van_westendorp.n);
@@ -88,11 +102,11 @@ function analysisHeadlines(analysis) {
       }
 
       case 'satisfaction': {
-        if (analysis.nps?.score != null) push('NPS', analysis.nps.score);
+        if (analysis.nps?.score != null) push('NPS', num(analysis.nps.score));
         push('CSAT (top-2-box)', pct(analysis.csat?.top2_pct));
         push('CES (top-2-box)', pct(analysis.ces?.top2_pct));
         if (analysis.retention?.stats?.mean != null) {
-          push('Retention / likelihood-to-return (mean of 5)', analysis.retention.stats.mean);
+          push('Retention / likelihood-to-return (mean of 5)', num(analysis.retention.stats.mean));
         }
         // Top ranked issue, when present.
         const topIssue = analysis.issues?.ranked?.[0];
@@ -114,9 +128,9 @@ function analysisHeadlines(analysis) {
             const liftPts = `${Math.round(f.lift_abs * 100)} pts`;
             push(stage, `exposed ${exPct} vs control ${coPct} (+${liftPts}, ${sigLabel(f.significance)})`);
           } else if (f.type === 'mean') {
-            const exM = f.exposed?.mean != null ? f.exposed.mean : '?';
-            const coM = f.control?.mean != null ? f.control.mean : '?';
-            push(stage, `exposed ${exM} vs control ${coM} (+${f.lift_abs}, ${sigLabel(f.significance)})`);
+            const exM = f.exposed?.mean != null ? (num(f.exposed.mean) ?? '?') : '?';
+            const coM = f.control?.mean != null ? (num(f.control.mean) ?? '?') : '?';
+            push(stage, `exposed ${exM} vs control ${coM} (+${num(f.lift_abs) ?? f.lift_abs}, ${sigLabel(f.significance)})`);
           }
         }
         if (analysis.summary) {
@@ -135,7 +149,7 @@ function analysisHeadlines(analysis) {
         // Top MaxDiff features by utility (already sorted utility desc).
         const feats = (analysis.maxdiff?.features || []).filter((f) => f && f.utility != null).slice(0, 5);
         for (const f of feats) {
-          push(`MaxDiff: ${f.label || f.feature_id}`, `utility ${f.utility}`);
+          push(`MaxDiff: ${f.label || f.feature_id}`, `utility ${num(f.utility) ?? f.utility}`);
         }
         // Kano must-haves.
         const must = (analysis.kano?.features || [])
@@ -157,9 +171,9 @@ function analysisHeadlines(analysis) {
         for (const c of cands) {
           const isWinner = c.candidate_id === winnerId ? ' (winner)' : '';
           if (c.pairwise_win_rate?.pct != null) {
-            push(`${c.label || c.candidate_id}${isWinner}`, `${c.pairwise_win_rate.pct}% win rate`);
+            push(`${c.label || c.candidate_id}${isWinner}`, `${num(c.pairwise_win_rate.pct, 1) ?? c.pairwise_win_rate.pct}% win rate`);
           } else if (c.composite != null) {
-            push(`${c.label || c.candidate_id}${isWinner}`, `composite ${c.composite}`);
+            push(`${c.label || c.candidate_id}${isWinner}`, `composite ${num(c.composite) ?? c.composite}`);
           }
         }
         break;
@@ -172,9 +186,9 @@ function analysisHeadlines(analysis) {
           const isWinner = c.concept_id === winnerId ? ' (winner)' : '';
           const share = c.final_choice_pct?.pct;
           if (share != null) {
-            push(`${c.label || c.concept_id}${isWinner}`, `${share}% forced choice`);
+            push(`${c.label || c.concept_id}${isWinner}`, `${num(share, 1) ?? share}% forced choice`);
           } else if (c.dimensions?.appeal?.mean != null) {
-            push(`${c.label || c.concept_id}${isWinner}`, `appeal ${c.dimensions.appeal.mean}`);
+            push(`${c.label || c.concept_id}${isWinner}`, `appeal ${num(c.dimensions.appeal.mean) ?? c.dimensions.appeal.mean}`);
           }
         }
         if (analysis.final_choice?.none) {
@@ -193,7 +207,7 @@ function analysisHeadlines(analysis) {
         // Biggest gaps vs best competitor (gaps sorted ascending = worst first).
         for (const g of (analysis.gaps || []).slice(0, 3)) {
           if (!g) continue;
-          push(`Gap on "${g.attribute}" vs ${g.best_competitor}`, `${g.gap} pts`);
+          push(`Gap on "${g.attribute}" vs ${g.best_competitor}`, `${num(g.gap) ?? g.gap} pts`);
         }
         break;
       }
@@ -215,10 +229,10 @@ function analysisHeadlines(analysis) {
       }
 
       case 'validate': {
-        if (analysis.scores?.reaction?.mean != null) push('Concept reaction (mean of 10)', analysis.scores.reaction.mean);
-        if (analysis.scores?.relevance?.mean != null) push('Relevance (mean of 7)', analysis.scores.relevance.mean);
-        if (analysis.scores?.uniqueness?.mean != null) push('Uniqueness (mean of 7)', analysis.scores.uniqueness.mean);
-        if (analysis.scores?.believability?.mean != null) push('Believability (mean of 7)', analysis.scores.believability.mean);
+        if (analysis.scores?.reaction?.mean != null) push('Concept reaction (mean of 10)', num(analysis.scores.reaction.mean));
+        if (analysis.scores?.relevance?.mean != null) push('Relevance (mean of 7)', num(analysis.scores.relevance.mean));
+        if (analysis.scores?.uniqueness?.mean != null) push('Uniqueness (mean of 7)', num(analysis.scores.uniqueness.mean));
+        if (analysis.scores?.believability?.mean != null) push('Believability (mean of 7)', num(analysis.scores.believability.mean));
         push('Purchase intent (top-2-box)', pct(analysis.intent?.top2_pct));
         break;
       }
@@ -227,10 +241,10 @@ function analysisHeadlines(analysis) {
         const fn = analysis.funnel || {};
         if (fn.recall_aided?.correct_rate != null) push('Aided recall', `${Math.round(fn.recall_aided.correct_rate * 100)}%`);
         if (fn.attribution?.correct_rate != null) push('Correct brand attribution', `${Math.round(fn.attribution.correct_rate * 100)}%`);
-        if (fn.likeability?.mean != null) push('Likeability (mean of 7)', fn.likeability.mean);
-        if (fn.stopping_power?.mean != null) push('Stopping power (mean of 7)', fn.stopping_power.mean);
-        if (fn.distinctiveness?.mean != null) push('Distinctiveness (mean of 7)', fn.distinctiveness.mean);
-        if (fn.persuasion?.mean != null) push('Persuasion (mean of 7)', fn.persuasion.mean);
+        if (fn.likeability?.mean != null) push('Likeability (mean of 7)', num(fn.likeability.mean));
+        if (fn.stopping_power?.mean != null) push('Stopping power (mean of 7)', num(fn.stopping_power.mean));
+        if (fn.distinctiveness?.mean != null) push('Distinctiveness (mean of 7)', num(fn.distinctiveness.mean));
+        if (fn.persuasion?.mean != null) push('Persuasion (mean of 7)', num(fn.persuasion.mean));
         if (fn.message_match?.rate != null) push('Message match', `${Math.round(fn.message_match.rate * 100)}%`);
         break;
       }
@@ -283,9 +297,9 @@ function brandLiftStageTable(analysis) {
     } else if (f.type === 'mean') {
       rows.push({
         stage,
-        exposed: f.exposed?.mean != null ? String(f.exposed.mean) : '—',
-        control: f.control?.mean != null ? String(f.control.mean) : '—',
-        lift: `+${f.lift_abs}`,
+        exposed: f.exposed?.mean != null ? (num(f.exposed.mean) ?? '—') : '—',
+        control: f.control?.mean != null ? (num(f.control.mean) ?? '—') : '—',
+        lift: `+${num(f.lift_abs) ?? f.lift_abs}`,
         significance: sigLabel(f.significance),
         n: `${f.exposed?.n ?? '?'} / ${f.control?.n ?? '?'}`,
       });

@@ -266,3 +266,65 @@ describe('analysisHeadlines — research (generic)', () => {
     expect(rows[0].value).toBe('9');
   });
 });
+
+describe('analysisHeadlines — display rounding (Pass 50)', () => {
+  // The exact ugly-float classes observed on real 2026-06-13 missions:
+  // brand_lift "exposed 2.6667", roadmap "utility 0.1778", pricing "…–234.9999".
+  test('brand_lift means + lift round to 2 dp (no x.6667 tails)', () => {
+    const rows = analysisHeadlines({
+      methodology: 'brand_lift',
+      funnel: [{
+        question_id: 'q', text: 'Familiarity', type: 'mean',
+        exposed: { mean: 2.6666666667, n: 3 }, control: { mean: 2, n: 3 },
+        lift_abs: 0.6666666667, significance: { sig90: false, sig95: false },
+      }],
+    });
+    expect(valOf(rows, 'Familiarity')).toBe('exposed 2.67 vs control 2 (+0.67, directional)');
+    const t = brandLiftStageTable({
+      methodology: 'brand_lift',
+      funnel: [{ question_id: 'q', text: 'Familiarity', type: 'mean', exposed: { mean: 2.6666667, n: 3 }, control: { mean: 2, n: 3 }, lift_abs: 0.6666667, significance: {} }],
+    });
+    expect(t[0]).toMatchObject({ exposed: '2.67', control: '2', lift: '+0.67' });
+  });
+  test('roadmap MaxDiff utility rounds to 2 dp; clean values unchanged', () => {
+    const rows = analysisHeadlines({
+      methodology: 'roadmap',
+      maxdiff: { n: 5, features: [
+        { feature_id: 'f1', label: 'Shared Wallets', utility: 1 },
+        { feature_id: 'f2', label: 'Bill Reminders', utility: 0.1777777778 },
+      ] },
+    });
+    expect(valOf(rows, 'Shared Wallets')).toBe('utility 1');
+    expect(valOf(rows, 'Bill Reminders')).toBe('utility 0.18');
+  });
+  test('pricing range + corners round (no 234.9999)', () => {
+    const rows = analysisHeadlines({
+      methodology: 'pricing',
+      van_westendorp: { n: 5, points: { opp: 180, pmc: 159.9999999, pme: 234.9999999 } },
+      acceptable_range: { low: 160, high: 234.9999999 },
+    });
+    expect(valOf(rows, 'Acceptable price range')).toBe('160–235');
+    expect(valOf(rows, 'Optimal price (Van Westendorp OPP)')).toBe('180');
+    expect(valOf(rows, 'Point of marginal cheapness')).toBe('160');
+    expect(valOf(rows, 'Point of marginal expensiveness')).toBe('235');
+  });
+  test('naming win-rate to 1 dp; compare share to 1 dp; competitor gap to 2 dp', () => {
+    const naming = analysisHeadlines({
+      methodology: 'naming',
+      candidates: [{ candidate_id: 'c1', label: 'Lumio', pairwise_win_rate: { pct: 66.66667 } }],
+      winner: { candidate_id: 'c1' },
+    });
+    expect(valOf(naming, 'Lumio')).toBe('66.7% win rate');
+    const compare = analysisHeadlines({
+      methodology: 'compare',
+      concepts: [{ concept_id: 'a', label: 'A', final_choice_pct: { pct: 33.33333 } }],
+      overall_winner: { concept_id: 'a' },
+    });
+    expect(valOf(compare, 'A')).toBe('33.3% forced choice');
+    const comp = analysisHeadlines({
+      methodology: 'competitor', focal_brand: 'X',
+      gaps: [{ attribute: 'Trust', best_competitor: 'Y', gap: -1.166667 }],
+    });
+    expect(valOf(comp, 'Gap on "Trust" vs Y')).toBe('-1.17 pts');
+  });
+});
