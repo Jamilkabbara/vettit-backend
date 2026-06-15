@@ -75,10 +75,9 @@ function computeChartData(mission, responses) {
       for (const v of nums) if (buckets[v] !== undefined) buckets[v] += 1;
       const sum = nums.reduce((s, n) => s + n, 0);
       const mean = Math.round((sum / nums.length) * 100) / 100;
-      const sorted = [...nums].sort((a, b) => a - b);
-      const median = sorted.length % 2 === 0
-        ? (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
-        : sorted[Math.floor(sorted.length / 2)];
+      // Pass 49 polish — no `median`: it's unused by every renderer and for
+      // even n landed on x.5 (off the integer axis). The canonical report
+      // doesn't emit it either.
       per_question_distributions.push({
         question_id: qid,
         question: q.text || q.question || qid,
@@ -87,7 +86,6 @@ function computeChartData(mission, responses) {
         scale_max: scale.max,
         buckets,
         mean,
-        median,
       });
     }
   }

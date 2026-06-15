@@ -75,15 +75,18 @@ function shapeSurveyBody(q) {
 
   if (r === 'attribute_battery') {
     if (data.shape === 'matrix' && Array.isArray(data.per_attribute)) {
+      // Pass 49 — fill bars over the battery's TRUE scale (1-7/0-10), not a
+      // hardcoded /5, so a non-5 matrix isn't over/under-filled.
+      const scaleMax = Number(data.scale_max) || 5;
       return {
         kind: 'matrix',
         n: data.n || 0,
-        // pct used by bar widgets: average over a 5-scale (matches web /5 fill).
+        scale_max: scaleMax,
         rows: data.per_attribute.map((a) => ({
           label: a.attribute,
           average: a.average,
           n: a.n,
-          pct: Math.min(100, Math.round(((Number(a.average) || 0) / 5) * 100)),
+          pct: Math.min(100, Math.round(((Number(a.average) || 0) / scaleMax) * 100)),
         })),
       };
     }

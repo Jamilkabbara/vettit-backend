@@ -56,8 +56,13 @@ function findNpsQuestion(questions, responses) {
     if (q.type !== 'rating' && q.type !== 'nps' && q.type !== 'scale') continue;
     const text = String(q.text || '').toLowerCase();
     const meta = `${q.methodology || ''} ${q.funnel_stage || ''} ${q.kpi_category || ''}`.toLowerCase();
-    if (meta.includes('nps') || /recommend/.test(text)) {
-      // confirm the observed answers actually span a 0-10-ish range
+    // Definitive NPS (metadata or "0 to 10" in the text) → accept regardless of
+    // the observed answers, so an all-detractor (every answer ≤5) mission still
+    // offers the NPS band cut (the headline shows NPS either way).
+    if (meta.includes('nps') || /\b0\s*(?:to|[-–])\s*10\b|scale of 0/.test(text)) return q;
+    // Looser "recommend" match → only trust it when the answers span past 5
+    // (guards against a 1-5 "would you recommend" being mistaken for NPS).
+    if (/recommend/.test(text)) {
       const nums = responses.filter((r) => r.question_id === q.id).map((r) => scaleNum(r.answer)).filter((v) => v != null);
       if (nums.length && Math.max(...nums) > 5) return q;
     }
