@@ -180,4 +180,11 @@ function filterResponsesBySegment(mission, responses, key) {
   return (responses || []).filter((r) => set.has(personaId(r)));
 }
 
-module.exports = { buildSegments, personaSetForSegment, filterResponsesBySegment, SEG_FLOOR };
+/** Distinct respondent (persona) count in a set of response rows. */
+function distinctPersonaCount(rows) {
+  const s = new Set();
+  for (const r of rows || []) { const p = personaId(r); if (p) s.add(p); }
+  return s.size;
+}
+
+module.exports = { buildSegments, personaSetForSegment, filterResponsesBySegment, distinctPersonaCount, SEG_FLOOR };

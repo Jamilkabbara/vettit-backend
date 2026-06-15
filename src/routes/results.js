@@ -447,7 +447,7 @@ router.get('/:missionId/report', authenticate, async (req, res, next) => {
     // SAME builder (no fork). analysis/headline/centerpiece/exec/insight are
     // whole-sample, so they're dropped for a segment view — the recomputed
     // distributions + the surfaced n are the segment's honest signal.
-    const { buildSegments, filterResponsesBySegment } = require('../services/report/segments');
+    const { buildSegments, filterResponsesBySegment, distinctPersonaCount } = require('../services/report/segments');
     const segments = buildSegments(mission, rows);
     const segKey = typeof req.query.segment === 'string' ? req.query.segment : null;
 
@@ -460,7 +460,11 @@ router.get('/:missionId/report', authenticate, async (req, res, next) => {
       report.key_findings = [];
       report.survey = (report.survey || []).map((q) => ({ ...q, insight: null }));
       report.segments = segments;
-      report.active_segment = seg || { key: segKey, label: segKey, n: subset.length };
+      // B4 — n is the distinct RESPONDENT count, never the row count. The old
+      // fallback used subset.length (rows = personas × questions), so a direct
+      // ?segment=nps:detractor not in the offered list reported n=10 on a
+      // 5-respondent mission. Always count distinct personas.
+      report.active_segment = seg || { key: segKey, label: segKey, n: distinctPersonaCount(subset) };
       return res.json({ report });
     }
 
