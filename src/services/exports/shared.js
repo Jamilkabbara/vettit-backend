@@ -125,6 +125,11 @@ const BRAND = {
   orange:  '#fb923c',
   purple:  '#a78bfa',
   blue:    '#60a5fa',
+  // §3 design system — secondary accent + sentiment + low-n flag (canonical set,
+  // mirrored in the web Tailwind config so every surface reads one palette).
+  indigo:  '#6366F1', // interactive / secondary series
+  coral:   '#F2787F', // negative sentiment
+  amber:   '#E7B45A', // low-n / directional confidence flag
 };
 
 module.exports = { loadMissionForExport, BRAND };

@@ -349,6 +349,28 @@ function buildCanonicalReport(mission, analysis, responses) {
 
   const distinctPersonas = new Set(rows.map((r) => r.persona_id).filter(Boolean)).size;
 
+  // §3 — hero "finding": the single punchy takeaway that leads the report.
+  // Deterministic floor = the first sentence of the executive summary; falls
+  // back to the top headline metric. (A generator may enrich this on prod.)
+  const firstSentence = (s) => {
+    const m = String(s || '').trim().match(/^[\s\S]*?[.!?](?=\s|$)/);
+    return (m ? m[0] : String(s || '')).trim();
+  };
+  const finding = execSummary
+    ? firstSentence(execSummary)
+    : (headlines.length ? `${headlines[0].label}: ${headlines[0].value}` : null);
+
+  // §3 — screener funnel data. Screened-out respondents are NOT persisted, so we
+  // never fabricate a screened-out count; we surface the qualified denominator
+  // honestly plus the screener's own answer distribution (shown, not hidden).
+  const screenerQ = survey.find((q) => q.isScreening || q.renderer === 'screener');
+  const screening = screenerQ ? {
+    question_id: screenerQ.id,
+    question: screenerQ.text,
+    qualified: distinctPersonas || (mission.qualified_respondent_count ?? null),
+    distribution: (screenerQ.data && screenerQ.data.distribution) || {},
+  } : null;
+
   return {
     schema_version: 1,
     header: {
@@ -377,6 +399,15 @@ function buildCanonicalReport(mission, analysis, responses) {
     recommendations: Array.isArray(insights.recommendations)
       ? insights.recommendations.filter((r) => typeof r === 'string' && r.trim())
       : [],
+    // §3 — the hero finding (one-liner) + synthesis (the editorial paragraph the
+    // mockup leads with). synthesis is the exec summary; web/exports render it as
+    // the "VETT synthesis" block.
+    finding: finding || null,
+    synthesis: execSummary || null,
+    // §3 — personas (n-gated), populated by the synthesis generator; empty until
+    // backfilled. Surfaced here so web + exports read one source.
+    personas: Array.isArray(insights.personas) ? insights.personas : [],
+    screening,
     exec_summary: execSummary || null,
     survey,
     data_quality_notes: buildDataQualityNotes(survey, rows),
