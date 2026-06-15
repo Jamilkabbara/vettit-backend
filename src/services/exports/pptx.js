@@ -312,6 +312,19 @@ function buildPPTX(pack, res) {
     }
   }
 
+  // ── RECOMMENDATIONS (B1 — grounded action list) ──
+  if (Array.isArray(model.recommendations) && model.recommendations.length > 0) {
+    const slide = pptx.addSlide();
+    addDarkBackground(slide);
+    addSectionHeader(slide, '· RECOMMENDATIONS', 'What to do next');
+    const items = [];
+    model.recommendations.forEach((r, i) => {
+      if (i > 0) items.push({ text: '', options: { breakLine: true } });
+      items.push({ text: r, options: { fontSize: 13, color: 'FFFFFF', bullet: { code: '25CF', indent: 18 }, paraSpaceAfter: 12 } });
+    });
+    slide.addText(items, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: 'Calibri', valign: 'top' });
+  }
+
   // ── THE FULL SURVEY (one slide per question, correct renderer) ──
   model.survey.forEach((q, qi) => {
     const slide = pptx.addSlide();

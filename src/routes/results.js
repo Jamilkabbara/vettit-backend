@@ -496,6 +496,9 @@ router.post('/:missionId/summaries/regenerate', authenticate, async (req, res, n
     const newInsights = { ...((mrow && mrow.insights) || {}) };
     if (summaries.executive_summary) newInsights.executive_summary = summaries.executive_summary;
     newInsights.per_question_insights = summaries.per_question_insights;
+    // B1 — also (re)generate KPI tiles + recommendations.
+    if (Array.isArray(summaries.kpis) && summaries.kpis.length) newInsights.kpis = summaries.kpis;
+    if (Array.isArray(summaries.recommendations) && summaries.recommendations.length) newInsights.recommendations = summaries.recommendations;
     newInsights.narration_failed = false;
 
     const { error } = await supabase
@@ -512,6 +515,8 @@ router.post('/:missionId/summaries/regenerate', authenticate, async (req, res, n
       exec_summary_source: summaries.exec_summary_source,
       exec_summary: summaries.executive_summary,
       per_question_count: summaries.per_question_insights.length,
+      kpi_count: (summaries.kpis || []).length,
+      rec_count: (summaries.recommendations || []).length,
     });
   } catch (err) { next(err); }
 });

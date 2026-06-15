@@ -128,6 +128,33 @@ function deterministicExecSummary(report) {
   return clampSentence(parts.join(' ')) || 'Your computed results below are complete.';
 }
 
+/**
+ * Deterministic KPI tiles from the computed headline metrics. Grounded by
+ * construction (the values ARE the headline figures). Shape matches the legacy
+ * monolith: { label, value, trend }.
+ */
+function deterministicKpis(report) {
+  const all = (report.headline && Array.isArray(report.headline.all)) ? report.headline.all : [];
+  return all.slice(0, 3)
+    .filter((m) => m && m.label && m.value != null && String(m.value).trim())
+    .map((m) => ({ label: String(m.label), value: String(m.value), trend: 'neutral' }));
+}
+
+/** Deterministic, grounded recommendation floor (never empty, never hedged). */
+function deterministicRecommendations(report) {
+  const recs = [];
+  const s = report.header && report.header.sample;
+  const h = report.headline;
+  if (h && h.metric && h.value) {
+    recs.push(`Act on the headline finding (${h.metric}: ${h.value}) and review the full survey below for the supporting detail behind it.`);
+  }
+  if (s && s.posture === 'directional' && s.n != null) {
+    recs.push(`Validate with a larger sample before committing — at n=${s.n} these are directional signals, not a verdict.`);
+  }
+  if (!recs.length) recs.push('Review the full survey and open-text verbatims to prioritise next steps.');
+  return recs.slice(0, 3);
+}
+
 // ── LLM enrichment ──────────────────────────────────────────────────────────
 function extractJSONObject(text) {
   if (!text) return null;
@@ -202,7 +229,9 @@ async function generateReportSummaries(report, opts = {}) {
     : '';
   const SYS = `You are VETT's research analyst. Write plain-language summaries grounded ENTIRELY in the figures provided — never invent, estimate, or round differently. ${posture} No hedging, no apologies, no "summary unavailable" language. Lead with the finding. Return ONLY valid JSON.`;
 
-  // 2a) Executive summary
+  // 2a) Executive summary + KPI tiles + recommendations (one grounded call).
+  let kpis = deterministicKpis(report);
+  let recommendations = deterministicRecommendations(report);
   try {
     const ctx = {
       title: report.header && report.header.title,
@@ -212,7 +241,7 @@ async function generateReportSummaries(report, opts = {}) {
       key_findings: report.key_findings,
       sample,
     };
-    const budget = Math.min(1200, Math.max(500, survey.length * 60));
+    const budget = Math.min(2200, Math.max(900, survey.length * 90));
     const res = await callClaude({
       callType: 'report_summary',
       missionId: opts.missionId || null,
@@ -220,13 +249,37 @@ async function generateReportSummaries(report, opts = {}) {
       systemPrompt: SYS,
       maxTokens: budget,
       messages: [{ role: 'user', content:
-        `Write a 3-4 sentence executive summary of this research report, grounded only in these figures. State the single most important takeaway first, then 1-2 supporting numbers, then one forward-looking recommendation. Return JSON: {"executive_summary":"..."}\n\n${JSON.stringify(ctx)}` }],
+        `From this research report (use ONLY the figures provided — never invent or re-round) produce:\n` +
+        `1) "executive_summary": 3-4 sentences, the single most important takeaway first, then 1-2 supporting numbers, then one forward-looking line.\n` +
+        `2) "kpis": the 3 most decision-relevant metrics as [{"label","value","trend"}] where trend is "positive"|"neutral"|"negative" and value is copied verbatim from the figures.\n` +
+        `3) "recommendations": 3 specific, action-oriented next steps, each grounded in a figure above.\n` +
+        `Return ONLY JSON {"executive_summary":"...","kpis":[...],"recommendations":["...","...","..."]}.\n\n${JSON.stringify(ctx)}` }],
     });
-    const obj = extractJSONObject(res.text);
-    const txt = obj && typeof obj.executive_summary === 'string' ? clampSentence(obj.executive_summary) : '';
+    const obj = extractJSONObject(res.text) || {};
+    const txt = typeof obj.executive_summary === 'string' ? clampSentence(obj.executive_summary) : '';
     if (txt && txt.length > 40 && !/unavailable|apolog|as an ai/i.test(txt)) { execSummary = txt; execSource = 'ai'; }
+    // KPIs — keep AI's only if shaped right (label+value); else deterministic floor.
+    if (Array.isArray(obj.kpis)) {
+      const cleaned = obj.kpis
+        .filter((k) => k && k.label && k.value != null && String(k.value).trim())
+        .slice(0, 4)
+        .map((k) => ({
+          label: clampSentence(k.label),
+          value: clampSentence(String(k.value)),
+          trend: ['positive', 'negative', 'neutral'].includes(k.trend) ? k.trend : 'neutral',
+        }));
+      if (cleaned.length) kpis = cleaned;
+    }
+    // Recommendations — keep AI's only if non-empty, non-hedged sentences.
+    if (Array.isArray(obj.recommendations)) {
+      const cleaned = obj.recommendations
+        .map((r) => clampSentence(typeof r === 'string' ? r : (r && (r.text || r.recommendation)) || ''))
+        .filter((r) => r.length > 20 && !/unavailable|apolog|as an ai/i.test(r))
+        .slice(0, 4);
+      if (cleaned.length) recommendations = cleaned;
+    }
   } catch (e) {
-    logger.warn('reportSummaries: exec summary LLM failed; using computed', { missionId: opts.missionId, err: e.message });
+    logger.warn('reportSummaries: exec/kpi/rec LLM failed; using computed', { missionId: opts.missionId, err: e.message });
   }
 
   // 2b) Per-question insights (batched, one call)
@@ -263,12 +316,14 @@ async function generateReportSummaries(report, opts = {}) {
     source: perQSource.get(q.id),
   }));
 
-  return { executive_summary: execSummary, exec_summary_source: execSource, per_question_insights };
+  return { executive_summary: execSummary, exec_summary_source: execSource, per_question_insights, kpis, recommendations };
 }
 
 module.exports = {
   generateReportSummaries,
   deterministicQuestionInsight,
   deterministicExecSummary,
+  deterministicKpis,
+  deterministicRecommendations,
   referencesData,
 };

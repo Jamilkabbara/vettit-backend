@@ -358,6 +358,11 @@ function buildCanonicalReport(mission, analysis, responses) {
       ? { methodology: analysis.methodology || mission.goal_type, data: analysis }
       : null,
     key_findings: Array.isArray(insights.kpis) ? insights.kpis : [],
+    // B1 — recommendations in the canonical report so web + exports + chat all
+    // render the SAME list (was rendered per-page from insights only).
+    recommendations: Array.isArray(insights.recommendations)
+      ? insights.recommendations.filter((r) => typeof r === 'string' && r.trim())
+      : [],
     exec_summary: execSummary || null,
     survey,
     data_quality_notes: buildDataQualityNotes(survey, rows),

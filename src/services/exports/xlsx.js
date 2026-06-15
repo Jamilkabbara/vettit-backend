@@ -173,6 +173,23 @@ function buildXLSX(pack, res) {
         row += 1;
       }
     });
+    row += 1;
+  }
+
+  // Recommendations (B1)
+  if (Array.isArray(model.recommendations) && model.recommendations.length > 0) {
+    rep.getCell(`A${row}`).value = 'RECOMMENDATIONS';
+    rep.getCell(`A${row}`).font = { name: 'Calibri', size: 11, bold: true, color: { argb: argb(BRAND.lime) } };
+    row += 1;
+    model.recommendations.forEach((r, i) => {
+      rep.mergeCells(`A${row}:F${row}`);
+      const c = rep.getCell(`A${row}`);
+      c.value = `${i + 1}. ${r}`;
+      c.font = { name: 'Calibri', size: 10 };
+      c.alignment = { wrapText: true, vertical: 'top' };
+      row += 1;
+    });
+    row += 1;
   }
 
   // ── SHEET 2: FULL SURVEY (every question, correct renderer + scale) ──
