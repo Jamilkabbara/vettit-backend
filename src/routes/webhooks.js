@@ -244,13 +244,21 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
           // Stripe-side promo redeemed at Checkout). These were dropped in the
           // Bug 23.0e v2 migration when /create-intent went away; restoring
           // them here keeps the canonical place at PI succeed.
+          // A3 — payment method type (e.g. "card"; Apple/Google Pay surface as
+          // card wallets). Best-available from the PI without an extra Stripe
+          // call: the charge's payment_method_details.type, else the PI's
+          // payment_method_types[0]. Was never persisted → dashboard showed null.
+          const pmType = pi.charges?.data?.[0]?.payment_method_details?.type
+            || (Array.isArray(pi.payment_method_types) ? pi.payment_method_types[0] : null)
+            || null;
           await updateMission(supabase, missionId, {
             status: 'paid',
             paid_at: new Date().toISOString(),
             latest_payment_intent_id: pi.id,
             paid_amount_cents: Number.isFinite(pi.amount_received) ? pi.amount_received : null,
+            payment_method: pmType,
           }, { caller: 'webhook:payment_intent.succeeded' });
-          logger.info('Payment confirmed via webhook → triggering mission run', { missionId, amount: pi.amount });
+          logger.info('Payment confirmed via webhook → triggering mission run', { missionId, amount: pi.amount, payment_method: pmType });
 
           // Funnel event: mission_paid (server-side, authoritative)
           const { data: paidMission } = await supabase
@@ -262,6 +270,21 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
               mission_id: missionId,
               metadata:   { amount_cents: pi.amount, source: 'stripe_webhook' },
             }).then(() => {}).catch(() => {});
+
+            // A3 — persist the Stripe customer on the payer's profile. Idempotent:
+            // only writes when the PI carries a customer and the profile doesn't
+            // already hold it, so webhook retries/replays never error or churn.
+            const custId = typeof pi.customer === 'string' ? pi.customer : pi.customer?.id;
+            if (custId) {
+              supabase.from('profiles').select('stripe_customer_id').eq('id', paidMission.user_id).maybeSingle()
+                .then(({ data: prof }) => {
+                  if (prof && prof.stripe_customer_id !== custId) {
+                    return supabase.from('profiles').update({ stripe_customer_id: custId }).eq('id', paidMission.user_id);
+                  }
+                })
+                .then(() => {})
+                .catch((e) => logger.warn('A3 stripe_customer_id persist failed (non-fatal)', { err: e.message }));
+            }
           }
 
           // Trigger the synthetic-audience pipeline as a fire-and-forget background job.
