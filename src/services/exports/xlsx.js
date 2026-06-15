@@ -242,6 +242,14 @@ function buildXLSX(pack, res) {
       if (body.empty) {
         sv.addRow({ q: '', question: '', renderer: '', answer: body.empty_message, value: '', share: '' });
       } else {
+        // P2-1 — open-end themes as frequency rows (the open-end's data block),
+        // then the raw verbatims beneath.
+        if (body.has_themes) {
+          sv.addRow({ q: '', question: '', renderer: '', answer: `Themes (n=${body.n})`, value: 'count', share: 'share' });
+          body.themes.forEach((t) => {
+            sv.addRow({ q: '', question: '', renderer: '', answer: `${t.label} (${t.sentiment})`, value: t.count, share: `${t.pct}%` });
+          });
+        }
         sv.addRow({ q: '', question: '', renderer: '', answer: `Verbatims (n=${body.n})`, value: '', share: '' });
         body.items.forEach((v) => {
           sv.addRow({ q: '', question: '', renderer: '', answer: String(v), value: '', share: '' });

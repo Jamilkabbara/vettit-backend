@@ -386,6 +386,30 @@ p, li {
   border-radius: 0 4pt 4pt 0;
 }
 
+/* ─── Open-end themes (P2-1) — the open-end's visual block ─────────────────── */
+.theme-block { margin-bottom: 9pt; page-break-inside: avoid; }
+.theme-sentiment {
+  font-size: 7pt;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  padding: 1pt 5pt;
+  border-radius: 6pt;
+  margin-left: 6pt;
+  vertical-align: middle;
+}
+.theme-positive { color: #0B0C15; background: var(--lime); }
+.theme-neutral  { color: var(--text2); background: var(--bg2); border: 0.5pt solid var(--text3); }
+.theme-negative { color: #0B0C15; background: var(--red); }
+.theme-quote {
+  font-style: italic;
+  color: var(--text3);
+  font-size: 8.5pt;
+  margin: 2pt 0 0 0;
+  padding-left: 12pt;
+  line-height: 1.35;
+}
+
 /* ─── Insight callout (per question) ──────────────────────────────────────── */
 .insight-callout {
   background: var(--bg2);

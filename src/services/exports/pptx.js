@@ -190,6 +190,14 @@ function renderSurveyBody(slide, q) {
       slide.addText(body.empty_message, { ...FRAME, fontSize: 13, italic: true, color: hex(BRAND.text3), fontFace: 'Calibri' });
       return;
     }
+    // P2-1 — open-end themes render as a bar chart (the open-end's visual),
+    // sentiment in the label; falls back to verbatims when no themes.
+    if (body.has_themes) {
+      drawBars(slide, body.themes.map((t) => ({ label: `${t.label} · ${t.sentiment}`, value: t.pct, count: t.count })), {
+        ...FRAME, title: `Themes across ${body.n} open-ended responses`, showCount: true,
+      });
+      return;
+    }
     const items = [];
     body.items.slice(0, 10).forEach((v, i) => {
       if (i > 0) items.push({ text: '', options: { breakLine: true } });

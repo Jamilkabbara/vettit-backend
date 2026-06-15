@@ -477,6 +477,11 @@ async function runMission(missionId, opts = {}) {
       // real content, so a mission that already has good kpis/recs isn't wiped.
       if (Array.isArray(summaries.kpis) && summaries.kpis.length) insights.kpis = summaries.kpis;
       if (Array.isArray(summaries.recommendations) && summaries.recommendations.length) insights.recommendations = summaries.recommendations;
+      // P2-1 — open-end theme clusters, keyed by question_id, so text questions
+      // render a visual (not a verbatims punt) on every surface.
+      if (summaries.open_end_themes && Object.keys(summaries.open_end_themes).length) {
+        insights.open_end_themes = summaries.open_end_themes;
+      }
       insights.narration_failed = false;
     } catch (sumErr) {
       logger.warn('Mission run: report summaries failed (non-fatal)', { missionId, err: sumErr.message });

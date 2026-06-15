@@ -64,10 +64,24 @@ function shapeSurveyBody(q) {
 
   if (r === 'open_text_verbatims') {
     const items = Array.isArray(data.verbatims) ? data.verbatims : [];
+    // P2-1 — open-end themes (theme-frequency bars + sentiment + quotes). When
+    // present, the open-end renders as a VISUAL, not a verbatims punt; the raw
+    // verbatims still ride along (shown beneath the themes, capped).
+    const themes = (Array.isArray(data.themes) ? data.themes : [])
+      .filter((t) => t && t.label)
+      .map((t) => ({
+        label: t.label,
+        count: Number(t.count) || 0,
+        pct: t.pct != null ? Number(t.pct) : pct(Number(t.count) || 0, data.n || items.length),
+        sentiment: ['positive', 'negative', 'neutral'].includes(t.sentiment) ? t.sentiment : 'neutral',
+        quotes: Array.isArray(t.quotes) ? t.quotes.filter((q) => typeof q === 'string' && q.trim()).slice(0, 2) : [],
+      }));
     return {
       kind: 'verbatims',
-      empty: items.length === 0,
+      empty: items.length === 0 && themes.length === 0,
       empty_message: 'No open-text responses.',
+      themes,
+      has_themes: themes.length > 0,
       items,
       n: data.n || items.length,
     };
