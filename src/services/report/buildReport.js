@@ -206,7 +206,11 @@ function shapeQuestionData(q, renderer, responses, analysis) {
       const per_attribute = Object.keys(sums).map((attr) => ({
         attribute: attr, average: Math.round((sums[attr] / counts[attr]) * 100) / 100, n: counts[attr],
       }));
-      return { per_attribute, n: objAnswers.length, shape: 'matrix' };
+      // Pass 49 polish — carry the battery's true scale ceiling so renderers
+      // fill bars over the real max (not a hardcoded /5) for 1-7 / 0-10 matrices.
+      const allVals = objAnswers.flatMap((obj) => Object.values(obj).map((v) => num(v)).filter((v) => v !== null));
+      const scale_max = detectScale(q, allVals).max;
+      return { per_attribute, n: objAnswers.length, shape: 'matrix', scale_max };
     }
     return { distribution: countDistribution(answers), n_respondents: n, n, shape: 'endorsement' };
   }
