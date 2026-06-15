@@ -175,7 +175,8 @@ function shapeSurveyBody(q) {
 function buildRenderModel(report) {
   if (!report || typeof report !== 'object') {
     return { header: { title: 'Untitled', metaRows: [] }, headline: null, centerpiece: null,
-      keyFindings: [], recommendations: [], survey: [], dataQualityNotes: [], execSummary: null, disclaimer: null };
+      keyFindings: [], recommendations: [], survey: [], dataQualityNotes: [], execSummary: null, disclaimer: null,
+      finding: null, synthesis: null, screening: null, personas: [] };
   }
 
   const h = report.header || {};
@@ -236,6 +237,11 @@ function buildRenderModel(report) {
       metaRows,
     },
     execSummary: report.exec_summary || null,
+    // §3 — mockup content beats, from the one canonical source.
+    finding: report.finding || null,
+    synthesis: report.synthesis || report.exec_summary || null,
+    screening: report.screening || null,
+    personas: Array.isArray(report.personas) ? report.personas : [],
     headline,
     centerpiece,
     keyFindings,
