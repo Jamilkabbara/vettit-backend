@@ -114,7 +114,28 @@ async function runMission(missionId, opts = {}) {
   try {
     // ─── Creative Attention bypass ──────────────────────────────────────────
     if (mission.goal_type === 'creative_attention') {
-      await analyzeCreative({ mission });
+      // Resurrection track — persist the failure reason. Two PAID creative
+      // runs failed leaving mission_assets:[] with no error, so the cause was
+      // undiagnosable (a dead creative URL / unreadable image surfaces as a
+      // bare "400 invalid_request"). Capture the stage + message before the
+      // outer handler marks the mission failed.
+      try {
+        await analyzeCreative({ mission });
+      } catch (caErr) {
+        logger.error('Mission run: creative analysis failed', { missionId, err: caErr.message });
+        try {
+          const { data: existing } = await supabase
+            .from('missions').select('mission_assets').eq('id', missionId).single();
+          const prev = (existing && existing.mission_assets && !Array.isArray(existing.mission_assets))
+            ? existing.mission_assets : {};
+          await supabase.from('missions').update({
+            mission_assets: { ...prev, analysis_error: { stage: 'creative_attention', message: caErr.message, ts: new Date().toISOString() } },
+          }).eq('id', missionId);
+        } catch (persistErr) {
+          logger.warn('Mission run: failed to persist creative_attention error', { missionId, err: persistErr.message });
+        }
+        throw caErr; // outer handler marks the mission failed
+      }
       logger.info('Mission run: creative analysis complete', { missionId });
 
       // Notification — Bug 23.12 templated copy. Bug 23.50 fix: use the
