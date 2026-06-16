@@ -33,6 +33,13 @@ const { BRAND } = require('./shared');
 const { buildCanonicalReport } = require('../report/buildReport');
 const { buildRenderModel } = require('../report/reportRenderModel');
 
+// §5 — brand typography. pptxgenjs can't embed font binaries, so these are
+// face NAMES: a viewer with the brand fonts installed renders them, otherwise
+// PowerPoint falls back to a clean sans. Brand COLORS carry identity regardless.
+const FONT = 'Inter';                  // body / data / labels
+const FONT_DISPLAY = 'Manrope';        // display / big numerals
+const FONT_SERIF = 'Instrument Serif'; // the "finding voice"
+
 // pptxgenjs uses hex codes without the leading '#'
 const hex = (c) => (c || '').replace('#', '');
 
@@ -44,18 +51,18 @@ function addDarkBackground(slide) {
   });
   slide.addText('VETT  ·  vettit.ai', {
     x: 0.5, y: 7.15, w: 12.3, h: 0.3,
-    fontSize: 9, color: hex(BRAND.text3), fontFace: 'Calibri', align: 'center',
+    fontSize: 9, color: hex(BRAND.text3), fontFace: FONT, align: 'center',
   });
 }
 
 function addSectionHeader(slide, eyebrow, title) {
   slide.addText(eyebrow, {
     x: 0.5, y: 0.35, w: 12.3, h: 0.3,
-    fontSize: 10, bold: true, color: hex(BRAND.lime), fontFace: 'Calibri', charSpacing: 2,
+    fontSize: 10, bold: true, color: hex(BRAND.lime), fontFace: FONT, charSpacing: 2,
   });
   slide.addText(title, {
     x: 0.5, y: 0.65, w: 12.3, h: 0.7,
-    fontSize: 24, bold: true, color: 'FFFFFF', fontFace: 'Calibri',
+    fontSize: 24, bold: true, color: 'FFFFFF', fontFace: FONT,
     shrinkText: true, autoFit: true,
   });
   slide.addShape('rect', {
@@ -72,14 +79,14 @@ function drawBars(slide, items, opts) {
   if (title) {
     slide.addText(title, {
       x, y: cursorY, w, h: 0.3,
-      fontSize: 12, color: hex(BRAND.text1), fontFace: 'Calibri', bold: true,
+      fontSize: 12, color: hex(BRAND.text1), fontFace: FONT, bold: true,
     });
     cursorY += 0.32;
   }
   if (subtitle) {
     slide.addText(subtitle, {
       x, y: cursorY, w, h: 0.25,
-      fontSize: 10, color: hex(BRAND.text2), fontFace: 'Calibri',
+      fontSize: 10, color: hex(BRAND.text2), fontFace: FONT,
     });
     cursorY += 0.28;
   }
@@ -100,7 +107,7 @@ function drawBars(slide, items, opts) {
     const p = Math.max(0, Math.min(100, Number(it.value) || 0));
     slide.addText(String(it.label || ''), {
       x, y: rowY, w: labelW, h: rowH,
-      fontSize: 10, color: hex(BRAND.text1), fontFace: 'Calibri', valign: 'middle',
+      fontSize: 10, color: hex(BRAND.text1), fontFace: FONT, valign: 'middle',
       shrinkText: true, autoFit: true,
     });
     slide.addShape('rect', {
@@ -116,7 +123,7 @@ function drawBars(slide, items, opts) {
     const meta = showCount && it.count != null ? `${it.count} · ${p}%` : `${p}%`;
     slide.addText(meta, {
       x: trackX + trackW + 0.05, y: rowY, w: metaW, h: rowH,
-      fontSize: 10, color: hex(BRAND.text2), fontFace: 'Calibri', valign: 'middle', align: 'left',
+      fontSize: 10, color: hex(BRAND.text2), fontFace: FONT, valign: 'middle', align: 'left',
     });
   });
 }
@@ -128,12 +135,12 @@ function statCard(slide, x, y, w, h, label, value, trendColor = BRAND.lime) {
   });
   slide.addText(String(label || '').toUpperCase(), {
     x: x + 0.15, y: y + 0.1, w: w - 0.3, h: 0.5,
-    fontSize: 9, color: hex(BRAND.text3), fontFace: 'Calibri', charSpacing: 1, valign: 'top',
+    fontSize: 9, color: hex(BRAND.text3), fontFace: FONT, charSpacing: 1, valign: 'top',
     shrinkText: true,
   });
   slide.addText(String(value || '—'), {
     x: x + 0.15, y: y + 0.6, w: w - 0.3, h: h - 0.7,
-    fontSize: 24, bold: true, color: hex(trendColor), fontFace: 'Calibri',
+    fontSize: 24, bold: true, color: hex(trendColor), fontFace: FONT,
     shrinkText: true, autoFit: true,
   });
 }
@@ -166,7 +173,7 @@ function renderSurveyBody(slide, q) {
   }
   if (body.kind === 'maxdiff') {
     if (body.empty) {
-      slide.addText(body.empty_message, { ...FRAME, fontSize: 13, italic: true, color: hex(BRAND.text3), fontFace: 'Calibri' });
+      slide.addText(body.empty_message, { ...FRAME, fontSize: 13, italic: true, color: hex(BRAND.text3), fontFace: FONT });
       return;
     }
     const rows = [[
@@ -180,14 +187,14 @@ function renderSurveyBody(slide, q) {
       { text: String(r.worst), options: { color: hex(BRAND.text2), align: 'right' } },
     ]));
     slide.addTable(rows, {
-      ...FRAME, fontSize: 11, fontFace: 'Calibri', colW: [8.3, 2.0, 2.0],
+      ...FRAME, fontSize: 11, fontFace: FONT, colW: [8.3, 2.0, 2.0],
       border: { type: 'solid', color: hex(BRAND.border), pt: 0.5 },
     });
     return;
   }
   if (body.kind === 'verbatims') {
     if (body.empty) {
-      slide.addText(body.empty_message, { ...FRAME, fontSize: 13, italic: true, color: hex(BRAND.text3), fontFace: 'Calibri' });
+      slide.addText(body.empty_message, { ...FRAME, fontSize: 13, italic: true, color: hex(BRAND.text3), fontFace: FONT });
       return;
     }
     // P2-1 — open-end themes render as a bar chart (the open-end's visual),
@@ -203,12 +210,12 @@ function renderSurveyBody(slide, q) {
       if (i > 0) items.push({ text: '', options: { breakLine: true } });
       items.push({ text: `“${String(v)}”`, options: { italic: true, color: hex(BRAND.text2), fontSize: 12, bullet: { code: '25CF' }, paraSpaceAfter: 6 } });
     });
-    slide.addText(items, { ...FRAME, fontFace: 'Calibri', valign: 'top' });
+    slide.addText(items, { ...FRAME, fontFace: FONT, valign: 'top' });
     return;
   }
   // bars (choice / multi / endorsement)
   if (body.empty) {
-    slide.addText(body.empty_message, { ...FRAME, fontSize: 13, italic: true, color: hex(BRAND.text3), fontFace: 'Calibri' });
+    slide.addText(body.empty_message, { ...FRAME, fontSize: 13, italic: true, color: hex(BRAND.text3), fontFace: FONT });
     return;
   }
   drawBars(slide, body.bars.map((b) => ({ label: b.label, value: b.pct, count: b.count })), {
@@ -233,11 +240,12 @@ function buildPPTX(pack, res) {
   const cover = pptx.addSlide();
   cover.background = { color: hex(BRAND.bg) };
   cover.addShape('rect', { x: 0, y: 0, w: '100%', h: 0.1, fill: { color: hex(BRAND.lime) }, line: { color: hex(BRAND.lime) } });
-  cover.addText('VETT', { x: 0.7, y: 0.6, w: 6, h: 1.2, fontSize: 72, bold: true, color: hex(BRAND.lime), fontFace: 'Calibri' });
-  cover.addText('AI-POWERED MARKET RESEARCH', { x: 0.7, y: 1.8, w: 11, h: 0.4, fontSize: 12, color: hex(BRAND.text2), fontFace: 'Calibri', charSpacing: 2 });
-  cover.addText(model.header.title, { x: 0.7, y: 2.6, w: 12, h: 1.2, fontSize: 36, bold: true, color: 'FFFFFF', fontFace: 'Calibri', shrinkText: true });
-  if (model.header.brief) {
-    cover.addText(model.header.brief, { x: 0.7, y: 3.9, w: 12, h: 1.2, fontSize: 14, color: hex(BRAND.text2), fontFace: 'Calibri', valign: 'top' });
+  cover.addText('VETT', { x: 0.7, y: 0.55, w: 6, h: 1.0, fontSize: 60, bold: true, color: hex(BRAND.lime), fontFace: FONT_DISPLAY });
+  cover.addText('AI-POWERED MARKET RESEARCH', { x: 0.7, y: 1.65, w: 11, h: 0.4, fontSize: 12, color: hex(BRAND.text2), fontFace: FONT, charSpacing: 2 });
+  // §5 — the finding leads the cover, in the serif "finding voice".
+  cover.addText(model.finding || model.header.title, { x: 0.7, y: 2.35, w: 12, h: 2.5, fontSize: 34, color: 'FFFFFF', fontFace: FONT_SERIF, valign: 'top', shrinkText: true });
+  if (model.finding && model.header.title) {
+    cover.addText(model.header.title, { x: 0.7, y: 5.05, w: 12, h: 0.6, fontSize: 13, color: hex(BRAND.text3), fontFace: FONT, valign: 'top', shrinkText: true });
   }
   // Sample / meta strip
   const metaRuns = [];
@@ -245,15 +253,15 @@ function buildPPTX(pack, res) {
     metaRuns.push({ text: `${k}: `, options: { color: hex(BRAND.text3) } });
     metaRuns.push({ text: `${v}    `, options: { color: 'FFFFFF', bold: true } });
   });
-  if (metaRuns.length) cover.addText(metaRuns, { x: 0.7, y: 6.2, w: 12, h: 0.8, fontSize: 10, fontFace: 'Calibri', valign: 'top' });
+  if (metaRuns.length) cover.addText(metaRuns, { x: 0.7, y: 6.2, w: 12, h: 0.8, fontSize: 10, fontFace: FONT, valign: 'top' });
 
   // ── EXECUTIVE SUMMARY ─────────────────────────────────────
   const summary = pptx.addSlide();
   addDarkBackground(summary);
-  addSectionHeader(summary, '01 · EXECUTIVE SUMMARY', 'What the research says');
-  summary.addText(model.execSummary || 'Executive summary not available for this mission.', {
+  addSectionHeader(summary, '01 · VETT SYNTHESIS', 'What the research says');
+  summary.addText(model.synthesis || model.execSummary || 'Synthesis not available for this mission.', {
     x: 0.5, y: 1.65, w: 12.3, h: 5.3,
-    fontSize: 14, color: hex(BRAND.text1), fontFace: 'Calibri', paraSpaceAfter: 8, valign: 'top', autoFit: true,
+    fontSize: 16, color: hex(BRAND.text1), fontFace: FONT_SERIF, paraSpaceAfter: 8, valign: 'top', autoFit: true,
   });
 
   // ── HEADLINE METRICS ──────────────────────────────────────
@@ -271,7 +279,7 @@ function buildPPTX(pack, res) {
         items.push({ text: `${m.label}:  `, options: { fontSize: 13, color: hex(BRAND.text2), breakLine: false } });
         items.push({ text: String(m.value), options: { fontSize: 13, bold: true, color: hex(BRAND.lime), paraSpaceAfter: 8 } });
       });
-      slide.addText(items, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: 'Calibri', valign: 'top' });
+      slide.addText(items, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: FONT, valign: 'top' });
     }
   }
 
@@ -289,7 +297,7 @@ function buildPPTX(pack, res) {
       })));
     });
     slide.addTable(rows, {
-      x: 0.5, y: 1.65, w: 12.3, fontSize: 11, fontFace: 'Calibri',
+      x: 0.5, y: 1.65, w: 12.3, fontSize: 11, fontFace: FONT,
       border: { type: 'solid', color: hex(BRAND.border), pt: 0.5 }, valign: 'middle',
     });
   }
@@ -316,7 +324,7 @@ function buildPPTX(pack, res) {
           items.push({ text: f.body, options: { fontSize: 11, color: hex(BRAND.text2), paraSpaceAfter: 10 } });
         }
       });
-      slide.addText(items, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: 'Calibri', valign: 'top' });
+      slide.addText(items, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: FONT, valign: 'top' });
     }
   }
 
@@ -330,23 +338,37 @@ function buildPPTX(pack, res) {
       if (i > 0) items.push({ text: '', options: { breakLine: true } });
       items.push({ text: r, options: { fontSize: 13, color: 'FFFFFF', bullet: { code: '25CF', indent: 18 }, paraSpaceAfter: 12 } });
     });
-    slide.addText(items, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: 'Calibri', valign: 'top' });
+    slide.addText(items, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: FONT, valign: 'top' });
+  }
+
+  // ── PERSONAS (§5 — who responded, n-gated) ──
+  if (Array.isArray(model.personas) && model.personas.length > 0) {
+    const slide = pptx.addSlide();
+    addDarkBackground(slide);
+    addSectionHeader(slide, '· WHO RESPONDED', 'The personas behind the numbers');
+    const items = [];
+    model.personas.forEach((p, i) => {
+      if (i > 0) items.push({ text: '', options: { breakLine: true } });
+      const head = p.role ? `${p.name} · ${p.role}` : p.name;
+      items.push({ text: head + (p.share ? `   (${p.share})` : ''), options: { fontSize: 14, bold: true, color: 'FFFFFF', bullet: { code: '25CF' } } });
+      if (p.description) {
+        items.push({ text: '', options: { breakLine: true } });
+        items.push({ text: p.description, options: { fontSize: 11, color: hex(BRAND.text2), paraSpaceAfter: 10 } });
+      }
+    });
+    slide.addText(items, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: FONT, valign: 'top' });
   }
 
   // ── THE FULL SURVEY (one slide per question, correct renderer) ──
   model.survey.forEach((q, qi) => {
     const slide = pptx.addSlide();
     addDarkBackground(slide);
-    const eyebrow = `${String(qi + 5).padStart(2, '0')} · QUESTION ${q.number}  ·  ${q.renderer_label.toUpperCase()}${q.isScreening ? '  · SCREENER' : ''}`;
-    addSectionHeader(slide, eyebrow, q.text);
+    // §5 — insight LEADS: the plain-language read is the slide headline; the
+    // question text rides in the eyebrow, the chart is the body.
+    const tag = `${String(qi + 5).padStart(2, '0')} · Q${q.number} · ${q.renderer_label.toUpperCase()}${q.isScreening ? ' · SCREENER' : ''}`;
+    const eyebrow = q.insight ? `${tag}  —  ${q.text}` : tag;
+    addSectionHeader(slide, eyebrow, q.insight || q.text);
     renderSurveyBody(slide, q);
-    // Pass 49 — per-question "what this means" footer (same canonical insight).
-    if (q.insight) {
-      slide.addText([
-        { text: 'WHAT THIS MEANS   ', options: { bold: true, color: hex(BRAND.lime), fontSize: 9 } },
-        { text: q.insight, options: { color: hex(BRAND.text2), fontSize: 11, italic: true } },
-      ], { x: 0.5, y: 6.95, w: 12.3, h: 0.5, fontFace: 'Calibri', valign: 'top' });
-    }
   });
 
   // ── DATA QUALITY NOTES (canonical cleaned notes) ──
@@ -363,7 +385,7 @@ function buildPPTX(pack, res) {
       items.push({ text: `Q${n.question_number}: `, options: { fontSize: 13, bold: true, color: hex(BRAND.lime) } });
       items.push({ text: n.note, options: { fontSize: 12, color: hex(BRAND.text2), paraSpaceAfter: 8 } });
     });
-    slide.addText(items, { x: 0.5, y: 1.6, w: 12.3, h: 5, fontFace: 'Calibri', valign: 'top' });
+    slide.addText(items, { x: 0.5, y: 1.6, w: 12.3, h: 5, fontFace: FONT, valign: 'top' });
   }
 
   // ── METHODOLOGY (disclaimer) ──
@@ -372,7 +394,7 @@ function buildPPTX(pack, res) {
     addDarkBackground(slide);
     addSectionHeader(slide, '· METHODOLOGY', 'How to read this report');
     slide.addText(model.disclaimer, {
-      x: 0.5, y: 1.65, w: 12.3, h: 5, fontSize: 13, color: hex(BRAND.text2), fontFace: 'Calibri', valign: 'top', autoFit: true,
+      x: 0.5, y: 1.65, w: 12.3, h: 5, fontSize: 13, color: hex(BRAND.text2), fontFace: FONT, valign: 'top', autoFit: true,
     });
   }
 
