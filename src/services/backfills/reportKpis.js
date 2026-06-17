@@ -35,8 +35,9 @@ function computeReportKpis(mission, responses) {
  * Returns true if kpis were written, false if skipped.
  */
 async function backfillOne(supabase, mission) {
-  // Idempotent: never overwrite KPIs that already exist.
-  if (Array.isArray(mission.insights?.kpis) && mission.insights.kpis.length) return false;
+  const hasKpis = Array.isArray(mission.insights?.kpis) && mission.insights.kpis.length > 0;
+  const existingRecs = Array.isArray(mission.insights?.recommendations)
+    ? mission.insights.recommendations.filter((r) => typeof r === 'string' && r.trim()) : [];
 
   const { data: responses, error } = await supabase
     .from('mission_responses')
@@ -49,13 +50,17 @@ async function backfillOne(supabase, mission) {
   if (!responses || responses.length === 0) return false;
 
   const { kpis, recommendations } = computeReportKpis(mission, responses);
-  if (!Array.isArray(kpis) || kpis.length === 0) {
-    // No headline metric (e.g. a competitor study with no derivable focal) →
-    // do NOT write an empty array; leave it untouched so it isn't masked.
-    return false;
-  }
 
-  const newInsights = { ...(mission.insights || {}), kpis, recommendations };
+  const patch = {};
+  // KPIs: fill ONLY when missing — never overwrite an existing good set.
+  if (!hasKpis && Array.isArray(kpis) && kpis.length > 0) patch.kpis = kpis;
+  // Recommendations: restore a fuller grounded set ONLY when the stored set is
+  // thinner than the computed floor — never shrink a richer (e.g. LLM) set.
+  // Repairs the earlier regression where a 1-line floor clobbered richer recs.
+  if (Array.isArray(recommendations) && recommendations.length > existingRecs.length) patch.recommendations = recommendations;
+
+  if (Object.keys(patch).length === 0) return false; // nothing to repair
+  const newInsights = { ...(mission.insights || {}), ...patch };
   const { error: updErr } = await supabase.from('missions').update({ insights: newInsights }).eq('id', mission.id);
   if (updErr) {
     logger.warn('[backfill:report-kpis] update failed', { missionId: mission.id, err: updErr.message });
@@ -81,7 +86,13 @@ async function runReportKpisBackfill(supabase, opts = {}) {
     logger.error('[backfill:report-kpis] fetch missions failed', { err: error.message });
     return { candidates: 0, processed: 0, succeeded: 0 };
   }
-  const needs = (missions || []).filter((m) => m.insights && !(Array.isArray(m.insights.kpis) && m.insights.kpis.length));
+  const needs = (missions || []).filter((m) => {
+    if (!m.insights) return false;
+    const hasKpis = Array.isArray(m.insights.kpis) && m.insights.kpis.length > 0;
+    const recs = Array.isArray(m.insights.recommendations)
+      ? m.insights.recommendations.filter((r) => typeof r === 'string' && r.trim()) : [];
+    return !hasKpis || recs.length < 3; // missing KPIs OR thin recs (clobber repair)
+  });
   let processed = 0;
   let succeeded = 0;
   for (const m of needs) {

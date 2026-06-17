@@ -344,8 +344,16 @@ function buildCanonicalReport(mission, analysis, responses) {
   // Pass 48 — drop the Pass-47 hedge tail ("A fuller written narrative was
   // unavailable…") from any computed-fallback summary; surfaces show a
   // clean computed summary with no apology.
+  // §A1 — collapse space-before-punctuation (" ," → "," / " ." → ".") and runs
+  // of spaces on every rendered string, at the ONE canonical layer so web + PDF
+  // + PPTX + XLSX are all clean. (Synthetic-respondent / LLM prose carried a
+  // stray space before commas — visible across the live PDF.)
+  const cleanText = (s) => (typeof s === 'string'
+    ? s.replace(/\s+([,.;:!?])/g, '$1').replace(/[ \t]{2,}/g, ' ').trim()
+    : s);
+
   let execSummary = typeof insights.executive_summary === 'string' ? insights.executive_summary : '';
-  execSummary = execSummary.replace(/\s*A fuller written narrative was unavailable for this run[.;]?.*$/i, '').trim();
+  execSummary = cleanText(execSummary.replace(/\s*A fuller written narrative was unavailable for this run[.;]?.*$/i, '')) || '';
 
   const distinctPersonas = new Set(rows.map((r) => r.persona_id).filter(Boolean)).size;
 
@@ -356,9 +364,20 @@ function buildCanonicalReport(mission, analysis, responses) {
     const m = String(s || '').trim().match(/^[\s\S]*?[.!?](?=\s|$)/);
     return (m ? m[0] : String(s || '')).trim();
   };
-  const finding = execSummary
+  const finding = cleanText(execSummary
     ? firstSentence(execSummary)
-    : (headlines.length ? `${headlines[0].label}: ${headlines[0].value}` : null);
+    : (headlines.length ? `${headlines[0].label}: ${headlines[0].value}` : null));
+
+  // §A1 — clean every prose surface on the survey (insight + open-end themes +
+  // verbatims) so the punctuation fix reaches per-question text too.
+  for (const q of survey) {
+    if (q.insight) q.insight = cleanText(q.insight);
+    const d = q.data || {};
+    if (Array.isArray(d.themes)) {
+      d.themes = d.themes.map((t) => ({ ...t, label: cleanText(t.label), quotes: Array.isArray(t.quotes) ? t.quotes.map(cleanText) : t.quotes }));
+    }
+    if (Array.isArray(d.verbatims)) d.verbatims = d.verbatims.map(cleanText);
+  }
 
   // §3 — screener funnel data. Screened-out respondents are NOT persisted, so we
   // never fabricate a screened-out count; we surface the qualified denominator
@@ -397,7 +416,10 @@ function buildCanonicalReport(mission, analysis, responses) {
     // B1 — recommendations in the canonical report so web + exports + chat all
     // render the SAME list (was rendered per-page from insights only).
     recommendations: Array.isArray(insights.recommendations)
-      ? insights.recommendations.filter((r) => typeof r === 'string' && r.trim())
+      ? insights.recommendations
+        .map((r) => (typeof r === 'string' ? r : (r && (r.text || r.recommendation || r.body || r.title)) || ''))
+        .map(cleanText)
+        .filter((r) => r && r.trim())
       : [],
     // §3 — the hero finding (one-liner) + synthesis (the editorial paragraph the
     // mockup leads with). synthesis is the exec summary; web/exports render it as

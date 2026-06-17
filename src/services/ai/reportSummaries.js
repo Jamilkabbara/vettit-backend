@@ -141,19 +141,36 @@ function deterministicKpis(report) {
     .map((m) => ({ label: String(m.label), value: String(m.value), trend: 'neutral' }));
 }
 
-/** Deterministic, grounded recommendation floor (never empty, never hedged). */
+/** Deterministic, grounded recommendation floor (never empty, never hedged).
+ *  Builds a fuller set (up to 5) so every methodology carries a real list, not
+ *  a single line — each rec is tied to an actual figure (headline action, the
+ *  next strongest metrics, the dominant open-end theme, the honest small-n
+ *  caveat). LLM enrichment still replaces these when available. */
 function deterministicRecommendations(report) {
   const recs = [];
   const s = report.header && report.header.sample;
   const h = report.headline;
+  const all = (h && Array.isArray(h.all)) ? h.all : [];
   if (h && h.metric && h.value) {
     recs.push(`Act on the headline finding (${h.metric}: ${h.value}) and review the full survey below for the supporting detail behind it.`);
+  }
+  // One grounded action per additional top metric (the headline is already used).
+  for (const m of all.slice(1, 5)) {
+    if (m && m.label && m.value != null && String(m.value).trim()) {
+      recs.push(`Weigh ${m.label} (${m.value}) in the decision — it is among the strongest signals in this study.`);
+    }
+  }
+  // The dominant open-end theme is a real next-step driver, in respondents' words.
+  const openQ = (report.survey || []).find((q) => q && q.renderer === 'open_text_verbatims' && q.data && Array.isArray(q.data.themes) && q.data.themes.length);
+  if (openQ) {
+    const t = openQ.data.themes[0];
+    recs.push(`Address the dominant open-ended theme — "${t.label}" — directly in the next iteration.`);
   }
   if (s && s.posture === 'directional' && s.n != null) {
     recs.push(`Validate with a larger sample before committing — at n=${s.n} these are directional signals, not a verdict.`);
   }
   if (!recs.length) recs.push('Review the full survey and open-text verbatims to prioritise next steps.');
-  return recs.slice(0, 3);
+  return recs.slice(0, 5);
 }
 
 // ── LLM enrichment ──────────────────────────────────────────────────────────
