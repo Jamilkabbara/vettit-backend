@@ -95,6 +95,15 @@ function buildXLSX(pack, res) {
     f.alignment = { vertical: 'top', wrapText: true };
     row += 3;
   }
+  // §2.4 — directional banner: never let a small-n number read as authoritative.
+  if (model.gate && model.gate.posture === 'directional' && model.gate.note) {
+    rep.mergeCells(`A${row}:F${row + 1}`);
+    const g = rep.getCell(`A${row}`);
+    g.value = `⚠ DIRECTIONAL — ${model.gate.note}${model.gate.n ? ` (n=${model.gate.n})` : ''}`;
+    g.font = { name: 'Calibri', size: 10, bold: true, color: { argb: argb(BRAND.amber) } };
+    g.alignment = { vertical: 'top', wrapText: true };
+    row += 3;
+  }
   if (model.header.brief) {
     rep.mergeCells(`A${row}:F${row + 2}`);
     const briefCell = rep.getCell(`A${row}`);
