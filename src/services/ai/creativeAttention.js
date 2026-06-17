@@ -81,6 +81,18 @@ function detectImageMime(buffer) {
   throw new Error('Unsupported image format. Anthropic Vision accepts JPG, PNG, WebP, GIF.');
 }
 
+// §3.1 — Anthropic Vision rejects a base64 image larger than 5MB with an opaque
+// 400 invalid_request_error. base64 inflates bytes ~4/3, so the raw ceiling is
+// ~3.75MB. Preflight with a clear, refundable error (runMission's catch path
+// auto-refunds per Bug 23.80) instead of letting the 400 fail the paid run.
+const MAX_VISION_IMAGE_BYTES = Math.floor((5 * 1024 * 1024 * 3) / 4); // ~3.75MB raw
+function assertImageWithinVisionLimits(buffer) {
+  if (buffer && buffer.length > MAX_VISION_IMAGE_BYTES) {
+    const mb = (buffer.length / 1024 / 1024).toFixed(1);
+    throw new Error(`Creative image is too large (${mb}MB). Anthropic Vision accepts images up to ~5MB — please upload a smaller or compressed image.`);
+  }
+}
+
 async function extractVideoFrames(buffer, { intervalSec = 1, maxFrames = 30 } = {}) {
   const ffmpeg     = require('fluent-ffmpeg');
   const { path: ffmpegPath } = require('@ffmpeg-installer/ffmpeg');
@@ -517,6 +529,7 @@ async function analyzeCreative({ mission }) {
     // can lie; buffer header doesn't). Throws on unsupported format so
     // runMission's catch block can auto-refund per Bug 23.80.
     frameMediaType = detectImageMime(buffer);
+    assertImageWithinVisionLimits(buffer); // §3.1 — clear, refundable error vs opaque 400
     frames = [{ base64: buffer.toString('base64'), timestamp: 0 }];
   }
 
@@ -580,4 +593,4 @@ async function analyzeCreative({ mission }) {
   return { frameAnalyses, summary };
 }
 
-module.exports = { analyzeCreative };
+module.exports = { analyzeCreative, detectImageMime, assertImageWithinVisionLimits };
