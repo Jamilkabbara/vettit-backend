@@ -497,3 +497,34 @@ p, li {
   color: var(--text3);
   font-style: italic;
 }
+
+/* ─── §5 — finding hero, synthesis, personas, numbered recs (mirror the web) ── */
+.finding-hero { padding-bottom: 8pt; }
+.finding-text {
+  font-family: 'Instrument Serif', Georgia, serif;
+  font-weight: 400;
+  font-size: 30pt;
+  line-height: 1.08;
+  letter-spacing: -0.01em;
+  color: var(--text1);
+  margin: 6pt 0 0 0;
+  max-width: 22ch;
+}
+.synth-text {
+  font-family: 'Instrument Serif', Georgia, serif;
+  font-size: 15pt;
+  line-height: 1.42;
+  color: #D9DAE3;
+}
+.persona-row {
+  padding: 9pt 0;
+  border-bottom: 0.5pt solid var(--border);
+  page-break-inside: avoid;
+}
+.persona-name { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 11pt; color: var(--text1); }
+.persona-role { color: var(--text3); font-weight: 400; }
+.persona-share { color: var(--lime); font-weight: 400; }
+.persona-desc { font-size: 10pt; color: var(--text2); line-height: 1.5; margin: 3pt 0 0 0; }
+.rec-row { display: flex; gap: 12pt; align-items: baseline; padding: 8pt 0; border-bottom: 0.5pt solid var(--border); page-break-inside: avoid; }
+.rec-row:last-child { border-bottom: none; }
+.rec-ix { font-family: 'Instrument Serif', Georgia, serif; font-size: 20pt; color: var(--lime); line-height: 1; flex: none; width: 22pt; }

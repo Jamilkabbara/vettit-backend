@@ -86,6 +86,15 @@ function buildXLSX(pack, res) {
   titleCell.alignment = { vertical: 'middle', wrapText: true };
 
   let row = 5;
+  // §5 — the finding leads the summary sheet (the one-line takeaway).
+  if (model.finding) {
+    rep.mergeCells(`A${row}:F${row + 1}`);
+    const f = rep.getCell(`A${row}`);
+    f.value = model.finding;
+    f.font = { name: 'Calibri', size: 13, bold: true, color: { argb: argb(BRAND.lime) } };
+    f.alignment = { vertical: 'top', wrapText: true };
+    row += 3;
+  }
   if (model.header.brief) {
     rep.mergeCells(`A${row}:F${row + 2}`);
     const briefCell = rep.getCell(`A${row}`);
@@ -105,13 +114,13 @@ function buildXLSX(pack, res) {
   });
   row += 1;
 
-  // Executive summary (STEP 3 — canonical exec_summary; no "fuller narrative" hedge)
-  rep.getCell(`A${row}`).value = 'EXECUTIVE SUMMARY';
+  // VETT Synthesis (canonical synthesis/exec_summary; no "fuller narrative" hedge)
+  rep.getCell(`A${row}`).value = 'VETT SYNTHESIS';
   rep.getCell(`A${row}`).font = { name: 'Calibri', size: 11, bold: true, color: { argb: argb(BRAND.lime) } };
   row += 1;
   rep.mergeCells(`A${row}:F${row + 4}`);
   const es = rep.getCell(`A${row}`);
-  es.value = model.execSummary || 'Executive summary not available for this mission.';
+  es.value = model.synthesis || model.execSummary || 'Synthesis not available for this mission.';
   es.font = { name: 'Calibri', size: 11 };
   es.alignment = { vertical: 'top', wrapText: true };
   row += 6;
@@ -414,6 +423,24 @@ function buildXLSX(pack, res) {
     dis.value = model.disclaimer;
     dis.font = { name: 'Calibri', size: 10, color: { argb: argb(BRAND.text3) }, italic: true };
     dis.alignment = { vertical: 'top', wrapText: true };
+  }
+
+  // ── SHEET: PERSONAS (§5 — who responded, n-gated) ──
+  if (Array.isArray(model.personas) && model.personas.length > 0) {
+    const ps = wb.addWorksheet('Personas', { views: [{ showGridLines: false }] });
+    ps.columns = [{ width: 28 }, { width: 26 }, { width: 14 }, { width: 60 }];
+    const ph = ps.getRow(1);
+    ['Persona', 'Role', 'Share', 'Description'].forEach((h, i) => { ph.getCell(i + 1).value = h; styleHeader(ph.getCell(i + 1)); });
+    ps.views = [{ state: 'frozen', ySplit: 1 }];
+    model.personas.forEach((p, i) => {
+      const r = ps.getRow(i + 2);
+      r.getCell(1).value = p.name; r.getCell(1).font = { name: 'Calibri', size: 11, bold: true };
+      r.getCell(2).value = p.role || '';
+      r.getCell(3).value = p.share != null ? String(p.share) : '';
+      r.getCell(4).value = p.description || '';
+      r.getCell(4).alignment = { wrapText: true, vertical: 'top' };
+      if (i % 2 === 0) [1, 2, 3, 4].forEach((c) => { r.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BAND } }; });
+    });
   }
 
   // Stream to response

@@ -9,15 +9,25 @@
      `report` is the buildRenderModel() output. The cover (title/brief/sample)
      is rendered by _base.hbs above this partial. --}}
 
-{{!-- ─── 01 · EXECUTIVE SUMMARY ────────────────────────────────── --}}
+{{!-- ─── 00 · THE FINDING (hero, serif) ───────────────────────────── --}}
+{{#if report.finding}}
+<section class="page finding-hero">
+  <div class="section-eyebrow">The finding</div>
+  <h1 class="finding-text">{{report.finding}}</h1>
+</section>
+{{/if}}
+
+{{!-- ─── 01 · VETT SYNTHESIS ───────────────────────────────────── --}}
 <section class="page">
-  <div class="section-eyebrow">01 · Executive Summary</div>
+  <div class="section-eyebrow">01 · VETT Synthesis</div>
   <div class="section-divider"></div>
-  {{#if report.execSummary}}
-  <p class="lede">{{report.execSummary}}</p>
+  {{#if report.synthesis}}
+  <p class="lede synth-text">{{report.synthesis}}</p>
+  {{else}}{{#if report.execSummary}}
+  <p class="lede synth-text">{{report.execSummary}}</p>
   {{else}}
-  <p class="empty">Executive summary not available for this mission.</p>
-  {{/if}}
+  <p class="empty">Synthesis not available for this mission.</p>
+  {{/if}}{{/if}}
 
   {{#if hasHeadline}}
   <div class="section-eyebrow trailing-block">· Headline Metrics</div>
@@ -75,13 +85,28 @@
 </section>
 {{/if}}
 
+{{!-- ─── PERSONAS (§5 — who responded, n-gated) ───────────────────── --}}
+{{#if report.personas.length}}
+<section class="page">
+  <div class="section-eyebrow">· Who responded</div>
+  <div class="section-divider"></div>
+  {{#each report.personas}}
+  <div class="persona-row">
+    <div class="persona-name">{{this.name}}{{#if this.role}} <span class="persona-role">· {{this.role}}</span>{{/if}}{{#if this.share}} <span class="persona-share">{{this.share}}</span>{{/if}}</div>
+    {{#if this.description}}<p class="persona-desc">{{this.description}}</p>{{/if}}
+  </div>
+  {{/each}}
+</section>
+{{/if}}
+
 {{!-- ─── RECOMMENDATIONS (B1 — grounded action list) ──────────────── --}}
 {{#if report.recommendations.length}}
 <section class="page">
   <div class="section-eyebrow">· Recommendations</div>
   <div class="section-divider"></div>
   {{#each report.recommendations}}
-  <div class="insight-callout">
+  <div class="rec-row">
+    <div class="rec-ix">{{add @index 1}}</div>
     <div style="font-size:10pt; color: var(--text1); line-height:1.55;">{{this}}</div>
   </div>
   {{/each}}
