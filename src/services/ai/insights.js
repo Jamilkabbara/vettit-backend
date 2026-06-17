@@ -200,6 +200,22 @@ function buildComputedSummary(analysis, mission) {
         if (analysis.winback?.winnable_pct != null) parts.push(`${analysis.winback.winnable_pct}% appear winnable.`);
         break;
       }
+      case 'audience_profiling': {
+        if (analysis.posture === 'segmented' && Array.isArray(analysis.segments)) {
+          const primary = analysis.segments.find((s) => s.is_primary) || analysis.segments[0];
+          parts.push(`${analysis.segment_count} distinct segments emerged.`);
+          if (primary) parts.push(`The primary target is "${primary.name}" (${primary.size_pct}% of the audience).`);
+        } else {
+          parts.push('The sample was too small to segment reliably; an aggregate profile is reported.');
+        }
+        break;
+      }
+      case 'market_entry': {
+        const m = (analysis.markets || [])[0];
+        if (m) parts.push(`${m.market} shows the strongest demand (index ${m.demand_index}/100, ${m.purchase_intent_pct}% intent — ${String(m.signal || '').replace('_', '-')}).`);
+        if (analysis.top_barrier) parts.push(`The top adoption barrier is "${analysis.top_barrier}".`);
+        break;
+      }
       default:
         break;
     }
