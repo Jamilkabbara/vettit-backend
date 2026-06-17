@@ -51,12 +51,13 @@ ${WRITING_STYLE}`,
 
   dashboard: `You are VETT's Dashboard Copilot. You help the user understand their research portfolio:
 what they've run, what's working, what to run next. Be tactical and strategic.
-Never fabricate mission IDs, titles or stats, only reference what's in the supplied context.
+The context provides "stats" (AUTHORITATIVE portfolio totals from a live count of ALL the user's missions) and "recent_missions" (only the 20 most recent, for detail). For ANY count — total missions, how many completed, drafts — cite stats.* EXACTLY. NEVER count the recent_missions array; it is a recent slice, not the total, and counting it will undercount.
+Never fabricate mission IDs, titles or stats; only reference what's in the supplied context.
 ${WRITING_STYLE}`,
 
-  setup: `You are VETT's Setup Advisor. You help the user design a great research mission BEFORE they launch.
-Coach on: sharpening the brief, writing unbiased questions, picking the right audience size, choosing targeting.
-Be opinionated. Push back when the user's plan is weak. Offer concrete edits.
+  setup: `You are VETT's Setup Advisor on the mission SETUP page. You help the user design and configure the study they are creating RIGHT NOW. Do NOT summarise their portfolio or past missions — that is the dashboard's job, not yours.
+The context provides "current_setup" (the LIVE on-screen form: goal_type / research type, brief, market(s), respondent count + tier, the exposed/control split for lift studies, and channels for brand_lift) and "draft" (the saved draft, if any).
+Answer about THIS page: how to pick the right research type for the user's goal, sharpen the brief, write unbiased questions, choose the market and audience size/tier (and the exposed/control split for brand_lift or creative-attention lift mode), pick channels (brand_lift), and launch. Ground every suggestion in current_setup. Be opinionated; offer concrete edits. If current_setup is empty, help them choose a research type and write a first brief.
 ${WRITING_STYLE}`,
 };
 
@@ -181,8 +182,27 @@ async function buildDashboardContext(userId) {
     .order('created_at', { ascending: false })
     .limit(20);
 
+  // §E2 — AUTHORITATIVE portfolio counts from real count queries (the
+  // recent_missions list is capped at 20, so counting it under-reported the
+  // total — the "18 of 52" bug). head:true → count only, no rows.
+  const countBy = async (status) => {
+    let q = supabase.from('missions').select('id', { count: 'exact', head: true }).eq('user_id', userId);
+    if (status) q = q.eq('status', status);
+    const { count } = await q;
+    return count ?? null;
+  };
+  const [total, completed, drafts, running] = await Promise.all([
+    countBy(null), countBy('completed'), countBy('draft'), countBy('processing'),
+  ]);
+
   return {
-    missions: (missions || []).map((m) => ({
+    stats: {
+      total_missions: total,
+      completed_missions: completed,
+      draft_missions: drafts,
+      running_missions: running,
+    },
+    recent_missions: (missions || []).map((m) => ({
       id: m.id,
       title: m.title,
       brief: m.brief,
@@ -195,28 +215,34 @@ async function buildDashboardContext(userId) {
   };
 }
 
-async function buildSetupContext(missionId, userId) {
-  if (!missionId) return { draft: null };
-  const { data: mission } = await supabase
-    .from('missions').select('*')
-    .eq('id', missionId).eq('user_id', userId).single();
-  if (!mission) return { draft: null };
-  return {
-    draft: {
-      title: mission.title,
-      brief: mission.brief || mission.mission_statement,
-      goal_type: mission.goal_type,
-      respondent_count: mission.respondent_count,
-      targeting: mission.targeting,
-      questions: mission.questions,
-    },
-  };
+async function buildSetupContext(missionId, userId, pageState) {
+  // §E1 — the LIVE on-screen setup state (goal_type + form values) the user is
+  // editing right now; present even before a draft row exists. Passed from the
+  // frontend so the advisor answers about THIS study, not the portfolio.
+  const current_setup = (pageState && typeof pageState === 'object') ? pageState : null;
+  let draft = null;
+  if (missionId) {
+    const { data: mission } = await supabase
+      .from('missions').select('*')
+      .eq('id', missionId).eq('user_id', userId).single();
+    if (mission) {
+      draft = {
+        title: mission.title,
+        brief: mission.brief || mission.mission_statement,
+        goal_type: mission.goal_type,
+        respondent_count: mission.respondent_count,
+        targeting: mission.targeting,
+        questions: mission.questions,
+      };
+    }
+  }
+  return { page: 'setup', current_setup, draft };
 }
 
-async function buildContext({ scope, userId, missionId }) {
+async function buildContext({ scope, userId, missionId, pageState }) {
   if (scope === 'results')   return buildResultsContext(missionId, userId);
   if (scope === 'dashboard') return buildDashboardContext(userId);
-  if (scope === 'setup')     return buildSetupContext(missionId, userId);
+  if (scope === 'setup')     return buildSetupContext(missionId, userId, pageState);
   return {};
 }
 
@@ -226,7 +252,7 @@ async function buildContext({ scope, userId, missionId }) {
  * Send one message; returns the full reply (non-streaming path).
  * For streaming, see `streamMessage` below.
  */
-async function sendMessage({ userId, scope, missionId = null, userMessage }) {
+async function sendMessage({ userId, scope, missionId = null, userMessage, pageState = null }) {
   if (!SCOPE_CALLTYPE[scope]) throw new Error(`Unknown chat scope: ${scope}`);
 
   const session = await getOrCreateSession({ userId, scope, missionId });
@@ -247,7 +273,7 @@ async function sendMessage({ userId, scope, missionId = null, userMessage }) {
     .order('created_at', { ascending: true })
     .limit(40);
 
-  const context = await buildContext({ scope, userId, missionId });
+  const context = await buildContext({ scope, userId, missionId, pageState });
   const contextBlock = `You have access to the following authoritative context. Treat it as ground truth.\n\n${JSON.stringify(context, null, 2)}`;
 
   const messages = [
@@ -298,7 +324,7 @@ async function sendMessage({ userId, scope, missionId = null, userMessage }) {
  * `onDelta(text)` is invoked for each chunk.
  * Returns the same shape as `sendMessage` once the stream closes.
  */
-async function streamMessage({ userId, scope, missionId = null, userMessage, onDelta }) {
+async function streamMessage({ userId, scope, missionId = null, userMessage, onDelta, pageState = null }) {
   if (!SCOPE_CALLTYPE[scope]) throw new Error(`Unknown chat scope: ${scope}`);
 
   const session = await getOrCreateSession({ userId, scope, missionId });
@@ -318,7 +344,7 @@ async function streamMessage({ userId, scope, missionId = null, userMessage, onD
     .order('created_at', { ascending: true })
     .limit(40);
 
-  const context = await buildContext({ scope, userId, missionId });
+  const context = await buildContext({ scope, userId, missionId, pageState });
   const contextBlock = `You have access to the following authoritative context. Treat it as ground truth.\n\n${JSON.stringify(context, null, 2)}`;
 
   const messages = [

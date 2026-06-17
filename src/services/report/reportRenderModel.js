@@ -283,12 +283,15 @@ function buildCenterpiece(centerpiece) {
     for (const f of analysis.funnel || []) {
       if (!f || f.lift_abs == null) continue;
       const stage = f.text || f.funnel_stage || f.question_id || 'Stage';
+      // §D2 — every KPI shows absolute lift (pp) AND relative lift (%) + sig.
+      const rel = f.lift_rel_pct != null ? `${f.lift_rel_pct >= 0 ? '+' : ''}${Math.round(f.lift_rel_pct)}%` : '—';
       if (f.type === 'proportion') {
         rows.push({
           stage,
           exposed: f.exposed?.rate != null ? `${Math.round(f.exposed.rate * 100)}%` : '—',
           control: f.control?.rate != null ? `${Math.round(f.control.rate * 100)}%` : '—',
-          lift: `+${Math.round(f.lift_abs * 100)} pts`,
+          abs: `${f.lift_abs >= 0 ? '+' : ''}${Math.round(f.lift_abs * 100)} pp`,
+          rel,
           significance: sigLabel(f.significance),
           n: `${f.exposed?.n ?? '?'} / ${f.control?.n ?? '?'}`,
         });
@@ -297,7 +300,8 @@ function buildCenterpiece(centerpiece) {
           stage,
           exposed: f.exposed?.mean != null ? String(f.exposed.mean) : '—',
           control: f.control?.mean != null ? String(f.control.mean) : '—',
-          lift: `+${f.lift_abs}`,
+          abs: `${f.lift_abs >= 0 ? '+' : ''}${f.lift_abs}`,
+          rel,
           significance: sigLabel(f.significance),
           n: `${f.exposed?.n ?? '?'} / ${f.control?.n ?? '?'}`,
         });
@@ -305,9 +309,58 @@ function buildCenterpiece(centerpiece) {
     }
     if (rows.length === 0) return null;
     return {
-      title: 'Exposed vs. control funnel',
-      columns: ['Funnel stage', 'Exposed', 'Control', 'Lift', 'Significance', 'n (exp/ctrl)'],
-      rows: rows.map((r) => [r.stage, r.exposed, r.control, r.lift, r.significance, r.n]),
+      title: 'Exposed vs. control — lift on every KPI',
+      columns: ['KPI', 'Exposed', 'Control', 'Abs. lift', 'Rel. lift', 'Significance', 'n (exp/ctrl)'],
+      rows: rows.map((r) => [r.stage, r.exposed, r.control, r.abs, r.rel, r.significance, r.n]),
+    };
+  }
+
+  // §4 export parity — market_entry has a per-market demand scorecard that the
+  // web renders as MarketEntryHero; mirror it as a table so PDF/PPTX/XLSX carry
+  // the same signature (the flat headline can't hold the per-market grid).
+  if (methodology === 'market_entry') {
+    const markets = Array.isArray(analysis.markets) ? analysis.markets : [];
+    if (markets.length === 0) return null;
+    const signalLabel = (s) => (s === 'go' ? 'GO' : s === 'caution' ? 'CAUTION' : s === 'no_go' ? 'NO-GO' : '—');
+    return {
+      title: 'Market demand scorecard — every target market',
+      columns: ['Market', 'Demand (0-100)', 'Signal', 'Purchase intent', 'Appeal (1-7)', 'WTP', 'Top barrier', 'n'],
+      rows: markets.map((m) => [
+        m.directional ? `${m.market} (directional)` : m.market,
+        m.demand_index != null ? String(m.demand_index) : '—',
+        signalLabel(m.signal),
+        m.purchase_intent_pct != null ? `${m.purchase_intent_pct}%` : '—',
+        m.appeal_mean != null ? String(m.appeal_mean) : '—',
+        m.wtp != null ? String(m.wtp) : '—',
+        (m.barriers && m.barriers[0]) ? `${m.barriers[0].label} (${m.barriers[0].pct}%)` : '—',
+        String(m.n ?? '?'),
+      ]),
+    };
+  }
+
+  // §4 export parity — audience_profiling has a per-segment profile that the web
+  // renders as AudienceProfilingHero. When the sample segmented (segments !=
+  // null), mirror it as a table; aggregate-only reads fall back to the headline.
+  if (methodology === 'audience_profiling') {
+    const segments = Array.isArray(analysis.segments) ? analysis.segments : [];
+    if (segments.length === 0) return null;
+    const definingTrait = (s) => {
+      const sig = Array.isArray(s.signature) ? s.signature.slice() : [];
+      if (sig.length === 0) return '—';
+      sig.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+      const t = sig[0];
+      return `${t.label} (${t.delta >= 0 ? '+' : ''}${t.delta})`;
+    };
+    return {
+      title: 'Audience segments — size and defining trait',
+      columns: ['Segment', 'Size', 'n', 'Defining trait (vs. avg)', 'Primary'],
+      rows: segments.map((s) => [
+        s.name || s.id || 'Segment',
+        s.size_pct != null ? `${s.size_pct}%` : '—',
+        String(s.n ?? '?'),
+        definingTrait(s),
+        s.is_primary ? 'Yes' : '',
+      ]),
     };
   }
 

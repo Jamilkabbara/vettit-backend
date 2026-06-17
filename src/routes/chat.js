@@ -28,7 +28,7 @@ const MAX_MESSAGE_LEN = 4000;
 // ─── POST /api/chat/message ──────────────────────────────────
 router.post('/message', authenticate, async (req, res, next) => {
   try {
-    const { scope, missionId, message } = req.body;
+    const { scope, missionId, message, pageState } = req.body;
     if (!scope || !message)      return res.status(400).json({ error: 'scope and message are required' });
     if (!chat.QUOTAS[scope])     return res.status(400).json({ error: `Unknown scope: ${scope}` });
     if (message.length > MAX_MESSAGE_LEN) {
@@ -40,6 +40,7 @@ router.post('/message', authenticate, async (req, res, next) => {
       scope,
       missionId: missionId || null,
       userMessage: message,
+      pageState: pageState || null, // §E — live on-screen setup state
     });
 
     if (result.blocked) return res.status(402).json(result);
@@ -51,7 +52,7 @@ router.post('/message', authenticate, async (req, res, next) => {
 // Server-Sent Events. Client reads `data: { "delta": "..." }` lines until `data: [DONE]`.
 router.post('/stream', authenticate, async (req, res, next) => {
   try {
-    const { scope, missionId, message } = req.body;
+    const { scope, missionId, message, pageState } = req.body;
     if (!scope || !message)  return res.status(400).json({ error: 'scope and message are required' });
     if (!chat.QUOTAS[scope]) return res.status(400).json({ error: `Unknown scope: ${scope}` });
     if (message.length > MAX_MESSAGE_LEN) {
@@ -73,6 +74,7 @@ router.post('/stream', authenticate, async (req, res, next) => {
       missionId: missionId || null,
       userMessage: message,
       onDelta: (chunk) => writeEvent({ delta: chunk }),
+      pageState: pageState || null, // §E — live on-screen setup state
     });
 
     if (result.blocked) {
