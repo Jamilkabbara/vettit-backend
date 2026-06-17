@@ -37,19 +37,21 @@ const limit = limitArg ? parseInt(limitArg.split('=')[1], 10) : null;
 
 async function main() {
   console.log(`[backfill-report-kpis] starting (dryRun=${dryRun}, limit=${limit ?? 'all'})`);
-  if (dryRun) {
-    let q = supabase.from('missions').select('id, insights').eq('status', 'completed');
-    if (limit) q = q.limit(limit);
-    const { data, error } = await q;
-    if (error) { console.error('fetch failed', error.message); process.exit(1); }
-    const candidates = (data || []).filter((m) => m.insights && !(Array.isArray(m.insights.kpis) && m.insights.kpis.length));
-    console.log(`[backfill-report-kpis] DRY: ${candidates.length} candidates would be processed`);
-    return;
-  }
+  // Both paths go through runReportKpisBackfill so --dry-run reports the EXACT
+  // candidate set the real run will write (an earlier inline dry filter omitted
+  // the thin-recs repair clause and under-counted 17 → 1).
   const result = await runReportKpisBackfill(supabase, {
     limit,
-    onProgress: (done, total) => console.log(`[backfill-report-kpis] ${done}/${total} processed`),
+    dryRun,
+    onProgress: dryRun ? null : (done, total) => console.log(`[backfill-report-kpis] ${done}/${total} processed`),
   });
+  if (dryRun) {
+    console.log(`[backfill-report-kpis] DRY: ${result.candidates} candidates would be processed:`);
+    for (const c of result.candidateDetail || []) {
+      console.log(`  - ${c.id} [${c.goal_type}] recs=${c.recs} kpis=${c.kpis}`);
+    }
+    return;
+  }
   console.log(`[backfill-report-kpis] complete: ${result.succeeded}/${result.processed} written (${result.candidates} candidates)`);
 }
 
