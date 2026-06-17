@@ -2268,4 +2268,10 @@ module.exports = {
   // prompt templates that want clean subject text instead of the
   // raw brief.
   extractSubject,
+  // WO §3.2/§3.3 — exported for contract tests (the live generators can't be
+  // unit-tested without a valid Anthropic key; these guard their output shape).
+  validateAudienceProfilingSurvey,
+  validateMarketEntrySurvey,
+  buildAudienceProfilingUserPrompt,
+  buildMarketEntryUserPrompt,
 };
