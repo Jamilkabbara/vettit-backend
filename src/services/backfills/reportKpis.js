@@ -74,7 +74,7 @@ async function backfillOne(supabase, mission) {
  * @returns {{candidates:number, processed:number, succeeded:number}}
  */
 async function runReportKpisBackfill(supabase, opts = {}) {
-  const { limit = null, onProgress = null } = opts;
+  const { limit = null, onProgress = null, dryRun = false } = opts;
   let q = supabase
     .from('missions')
     .select('id, analysis, insights, goal_type, questions, targeting, target_audience, qualified_respondent_count, completed_at, title, brief')
@@ -93,6 +93,17 @@ async function runReportKpisBackfill(supabase, opts = {}) {
       ? m.insights.recommendations.filter((r) => typeof r === 'string' && r.trim()) : [];
     return !hasKpis || recs.length < 3; // missing KPIs OR thin recs (clobber repair)
   });
+  // Single source of truth: --dry-run reports the SAME candidate set the real
+  // run would write (an earlier inline dry filter under-counted by omitting the
+  // thin-recs clause). No writes on this path.
+  const candidateDetail = needs.map((m) => {
+    const recs = Array.isArray(m.insights?.recommendations)
+      ? m.insights.recommendations.filter((r) => typeof r === 'string' && r.trim()) : [];
+    return { id: m.id, goal_type: m.goal_type, recs: recs.length, kpis: (m.insights?.kpis || []).length };
+  });
+  if (dryRun) {
+    return { candidates: needs.length, processed: 0, succeeded: 0, dryRun: true, candidateDetail };
+  }
   let processed = 0;
   let succeeded = 0;
   for (const m of needs) {
@@ -105,7 +116,7 @@ async function runReportKpisBackfill(supabase, opts = {}) {
     if (onProgress) onProgress(processed, needs.length);
   }
   logger.info('[backfill:report-kpis] complete', { candidates: needs.length, processed, succeeded });
-  return { candidates: needs.length, processed, succeeded };
+  return { candidates: needs.length, processed, succeeded, candidateDetail };
 }
 
 module.exports = { computeReportKpis, backfillOne, runReportKpisBackfill };

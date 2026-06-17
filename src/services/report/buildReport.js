@@ -368,11 +368,16 @@ function buildCanonicalReport(mission, analysis, responses) {
     ? firstSentence(execSummary)
     : (headlines.length ? `${headlines[0].label}: ${headlines[0].value}` : null));
 
-  // §A1 — clean every prose surface on the survey (insight + open-end themes +
-  // verbatims) so the punctuation fix reaches per-question text too.
+  // §A1 — clean EVERY rendered string on the survey: question text, option
+  // labels, distribution keys (bar labels), insight, open-end themes, verbatims.
   for (const q of survey) {
+    if (q.text) q.text = cleanText(q.text);
+    if (Array.isArray(q.options)) q.options = q.options.map(cleanText);
     if (q.insight) q.insight = cleanText(q.insight);
     const d = q.data || {};
+    if (d.distribution && typeof d.distribution === 'object' && !Array.isArray(d.distribution)) {
+      d.distribution = Object.fromEntries(Object.entries(d.distribution).map(([k, v]) => [cleanText(k), v]));
+    }
     if (Array.isArray(d.themes)) {
       d.themes = d.themes.map((t) => ({ ...t, label: cleanText(t.label), quotes: Array.isArray(t.quotes) ? t.quotes.map(cleanText) : t.quotes }));
     }
@@ -393,8 +398,8 @@ function buildCanonicalReport(mission, analysis, responses) {
   return {
     schema_version: 1,
     header: {
-      title: mission.title || 'Untitled mission',
-      brief: mission.brief || mission.mission_statement || '',
+      title: cleanText(mission.title) || 'Untitled mission',
+      brief: cleanText(mission.brief || mission.mission_statement || ''),
       methodology: mission.goal_type || null,
       methodology_label: METHODOLOGY_LABELS[mission.goal_type] || 'Research Study',
       sample: {
