@@ -283,12 +283,15 @@ function buildCenterpiece(centerpiece) {
     for (const f of analysis.funnel || []) {
       if (!f || f.lift_abs == null) continue;
       const stage = f.text || f.funnel_stage || f.question_id || 'Stage';
+      // §D2 — every KPI shows absolute lift (pp) AND relative lift (%) + sig.
+      const rel = f.lift_rel_pct != null ? `${f.lift_rel_pct >= 0 ? '+' : ''}${Math.round(f.lift_rel_pct)}%` : '—';
       if (f.type === 'proportion') {
         rows.push({
           stage,
           exposed: f.exposed?.rate != null ? `${Math.round(f.exposed.rate * 100)}%` : '—',
           control: f.control?.rate != null ? `${Math.round(f.control.rate * 100)}%` : '—',
-          lift: `+${Math.round(f.lift_abs * 100)} pts`,
+          abs: `${f.lift_abs >= 0 ? '+' : ''}${Math.round(f.lift_abs * 100)} pp`,
+          rel,
           significance: sigLabel(f.significance),
           n: `${f.exposed?.n ?? '?'} / ${f.control?.n ?? '?'}`,
         });
@@ -297,7 +300,8 @@ function buildCenterpiece(centerpiece) {
           stage,
           exposed: f.exposed?.mean != null ? String(f.exposed.mean) : '—',
           control: f.control?.mean != null ? String(f.control.mean) : '—',
-          lift: `+${f.lift_abs}`,
+          abs: `${f.lift_abs >= 0 ? '+' : ''}${f.lift_abs}`,
+          rel,
           significance: sigLabel(f.significance),
           n: `${f.exposed?.n ?? '?'} / ${f.control?.n ?? '?'}`,
         });
@@ -305,9 +309,9 @@ function buildCenterpiece(centerpiece) {
     }
     if (rows.length === 0) return null;
     return {
-      title: 'Exposed vs. control funnel',
-      columns: ['Funnel stage', 'Exposed', 'Control', 'Lift', 'Significance', 'n (exp/ctrl)'],
-      rows: rows.map((r) => [r.stage, r.exposed, r.control, r.lift, r.significance, r.n]),
+      title: 'Exposed vs. control — lift on every KPI',
+      columns: ['KPI', 'Exposed', 'Control', 'Abs. lift', 'Rel. lift', 'Significance', 'n (exp/ctrl)'],
+      rows: rows.map((r) => [r.stage, r.exposed, r.control, r.abs, r.rel, r.significance, r.n]),
     };
   }
 
