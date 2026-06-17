@@ -6,6 +6,7 @@ const supabase = require('../db/supabase');
 const { calculateMissionPrice, extractCountriesFromMission } = require('../utils/pricingEngine');
 const { runMission } = require('../jobs/runMission');
 const { sanitizeMissionPatch, updateMission } = require('../db/missionSchema');
+const { isComingSoon, notAvailableError } = require('../config/comingSoon');
 const logger = require('../utils/logger');
 
 // ── Generate-responses idempotency guard ──────────────────────────────
@@ -264,6 +265,15 @@ router.post('/', authenticate, async (req, res, next) => {
     // it and 500'd any insert that fell back to the default.
     const resolvedGoal = goalType || goal || 'research';
 
+    // §A0 — authoritative gate: never CREATE a not-yet-live (Coming Soon) type.
+    // Fires at the front of the create path, before pricing or any DB insert,
+    // so a stale bundle / deep-link / direct API call can't materialise a
+    // deferred mission that could later be charged. Backend is the source of
+    // truth (src/config/comingSoon.js); the frontend flag is just UX.
+    if (isComingSoon(resolvedGoal)) {
+      return res.status(403).json(notAvailableError(resolvedGoal));
+    }
+
     // Pass 25 Phase 0.3 — CA missions need >= 10 respondents. Reject early
     // with 400 so the UI can surface the message rather than silently
     // creating a broken draft.
@@ -433,6 +443,12 @@ router.post('/draft', authenticate, async (req, res, next) => {
         error: 'invalid_questions',
         message: 'questions must be an array.',
       });
+    }
+
+    // §A0 — don't even draft a Coming-Soon type (keeps gated rows out of the DB
+    // so no later path can promote one to paid).
+    if (isComingSoon(goalType || 'research')) {
+      return res.status(403).json(notAvailableError(goalType || 'research'));
     }
 
     // Pass 21 Bug 16: default 100 → 50 (entry tier, $35).

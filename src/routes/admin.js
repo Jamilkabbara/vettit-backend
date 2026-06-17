@@ -3,6 +3,7 @@ const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const { adminOnly } = require('../middleware/adminOnly');
 const supabase = require('../db/supabase'); // service-role client for all admin queries (RPC + tables)
+const { isComingSoon, notAvailableError } = require('../config/comingSoon');
 const logger = require('../utils/logger');
 // Pass 42 F2 — Stripe promo sync. Lazy fail at call time so a
 // missing STRIPE_SECRET_KEY doesn't crash the route module load.
@@ -678,10 +679,17 @@ router.post('/missions/:id/mark-paid', async (req, res, next) => {
     // Confirm the mission exists + is in a state where override makes sense.
     const { data: mission, error: fetchErr } = await supabase
       .from('missions')
-      .select('id, user_id, status, paid_at, total_price_usd')
+      .select('id, user_id, status, paid_at, total_price_usd, goal_type')
       .eq('id', id)
       .single();
     if (fetchErr || !mission) return res.status(404).json({ error: 'mission_not_found' });
+
+    // §A0 — even an admin override must not mark-paid (→ runMission) a not-yet-live
+    // type. Repairing an EXISTING paid gated mission goes through reanalyze, not here
+    // (mark-paid only applies to draft / pending_payment, i.e. NOT-yet-paid rows).
+    if (isComingSoon(mission.goal_type)) {
+      return res.status(403).json(notAvailableError(mission.goal_type));
+    }
     if (mission.status !== 'pending_payment' && mission.status !== 'draft') {
       return res.status(409).json({
         error: 'invalid_state',

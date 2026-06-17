@@ -29,6 +29,7 @@ const { logPaymentError, shapeStripeError } = require('../services/paymentErrors
 // Stripe account had no webhook configured, so paid missions never
 // started until the 6h recovery cron).
 const { confirmCheckoutSessionPaid } = require('../services/payments/confirmCheckoutSession');
+const { isComingSoon, notAvailableError } = require('../config/comingSoon');
 const logger = require('../utils/logger');
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://www.vettit.ai';
@@ -60,6 +61,18 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
 
     if (missionError || !missionRow) return res.status(404).json({ error: 'Mission not found' });
     mission = missionRow;
+
+    // §A0 — authoritative gate: never open a Stripe session for a not-yet-live
+    // (Coming Soon) type. Fires immediately after the mission is resolved,
+    // BEFORE any status/pricing logic and well before createCheckoutSession —
+    // so a gated mission (however it was created) can never authorise a charge,
+    // only a clean not_available. Backend is the source of truth.
+    if (isComingSoon(mission.goal_type)) {
+      logger.warn('Payments create-checkout-session: blocked Coming-Soon goal_type', {
+        missionId, goal_type: mission.goal_type,
+      });
+      return res.status(403).json(notAvailableError(mission.goal_type));
+    }
 
     const status = (mission.status || 'draft').toLowerCase();
     // Already-paid short-circuit — frontend redirects to results.
@@ -326,12 +339,19 @@ router.post('/free-launch', authenticate, async (req, res, next) => {
 
     const { data: mission } = await supabase
       .from('missions')
-      .select('id, status, user_id')
+      .select('id, status, user_id, goal_type')
       .eq('id', missionId)
       .eq('user_id', req.user.id)
       .single();
 
     if (!mission) return res.status(404).json({ error: 'Mission not found' });
+
+    // §A0 — free-launch pays ($0) + RUNS a mission without Stripe. Never let it
+    // launch a not-yet-live type. Fires before status checks / updateMission / run.
+    if (isComingSoon(mission.goal_type)) {
+      logger.warn('Free-launch: blocked Coming-Soon goal_type', { missionId, goal_type: mission.goal_type });
+      return res.status(403).json(notAvailableError(mission.goal_type));
+    }
 
     const status = (mission.status || '').toLowerCase();
     if (['processing', 'completed', 'paid'].includes(status)) {
