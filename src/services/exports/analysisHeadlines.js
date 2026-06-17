@@ -262,6 +262,37 @@ function analysisHeadlines(analysis) {
         break;
       }
 
+      case 'audience_profiling': {
+        if (analysis.posture === 'segmented' && Array.isArray(analysis.segments)) {
+          push('Segments identified', analysis.segment_count);
+          const primary = analysis.segments.find((s) => s.is_primary) || analysis.segments[0];
+          if (primary) push('Primary segment', `${primary.name} (${num(primary.size_pct, 1) ?? primary.size_pct}%)`);
+          for (const s of analysis.segments) {
+            push(`Segment: ${s.name}`, `${num(s.size_pct, 1) ?? s.size_pct}% (n=${s.n})`);
+          }
+        } else {
+          push('Segmentation', 'Aggregate profile only — sample too small to segment');
+        }
+        if (analysis.key_dimension) {
+          const lbl = (analysis.dimensions || []).find((d) => d.key === analysis.key_dimension)?.label || analysis.key_dimension;
+          push('Key differentiating dimension', lbl);
+        }
+        break;
+      }
+
+      case 'market_entry': {
+        if (analysis.recommended_market) push('Recommended market', analysis.recommended_market);
+        if (analysis.best_demand_index != null) push('Best demand index (0-100)', analysis.best_demand_index);
+        for (const m of analysis.markets || []) {
+          if (!m) continue;
+          const sig = m.signal ? m.signal.replace('_', '-') : '—';
+          const intent = m.purchase_intent_pct != null ? `${m.purchase_intent_pct}%` : '—';
+          push(m.market, `demand ${m.demand_index ?? '—'}/100 · intent ${intent} · ${sig}${m.directional ? ' (directional)' : ''}`);
+        }
+        if (analysis.top_barrier) push('Top adoption barrier', analysis.top_barrier);
+        break;
+      }
+
       default:
         break;
     }
