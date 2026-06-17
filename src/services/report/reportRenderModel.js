@@ -180,7 +180,7 @@ function shapeSurveyBody(q) {
  */
 function buildRenderModel(report) {
   if (!report || typeof report !== 'object') {
-    return { header: { title: 'Untitled', metaRows: [] }, headline: null, centerpiece: null,
+    return { header: { title: 'Untitled', metaRows: [] }, headline: null, centerpiece: null, gate: null,
       keyFindings: [], recommendations: [], survey: [], dataQualityNotes: [], execSummary: null, disclaimer: null,
       finding: null, synthesis: null, screening: null, personas: [] };
   }
@@ -250,6 +250,10 @@ function buildRenderModel(report) {
     personas: Array.isArray(report.personas) ? report.personas : [],
     headline,
     centerpiece,
+    // §2.4 — statistical-integrity gate, carried into every export so the PDF/
+    // PPTX/XLSX show the same directional banner the web does and never headline
+    // a degenerate number.
+    gate: (report.centerpiece && report.centerpiece.gate) || null,
     keyFindings,
     recommendations,
     survey,

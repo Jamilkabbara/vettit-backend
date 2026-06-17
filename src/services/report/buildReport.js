@@ -18,6 +18,7 @@
 
 const { computeRatingStats } = require('../ai/insights');
 const { analysisHeadlines } = require('../exports/analysisHeadlines');
+const { computeStatGate } = require('./statGate');
 
 const VERBATIM_CAP = 30;
 
@@ -415,7 +416,18 @@ function buildCanonicalReport(mission, analysis, responses) {
       ? { metric: headlines[0].label, value: headlines[0].value, all: headlines }
       : null,
     centerpiece: analysis && typeof analysis === 'object'
-      ? { methodology: analysis.methodology || mission.goal_type, data: analysis }
+      ? {
+        methodology: analysis.methodology || mission.goal_type,
+        data: analysis,
+        // §2.4 — statistical-integrity gate, attached once at the canonical layer
+        // so web + all exports render the SAME honesty verdict and none headline
+        // a degenerate figure (e.g. an OPP from n=5).
+        gate: computeStatGate(
+          analysis.methodology || mission.goal_type,
+          analysis,
+          distinctPersonas || analysis.n || null,
+        ),
+      }
       : null,
     key_findings: Array.isArray(insights.kpis) ? insights.kpis : [],
     // B1 — recommendations in the canonical report so web + exports + chat all

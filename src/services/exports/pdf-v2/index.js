@@ -142,6 +142,8 @@ function buildViewModel(pack) {
     hasCenterpiece:     !!model.centerpiece,
     hasKeyFindings:     model.keyFindings.length > 0,
     hasDataQualityNotes: model.dataQualityNotes.length > 0,
+    // §2.4 — directional banner when the sample can't support an authoritative read.
+    isDirectional:      !!(model.gate && model.gate.posture === 'directional' && model.gate.note),
 
     missionCompletedLabel: meta.mission_completed_label,
     reportGeneratedLabel:  meta.report_generated_label,

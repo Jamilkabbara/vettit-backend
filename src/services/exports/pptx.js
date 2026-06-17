@@ -260,9 +260,19 @@ function buildPPTX(pack, res) {
   addDarkBackground(summary);
   addSectionHeader(summary, '01 · VETT SYNTHESIS', 'What the research says');
   summary.addText(model.synthesis || model.execSummary || 'Synthesis not available for this mission.', {
-    x: 0.5, y: 1.65, w: 12.3, h: 5.3,
+    x: 0.5, y: 1.65, w: 12.3, h: 4.7,
     fontSize: 16, color: hex(BRAND.text1), fontFace: FONT_SERIF, paraSpaceAfter: 8, valign: 'top', autoFit: true,
   });
+  // §2.4 — directional banner when the sample can't support an authoritative read.
+  if (model.gate && model.gate.posture === 'directional' && model.gate.note) {
+    summary.addText(
+      [
+        { text: 'DIRECTIONAL   ', options: { bold: true, color: hex(BRAND.amber) } },
+        { text: `${model.gate.note}${model.gate.n ? ` · n=${model.gate.n}` : ''}`, options: { color: hex(BRAND.text2) } },
+      ],
+      { x: 0.5, y: 6.55, w: 12.3, h: 0.75, fontSize: 11, fontFace: FONT, valign: 'top', line: { color: hex(BRAND.amber), width: 0.75 }, fill: { color: hex(BRAND.bg2) }, margin: 6 },
+    );
+  }
 
   // ── HEADLINE METRICS ──────────────────────────────────────
   if (model.headline) {

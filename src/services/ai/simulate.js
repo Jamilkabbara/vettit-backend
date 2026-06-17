@@ -60,8 +60,19 @@ async function simulateResponses(persona, questions, mission) {
   // NPS +1-4 points. Never push every metric to 100%.
   const isBrandLift = mission.goal_type === 'brand_lift';
   const exposure = persona._exposure_status;
+  // §2.2 — inject the ACTUAL selected channels (MBC, Shahid, TOD, …) so the
+  // exposed persona's recall + ad_channels_seen reflect the campaign's real
+  // media plan instead of the model defaulting to generic digital channels.
+  const channelNames = Array.isArray(mission.campaign_channels)
+    ? mission.campaign_channels
+      .map((c) => (typeof c === 'string' ? c : (c && (c.display_name || c.id)) || ''))
+      .map((s) => String(s).trim()).filter(Boolean)
+    : [];
+  const channelClause = channelNames.length
+    ? ` specifically on these channels: ${channelNames.join(', ')}. If any question asks which channels/platforms you saw the ad on, answer ONLY with channels from that list`
+    : '';
   const exposureBlock = isBrandLift && exposure === 'exposed'
-    ? `\n\nIncrementality flag: this persona was EXPOSED to the brand's campaign on the selected channels. When answering aided ad recall, brand awareness, consideration, intent, NPS, and message association, reflect that exposure with realistic uplift over baseline (aided recall +20-40pp, brand awareness +5-15pp, consideration +3-10pp, intent +2-8pp, NPS +1-4 points). Don't exaggerate — many exposed people still don't recall, and lift never pushes every metric to 100%.`
+    ? `\n\nIncrementality flag: this persona was EXPOSED to the brand's campaign${channelClause}. When answering aided ad recall, brand awareness, consideration, intent, NPS, and message association, reflect that exposure with realistic uplift over baseline (aided recall +20-40pp, brand awareness +5-15pp, consideration +3-10pp, intent +2-8pp, NPS +1-4 points). Don't exaggerate — many exposed people still don't recall, and lift never pushes every metric to 100%.`
     : isBrandLift && exposure === 'control'
     ? `\n\nIncrementality flag: this persona is in the CONTROL group. They were NOT exposed to the brand's campaign. They answer at category baseline — they may still recognize the brand if it has prior equity, but they do NOT show campaign-specific message association.`
     : '';

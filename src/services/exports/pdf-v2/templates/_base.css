@@ -517,6 +517,10 @@ p, li {
 }
 .hero-mv { font-family: 'Manrope', system-ui, sans-serif; font-weight: 800; font-size: 26pt; color: var(--lime); line-height: 1; letter-spacing: -0.02em; }
 .hero-mu { font-size: 9.5pt; color: var(--text2); margin-top: 6pt; line-height: 1.4; }
+/* §2.4 — directional gate banner (statistical integrity). Amber = caution, not a confident lime headline. */
+.gate-band { margin-top: 16pt; padding: 9pt 12pt; border: 0.5pt solid #E7B45A; border-radius: 6pt; background: rgba(231,180,90,0.07); }
+.gate-tag { font-family: 'Manrope', system-ui, sans-serif; font-weight: 800; font-size: 8pt; letter-spacing: 0.1em; text-transform: uppercase; color: #E7B45A; margin-right: 8pt; }
+.gate-note { font-size: 10pt; color: var(--text2); line-height: 1.45; }
 .finding-text {
   font-family: 'Manrope', system-ui, sans-serif;
   font-weight: 800;

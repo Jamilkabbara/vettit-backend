@@ -293,6 +293,18 @@ router.post('/', authenticate, async (req, res, next) => {
       }
     }
 
+    // §2.3 — competitor studies must carry the focal brand so the report never
+    // falls back to the "Our Brand" placeholder.
+    if (resolvedGoal === 'competitor') {
+      const focalBrand = (req.body.brand_name || req.body.brandName || '').toString().trim();
+      if (!focalBrand) {
+        return res.status(400).json({
+          error: 'brand_required',
+          message: 'Competitor Analysis requires your focal brand name.',
+        });
+      }
+    }
+
     // Pass 44 P0 — calculateMissionPrice moved to an options-object
     // signature (a7ff50a, Apr 23) and deriveFilters was deleted with it,
     // but these call sites kept the old positional style. Every backend
