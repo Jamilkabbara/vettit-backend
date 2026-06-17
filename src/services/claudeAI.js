@@ -475,6 +475,12 @@ SUBJECT (extracted noun phrase — use THIS short phrase when wording questions;
   if (goal === 'churn_research') {
     return generateChurnSurvey({ description, clarify });
   }
+  if (goal === 'audience_profiling') {
+    return generateAudienceProfilingSurvey({ description, clarify });
+  }
+  if (goal === 'market_entry') {
+    return generateMarketEntrySurvey({ description, clarify });
+  }
 
   const prompt = `Mission Goal: ${goal}
 Description: "${description}"
@@ -2071,6 +2077,185 @@ Return a JSON targeting configuration as specified in your instructions.`;
   });
 
   return extractJSON(response.text);
+}
+
+// ── WO §3.2 — AUDIENCE PROFILING (psychographic + behavioural segmentation) ──
+const AUDIENCE_PROFILING_SURVEY_GEN_SYSTEM = `You are a senior segmentation methodologist. You design psychographic + behavioural audience-profiling surveys whose responses cluster into 2-4 segments. Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short category/brand name from the brief (2-5 words)",
+  "missionStatement": "One sentence starting 'To profile and segment the target audience for ...'",
+  "questions": [
+    {
+      "id": "q1",
+      "text": "Question text",
+      "type": "single|multi|rating",
+      "options": ["Option A"],
+      "isScreening": true,
+      "kind": "screener|behavioural|attitudinal|needs|media",
+      "dimension": "price_sensitivity|novelty_seeking|brand_loyalty|convenience|status|sustainability"
+    }
+  ],
+  "targetingSuggestions": { "recommendedCountries": ["US"], "recommendedAgeRanges": ["25-44"], "recommendedGenders": [], "reasoning": "..." },
+  "suggestedRespondentCount": 200
+}
+
+Hard rules — generate EXACTLY 12 questions in this fixed order:
+  q1 SCREENER (isScreening=true, kind="screener") — qualifies category users from the brief. type="single", 2-3 options.
+  q2-q7 ATTITUDINAL BATTERY (kind="attitudinal") — ONE 1-7 agree/disagree statement per dimension, type="rating", options=[], in EXACTLY this dimension order (reword the statement to fit the category but keep the dimension tag exact and the 1-7 scale):
+    q2 dimension="price_sensitivity" — e.g. "I always look for the best price or deals in this category."
+    q3 dimension="novelty_seeking" — e.g. "I love trying new products and brands before other people do."
+    q4 dimension="brand_loyalty" — e.g. "Once I find a brand I like, I stick with it."
+    q5 dimension="convenience" — e.g. "Convenience matters more to me than getting the lowest price."
+    q6 dimension="status" — e.g. "The brands I use say something about who I am."
+    q7 dimension="sustainability" — e.g. "I prefer brands that are ethical and sustainable."
+  q8 BEHAVIOURAL — usage frequency. kind="behavioural", type="single", 4-5 frequency options.
+  q9 BEHAVIOURAL — category spend or buying occasion. kind="behavioural", type="single".
+  q10 BEHAVIOURAL — brand repertoire ("which of these do you use?"). kind="behavioural", type="multi", real category brands.
+  q11 MEDIA — where they spend media time. kind="media", type="multi". MUST mix TV/VOD and social/digital options appropriate to the market (e.g. MBC, Shahid, Netflix, Instagram, TikTok, YouTube).
+  q12 NEEDS — most important attributes when choosing. kind="needs", type="multi", 5-7 category attributes.
+
+- Only attitudinal questions carry "dimension"; every other question omits it.
+- Q1 isScreening MUST be true; all others false.
+- Never include vw_band, funnel_stage, feature_id, kano_type, channel_id.
+- suggestedRespondentCount default 200 (segmentation needs >=50 qualified; aim higher when sub-segments are mentioned).
+Output MUST be valid JSON. No prose, no markdown fences.`;
+
+const AP_DIMENSIONS = ['price_sensitivity', 'novelty_seeking', 'brand_loyalty', 'convenience', 'status', 'sustainability'];
+
+function validateAudienceProfilingSurvey(parsed) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  if (qs.length < 10) return `expected ~12 questions, got ${qs.length}`;
+  const attDims = qs.filter((q) => q.kind === 'attitudinal').map((q) => q.dimension);
+  for (const d of AP_DIMENSIONS) if (!attDims.includes(d)) return `missing attitudinal dimension "${d}"`;
+  if (!qs.some((q) => q.kind === 'media')) return 'missing a media question';
+  if (!qs.some((q) => q.kind === 'needs')) return 'missing a needs question';
+  if (!qs.some((q) => q.kind === 'behavioural')) return 'missing behavioural questions';
+  return null;
+}
+
+function buildAudienceProfilingUserPrompt({ description, clarify }) {
+  const c = clarify || {};
+  const lines = [
+    'Mission Goal: audience_profiling',
+    `Brief: "${description}"`,
+    `Category / brand: ${c.category || c.brand_name || '<infer from brief>'}`,
+  ];
+  if (c.markets || c.target_market) lines.push(`Target market(s): ${c.markets || c.target_market}`);
+  if (c.segmentation_focus) lines.push(`Segmentation focus: "${c.segmentation_focus}"`);
+  lines.push('');
+  lines.push('Generate the 12-question psychographic + behavioural profiling survey. Keep ONE attitudinal statement per dimension with the exact dimension tags.');
+  return lines.join('\n');
+}
+
+async function generateAudienceProfilingSurvey({ description, clarify }) {
+  const userPrompt = buildAudienceProfilingUserPrompt({ description, clarify });
+  const first = await callClaude({
+    callType: 'survey_gen', systemPrompt: AUDIENCE_PROFILING_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }], maxTokens: 2800, enablePromptCache: true,
+  });
+  let parsed;
+  try { parsed = extractJSON(first.text); } catch (err) { parsed = null; logger.warn('audience_profiling survey: parse failed', { err: err.message }); }
+  let validationErr = parsed ? validateAudienceProfilingSurvey(parsed) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+  logger.info('audience_profiling survey: retry on validation failure', { reason: validationErr });
+  const retry = await callClaude({
+    callType: 'survey_gen', systemPrompt: AUDIENCE_PROFILING_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that fixed. Keep all other rules.` }],
+    maxTokens: 2800, enablePromptCache: true,
+  });
+  try { parsed = extractJSON(retry.text); } catch (err) { parsed = null; logger.warn('audience_profiling survey: retry parse failed', { err: err.message }); }
+  validationErr = parsed ? validateAudienceProfilingSurvey(parsed) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+  logger.warn('audience_profiling survey: both attempts failed validation', { reason: validationErr });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
+}
+
+// ── WO §3.3 — MARKET ENTRY (geo demand validation) ───────────────────────────
+const MARKET_ENTRY_SURVEY_GEN_SYSTEM = `You are a senior market-entry methodologist. You design geo demand-validation surveys: concept appeal + purchase intent + light willingness-to-pay + adoption barriers + the local competitive set, localised to a new target market. Always return ONLY valid JSON with no markdown fences.
+
+JSON structure required:
+{
+  "productName": "Short concept name from the brief (2-5 words)",
+  "missionStatement": "One sentence: 'To validate demand for <concept> in <target market>...'",
+  "questions": [
+    {
+      "id": "q1", "text": "Question text", "type": "single|multi|rating|text",
+      "options": ["Option A"], "isScreening": true,
+      "kind": "screener|appeal|intent|wtp|barrier|competitive|localisation"
+    }
+  ],
+  "targetingSuggestions": { "recommendedCountries": [], "recommendedAgeRanges": [], "recommendedGenders": [], "reasoning": "..." },
+  "suggestedRespondentCount": 200
+}
+
+Hard rules — generate 7-8 questions in this order:
+  q1 SCREENER (isScreening=true, kind="screener") — qualifies category buyers IN THE TARGET MARKET. type="single".
+  q2 APPEAL (kind="appeal") — "How appealing is <concept> to you?" type="rating" 1-7, options=[].
+  q3 INTENT (kind="intent") — "If <concept> were available in <market>, how likely would you be to buy?" type="single", 5 options ["Definitely would buy","Probably would buy","Might or might not","Probably would NOT buy","Definitely would NOT buy"].
+  q4 WTP (kind="wtp") — willingness to pay. type="single" with 4-5 ASCENDING local-currency price-band options (cheapest to dearest); localise the currency to the target market.
+  q5 BARRIERS (kind="barrier") — "What would make you hesitate?" type="multi"; options MUST cover regulatory/trust, cultural fit, logistics/delivery, local competition, and awareness.
+  q6 COMPETITIVE (kind="competitive") — "Which of these do you currently use in <market>?" type="multi", real LOCAL competitors for that geography.
+  q7 LOCALISATION (kind="localisation") — "What would this need to change to fit <market>?" type="text".
+
+- Substitute the real <concept> name and <market> into every question; never leave angle-bracket placeholders.
+- Q1 isScreening MUST be true; all others false. No vw_band/funnel_stage/feature_id/dimension.
+- suggestedRespondentCount default 200 (aim for >=30 per target market for reliable demand/WTP).
+Output MUST be valid JSON. No prose, no markdown fences.`;
+
+function validateMarketEntrySurvey(parsed) {
+  if (!parsed || typeof parsed !== 'object') return 'response is not an object';
+  const qs = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!qs) return 'questions array missing';
+  const kinds = qs.map((q) => q.kind);
+  for (const k of ['screener', 'appeal', 'intent', 'barrier']) if (!kinds.includes(k)) return `missing a "${k}" question`;
+  const intent = qs.find((q) => q.kind === 'intent');
+  if (!intent || !Array.isArray(intent.options) || intent.options.length !== 5) return 'intent must be single with 5 options';
+  const appeal = qs.find((q) => q.kind === 'appeal');
+  if (!appeal || appeal.type !== 'rating') return 'appeal must be a rating question';
+  return null;
+}
+
+function buildMarketEntryUserPrompt({ description, clarify }) {
+  const c = clarify || {};
+  const markets = c.target_markets || c.markets || c.target_market || '';
+  const lines = [
+    'Mission Goal: market_entry',
+    `Brief: "${description}"`,
+    `Concept: "${c.concept_description || c.product_description || description}"`,
+  ];
+  if (c.current_market) lines.push(`Current market: ${c.current_market}`);
+  if (markets) lines.push(`Target market(s): ${markets}`);
+  if (c.price || c.positioning) lines.push(`Price / positioning: ${[c.price, c.positioning].filter(Boolean).join(' / ')}`);
+  lines.push('');
+  lines.push('Generate the market-entry demand-validation survey, localised to the target market(s). Use real local competitors and local currency. Substitute the concept name and market into every question.');
+  return lines.join('\n');
+}
+
+async function generateMarketEntrySurvey({ description, clarify }) {
+  const userPrompt = buildMarketEntryUserPrompt({ description, clarify });
+  const first = await callClaude({
+    callType: 'survey_gen', systemPrompt: MARKET_ENTRY_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: userPrompt }], maxTokens: 2500, enablePromptCache: true,
+  });
+  let parsed;
+  try { parsed = extractJSON(first.text); } catch (err) { parsed = null; logger.warn('market_entry survey: parse failed', { err: err.message }); }
+  let validationErr = parsed ? validateMarketEntrySurvey(parsed) : 'response could not be parsed';
+  if (!validationErr) return parsed;
+  logger.info('market_entry survey: retry on validation failure', { reason: validationErr });
+  const retry = await callClaude({
+    callType: 'survey_gen', systemPrompt: MARKET_ENTRY_SURVEY_GEN_SYSTEM,
+    messages: [{ role: 'user', content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that fixed. Keep all other rules.` }],
+    maxTokens: 2500, enablePromptCache: true,
+  });
+  try { parsed = extractJSON(retry.text); } catch (err) { parsed = null; logger.warn('market_entry survey: retry parse failed', { err: err.message }); }
+  validationErr = parsed ? validateMarketEntrySurvey(parsed) : 'retry response could not be parsed';
+  if (!validationErr) return parsed;
+  logger.warn('market_entry survey: both attempts failed validation', { reason: validationErr });
+  return parsed || { questions: [], missionStatement: '', productName: '' };
 }
 
 module.exports = {

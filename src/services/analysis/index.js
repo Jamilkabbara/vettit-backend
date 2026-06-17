@@ -28,6 +28,8 @@ const { computeValidate }     = require('./validate');
 const { computeNaming }       = require('./naming');
 const { computeCompare }      = require('./compare');
 const { computeCompetitor }   = require('./competitor');
+const { computeAudienceProfiling } = require('./audienceProfiling');
+const { computeMarketEntry }  = require('./marketEntry');
 
 const ANALYSIS_VERSION = 1;
 
@@ -69,6 +71,8 @@ const DISPATCH = {
   naming_messaging: computeNaming,
   compare:          computeCompare,
   competitor:       computeCompetitor,
+  audience_profiling: computeAudienceProfiling,
+  market_entry:     computeMarketEntry,
 };
 
 /**
