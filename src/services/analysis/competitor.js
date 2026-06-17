@@ -265,6 +265,15 @@ function computeCompetitorInner(rows, questions, mission) {
   // when mission context was empty — its battery still resolves to it).
   if (focalLabel) addBrand(focalLabel);
 
+  // §2.3 — user-facing focal label: keep `focalLabel` for internal anchoring
+  // (it must match the brand strings the survey/responses actually used, which
+  // for legacy missions can be the literal "Our Brand"), but never SHOW the
+  // placeholder. Derive a real name from the brand / brief for display.
+  const { deriveFocalBrand, isGeneric } = require('../../utils/focalBrand');
+  const focalDisplay = (focalLabel && isGeneric(focalLabel))
+    ? deriveFocalBrand(mission.brand_name, mission.brief || mission.mission_statement)
+    : focalLabel;
+
   // ── Per-brand question resolver: focal-convention brand_id → focal label;
   // else brand_id matching a known label; else longest brand label found in
   // the question text; else focal fallback. ──
@@ -351,10 +360,11 @@ function computeCompetitorInner(rows, questions, mission) {
   const brands = brandLabels.map((label) => {
     const k = norm(label);
     const attrSlot = attrsByBrand.get(k) || null;
+    const isFocal = focalLabel ? k === norm(focalLabel) : false;
     return {
       brand_id: label, // labels are the only stable key — see header comment
-      label,
-      is_focal: focalLabel ? k === norm(focalLabel) : false,
+      label: isFocal ? focalDisplay : label, // §2.3 — never surface "Our Brand"
+      is_focal: isFocal,
       awareness_pct: aidedQ ? selectionPct(aidedRows, aidedBase, label) : null,
       consideration_pct: considerationQ ? selectionPct(considerationRows, considerationBase, label) : null,
       preference_pct: preferenceQ ? selectionPct(preferenceRows, preferenceBase, label) : null,
@@ -445,7 +455,7 @@ function computeCompetitorInner(rows, questions, mission) {
   return {
     methodology: 'competitor',
     n: personaCount(rows),
-    focal_brand: focalLabel,
+    focal_brand: focalDisplay, // §2.3 — never the "Our Brand" placeholder
     brands,
     share_of_preference: shareOfPreference,
     switching,

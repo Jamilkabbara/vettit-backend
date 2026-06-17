@@ -283,9 +283,13 @@ const NEW_ROWS = [
 
 test('NEW shape: generic focal anchored via brand_id="our_brand" convention', () => {
   const res = computeCompetitor(NEW_ROWS, NEW_QUESTIONS, NEW_MISSION);
-  // mission.brand_name is null, yet the focal resolves to the "Our Brand" label
-  expect(res.focal_brand).toBe('Our Brand');
-  expect(brand(res, 'Our Brand').is_focal).toBe(true);
+  // §2.3 — mission.brand_name is null; the focal battery still ANCHORS via the
+  // brand_id="our_brand" convention (brand_id stays "Our Brand" as the internal
+  // key), but the DISPLAY label must never be the "Our Brand" placeholder.
+  expect(res.focal_brand).toBe('the brand');
+  expect(brand(res, 'Our Brand').is_focal).toBe(true);   // anchored via brand_id
+  expect(brand(res, 'Our Brand').label).toBe('the brand'); // display relabeled
+  expect(res.brands.some((b) => b.label === 'Our Brand')).toBe(false);
   expect(brand(res, 'Careem').is_focal).toBe(false);
   expect(brand(res, 'Uber').is_focal).toBe(false);
   // focal NPS resolves through the convention even with a generic focal

@@ -1551,7 +1551,10 @@ function buildCompetitorUserPrompt({ description, clarify }) {
 
   // PASS 47: stable focal label even when brand_name is empty/generic so the
   // model has FOCAL_BRAND_LABEL to use verbatim and the parser can anchor it.
-  const focalLabel = (c.brand_name && String(c.brand_name).trim()) || 'Our Brand';
+  // §2.3 — never emit the "Our Brand" placeholder; derive a real name from the
+  // brief when brand_name is unset, else a neutral label.
+  const { deriveFocalBrand } = require('../utils/focalBrand');
+  const focalLabel = deriveFocalBrand(c.brand_name, description);
   const brandList = [focalLabel, ...competitors];
 
   const lines = [
