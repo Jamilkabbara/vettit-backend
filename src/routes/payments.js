@@ -339,12 +339,19 @@ router.post('/free-launch', authenticate, async (req, res, next) => {
 
     const { data: mission } = await supabase
       .from('missions')
-      .select('id, status, user_id')
+      .select('id, status, user_id, goal_type')
       .eq('id', missionId)
       .eq('user_id', req.user.id)
       .single();
 
     if (!mission) return res.status(404).json({ error: 'Mission not found' });
+
+    // §A0 — free-launch pays ($0) + RUNS a mission without Stripe. Never let it
+    // launch a not-yet-live type. Fires before status checks / updateMission / run.
+    if (isComingSoon(mission.goal_type)) {
+      logger.warn('Free-launch: blocked Coming-Soon goal_type', { missionId, goal_type: mission.goal_type });
+      return res.status(403).json(notAvailableError(mission.goal_type));
+    }
 
     const status = (mission.status || '').toLowerCase();
     if (['processing', 'completed', 'paid'].includes(status)) {

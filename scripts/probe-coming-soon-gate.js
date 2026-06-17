@@ -24,6 +24,11 @@ const API = process.env.PROBE_API_URL || 'https://vettit-backend-production.up.r
 const EMAIL = process.env.PROBE_EMAIL || 'kabbarajamil@gmail.com';
 const GATED = ['market_entry', 'audience_profiling', 'creative_attention'];
 const LIVE = 'validate';
+// An EXISTING gated mission owned by EMAIL, for the CHECKOUT-door probe (create
+// alone doesn't cover already-existing gated rows). Default: one of the two
+// known failed creative_attention missions. The gate fires before the status
+// check + before createCheckoutSession, so a 403 here = no Stripe session opened.
+const EXISTING_GATED_MISSION_ID = process.env.PROBE_GATED_MISSION_ID || 'dcbc3b6f-127f-4925-b722-9355045ca4ee';
 
 async function mintJwt() {
   if (process.env.PROBE_JWT) return process.env.PROBE_JWT;
@@ -56,6 +61,17 @@ async function createProbe(jwt, goalType) {
   return { status: res.status, error: body.error, message: body.message, id: body.id };
 }
 
+async function checkoutProbe(jwt, missionId) {
+  const res = await fetch(`${API}/api/payments/create-checkout-session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
+    body: JSON.stringify({ missionId }),
+  });
+  let body = {};
+  try { body = await res.json(); } catch { /* non-JSON */ }
+  return { status: res.status, error: body.error, url: body.url };
+}
+
 (async () => {
   console.log(`Probing ${API} as ${EMAIL}\n`);
   const jwt = await mintJwt();
@@ -74,6 +90,12 @@ async function createProbe(jwt, goalType) {
   console.log(`  CREATE ${LIVE.padEnd(20)} → HTTP ${live.status} ${live.error || '(created)'}  ${liveOk ? '✅ not gated (live unaffected)' : '❌ live type wrongly gated'}`);
   if (live.id) console.log(`     (note: created a throwaway draft mission ${live.id} — no charge; delete if you like)`);
 
-  console.log(`\n${allGood ? '✅ GATE LIVE: server refuses Coming-Soon types and allows live types.' : '❌ Gate not behaving as expected — is it deployed?'}`);
+  // CHECKOUT door against an EXISTING gated mission — the case create can't cover.
+  const co = await checkoutProbe(jwt, EXISTING_GATED_MISSION_ID);
+  const coOk = co.status === 403 && co.error === 'not_available' && !co.url;
+  allGood = allGood && coOk;
+  console.log(`  CHECKOUT existing CA ${EXISTING_GATED_MISSION_ID.slice(0, 8)} → HTTP ${co.status} ${co.error || ''}  ${coOk ? '✅ refused, NO Stripe session opened' : '❌ EXPECTED 403 not_available + no checkout url'}`);
+
+  console.log(`\n${allGood ? '✅ GATE LIVE: server refuses Coming-Soon create + checkout (existing rows too) and allows live types.' : '❌ Gate not behaving as expected — is it deployed?'}`);
   process.exit(allGood ? 0 : 1);
 })().catch((e) => { console.error('Probe failed:', e.message); process.exit(2); });

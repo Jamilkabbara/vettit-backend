@@ -445,6 +445,12 @@ router.post('/draft', authenticate, async (req, res, next) => {
       });
     }
 
+    // §A0 — don't even draft a Coming-Soon type (keeps gated rows out of the DB
+    // so no later path can promote one to paid).
+    if (isComingSoon(goalType || 'research')) {
+      return res.status(403).json(notAvailableError(goalType || 'research'));
+    }
+
     // Pass 21 Bug 16: default 100 → 50 (entry tier, $35).
     const respCount   = respondentCount || 50;
     const finalTarget = targeting || {};
