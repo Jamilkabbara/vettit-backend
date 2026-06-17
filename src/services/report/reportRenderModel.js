@@ -76,13 +76,19 @@ function shapeSurveyBody(q) {
         sentiment: ['positive', 'negative', 'neutral'].includes(t.sentiment) ? t.sentiment : 'neutral',
         quotes: Array.isArray(t.quotes) ? t.quotes.filter((q) => typeof q === 'string' && q.trim()).slice(0, 2) : [],
       }));
+    // §A6 — cap the verbatims shown in exports so a long open-end can't fill a
+    // page and orphan its insight callout onto the next. Display only; the full
+    // set still drives theme clustering upstream. (Web reads the canonical data
+    // directly and caps its own list.)
+    const VERBATIM_DISPLAY = 8;
     return {
       kind: 'verbatims',
       empty: items.length === 0 && themes.length === 0,
       empty_message: 'No open-text responses.',
       themes,
       has_themes: themes.length > 0,
-      items,
+      items: items.slice(0, VERBATIM_DISPLAY),
+      items_total: items.length,
       n: data.n || items.length,
     };
   }

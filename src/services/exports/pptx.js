@@ -38,7 +38,7 @@ const { buildRenderModel } = require('../report/reportRenderModel');
 // PowerPoint falls back to a clean sans. Brand COLORS carry identity regardless.
 const FONT = 'Inter';                  // body / data / labels
 const FONT_DISPLAY = 'Manrope';        // display / big numerals
-const FONT_SERIF = 'Instrument Serif'; // the "finding voice"
+const FONT_SERIF = 'Manrope'; // finding voice — reverted from Instrument Serif (read thin on dark); heavy Manrope instead
 
 // pptxgenjs uses hex codes without the leading '#'
 const hex = (c) => (c || '').replace('#', '');
@@ -243,7 +243,7 @@ function buildPPTX(pack, res) {
   cover.addText('VETT', { x: 0.7, y: 0.55, w: 6, h: 1.0, fontSize: 60, bold: true, color: hex(BRAND.lime), fontFace: FONT_DISPLAY });
   cover.addText('AI-POWERED MARKET RESEARCH', { x: 0.7, y: 1.65, w: 11, h: 0.4, fontSize: 12, color: hex(BRAND.text2), fontFace: FONT, charSpacing: 2 });
   // §5 — the finding leads the cover, in the serif "finding voice".
-  cover.addText(model.finding || model.header.title, { x: 0.7, y: 2.35, w: 12, h: 2.5, fontSize: 34, color: 'FFFFFF', fontFace: FONT_SERIF, valign: 'top', shrinkText: true });
+  cover.addText(model.finding || model.header.title, { x: 0.7, y: 2.35, w: 12, h: 2.5, fontSize: 32, bold: true, color: 'FFFFFF', fontFace: FONT_SERIF, valign: 'top', shrinkText: true });
   if (model.finding && model.header.title) {
     cover.addText(model.header.title, { x: 0.7, y: 5.05, w: 12, h: 0.6, fontSize: 13, color: hex(BRAND.text3), fontFace: FONT, valign: 'top', shrinkText: true });
   }

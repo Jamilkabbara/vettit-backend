@@ -54,16 +54,15 @@ html, body {
 
 /* ─── Page wrapper — every section paints its own dark BG ─────────────────── */
 .page {
+  /* §A4 — sections FLOW continuously now (no forced one-section-per-page +
+     no 297mm min-height), so short sections share a page and nothing sits on
+     a 60%-empty page. Inner logical units keep their own page-break-inside
+     guards. The cover keeps its full-page break via .cover below. */
   width: 100%;
-  min-height: 297mm;
-  padding: 20mm 16mm 28mm 16mm;
+  padding: 11mm 16mm 4mm 16mm;
   background: var(--bg);
-  page-break-after: always;
   page-break-inside: auto;
   position: relative;
-}
-.page:last-child {
-  page-break-after: auto;
 }
 
 /* ─── Cover page ──────────────────────────────────────────────────────────── */
@@ -72,6 +71,8 @@ html, body {
   flex-direction: column;
   justify-content: space-between;
   min-height: 297mm;
+  page-break-after: always; /* cover is always its own page */
+  padding-bottom: 20mm;
 }
 .cover-glow {
   position: absolute;
@@ -500,21 +501,38 @@ p, li {
 
 /* ─── §5 — finding hero, synthesis, personas, numbered recs (mirror the web) ── */
 .finding-hero { padding-bottom: 8pt; }
+/* §A2 — hero metric panel (big numerals) opening the report, like the web. */
+.hero-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 18pt;
+  border-top: 0.5pt solid var(--border);
+}
+.hero-metric {
+  flex: 1 1 30%;
+  min-width: 28%;
+  box-sizing: border-box;
+  padding: 13pt 16pt 13pt 0;
+  border-bottom: 0.5pt solid var(--border);
+}
+.hero-mv { font-family: 'Manrope', system-ui, sans-serif; font-weight: 800; font-size: 26pt; color: var(--lime); line-height: 1; letter-spacing: -0.02em; }
+.hero-mu { font-size: 9.5pt; color: var(--text2); margin-top: 6pt; line-height: 1.4; }
 .finding-text {
-  font-family: 'Instrument Serif', Georgia, serif;
-  font-weight: 400;
-  font-size: 30pt;
-  line-height: 1.08;
-  letter-spacing: -0.01em;
+  font-family: 'Manrope', system-ui, sans-serif;
+  font-weight: 800;
+  font-size: 26pt;
+  line-height: 1.12;
+  letter-spacing: -0.03em;
   color: var(--text1);
   margin: 6pt 0 0 0;
-  max-width: 22ch;
+  max-width: 100%; /* §A5 — full content width, matching the survey layout */
 }
 .synth-text {
-  font-family: 'Instrument Serif', Georgia, serif;
-  font-size: 15pt;
-  line-height: 1.42;
+  font-family: 'Manrope', system-ui, sans-serif;
+  font-size: 14pt;
+  line-height: 1.45;
   color: #D9DAE3;
+  max-width: 100%;
 }
 .persona-row {
   padding: 9pt 0;
@@ -527,4 +545,4 @@ p, li {
 .persona-desc { font-size: 10pt; color: var(--text2); line-height: 1.5; margin: 3pt 0 0 0; }
 .rec-row { display: flex; gap: 12pt; align-items: baseline; padding: 8pt 0; border-bottom: 0.5pt solid var(--border); page-break-inside: avoid; }
 .rec-row:last-child { border-bottom: none; }
-.rec-ix { font-family: 'Instrument Serif', Georgia, serif; font-size: 20pt; color: var(--lime); line-height: 1; flex: none; width: 22pt; }
+.rec-ix { font-family: 'Manrope', system-ui, sans-serif; font-weight: 800; font-size: 18pt; color: var(--lime); line-height: 1; flex: none; width: 22pt; }

@@ -54,8 +54,6 @@ function buildFontFaceCss() {
   const fontsourceRoot = path.resolve(__dirname, '../../../../node_modules/@fontsource');
   const manropeFiles   = path.join(fontsourceRoot, 'manrope/files');
   const interFiles     = path.join(fontsourceRoot, 'inter/files');
-  // §5 — the "finding voice" serif (hero finding, section numbers, pull-quotes).
-  const instrumentFiles = path.join(fontsourceRoot, 'instrument-serif/files');
 
   // Manrope: body — 400 (regular), 700 (bold), 800 (extra-bold)
   // Inter:   display — 700 (bold), 800 (extra-bold), 900 (black)
@@ -83,14 +81,6 @@ function buildFontFaceCss() {
     {
       family: 'Inter', weight: 900,
       file: path.join(interFiles, 'inter-latin-900-normal.woff2'),
-    },
-    {
-      family: 'Instrument Serif', weight: 400, style: 'normal',
-      file: path.join(instrumentFiles, 'instrument-serif-latin-400-normal.woff2'),
-    },
-    {
-      family: 'Instrument Serif', weight: 400, style: 'italic',
-      file: path.join(instrumentFiles, 'instrument-serif-latin-400-italic.woff2'),
     },
   ];
 
