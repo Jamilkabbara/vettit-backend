@@ -364,9 +364,125 @@ function buildCenterpiece(centerpiece) {
     };
   }
 
-  // Other methodologies: the flat headline list already carries the
-  // instrument numbers (VW points + GG for pricing, NPS/CSAT/CES for
-  // satisfaction, forced-choice shares for compare, …). No extra table.
+  // §3 export parity — every signature methodology emits its instrument table
+  // here (mirroring the web hero), so PDF/PPTX/XLSX carry the same structured
+  // read, not just the flat headline. All defensive: missing fields skipped,
+  // empty table → null (graceful headline fallback). dnum/dpct are display-only.
+  const dnum = (v, dp = 2) => (v == null || !Number.isFinite(Number(v)) ? null : String(Math.round(Number(v) * 10 ** dp) / 10 ** dp));
+  const dpct = (v) => (v == null || !Number.isFinite(Number(v)) ? null : `${Math.round(Number(v) * 10) / 10}%`);
+  const kvTable = (title, pairs) => {
+    const rows = pairs.filter(([, v]) => v != null && v !== '');
+    return rows.length ? { title, columns: ['Metric', 'Value'], rows } : null;
+  };
+
+  if (methodology === 'pricing') {
+    const p = analysis.van_westendorp?.points || {};
+    const r = analysis.acceptable_range;
+    return kvTable('Price sensitivity — Van Westendorp + Gabor-Granger', [
+      ['Optimal price (OPP)', dnum(p.opp)],
+      ['Acceptable range', (r && r.low != null && r.high != null) ? `${dnum(r.low)}–${dnum(r.high)}` : null],
+      ['Point of marginal cheapness (PMC)', dnum(p.pmc)],
+      ['Indifference price (IPP)', dnum(p.ipp)],
+      ['Point of marginal expensiveness (PME)', dnum(p.pme)],
+      ['Gabor-Granger revenue-optimal', dnum(analysis.gabor_granger?.optimal_price)],
+      ['WTP ceiling (mean)', dnum(analysis.wtp_ceiling?.mean)],
+    ]);
+  }
+
+  if (methodology === 'satisfaction') {
+    const nps = analysis.nps || {};
+    return kvTable('Satisfaction — NPS · CSAT · CES', [
+      ['NPS', dnum(nps.score, 0)],
+      ['Promoters', dpct(nps.promoters_pct)],
+      ['Passives', dpct(nps.passives_pct)],
+      ['Detractors', dpct(nps.detractors_pct)],
+      ['CSAT (top-2-box)', dpct(analysis.csat?.top2_pct)],
+      ['CES (top-2-box)', dpct(analysis.ces?.top2_pct)],
+      ['Retention (mean of 5)', dnum(analysis.retention?.stats?.mean)],
+    ]);
+  }
+
+  if (methodology === 'roadmap') {
+    const feats = (analysis.maxdiff?.features || []).filter((f) => f && f.utility != null);
+    if (feats.length === 0) return null;
+    const kano = new Map((analysis.kano?.features || []).map((k) => [String(k.feature_id ?? k.label), k.classification]));
+    const KANO = { must_be: 'Must-have', performance: 'Performance', attractive: 'Delighter', indifferent: 'Indifferent', reverse: 'Reverse', questionable: 'Questionable' };
+    return {
+      title: 'Feature priority — MaxDiff utility + Kano class',
+      columns: ['Feature', 'MaxDiff utility', 'Kano'],
+      rows: feats.slice().sort((a, b) => b.utility - a.utility).map((f) => {
+        const cls = kano.get(String(f.feature_id ?? f.label));
+        return [f.label || f.feature_id || 'Feature', dnum(f.utility) ?? '—', cls ? (KANO[cls] || cls) : '—'];
+      }),
+    };
+  }
+
+  if (methodology === 'naming') {
+    const ladder = analysis.turf?.ladder;
+    if (Array.isArray(ladder) && ladder.length) {
+      return {
+        title: 'Name / tagline reach — TURF',
+        columns: ['Add', 'Incremental reach', 'Cumulative reach'],
+        rows: ladder.map((s) => [s.option || s.candidate_id || '—', dpct(s.incremental_reach_pct) ?? '—', dpct(s.cumulative_reach_pct) ?? '—']),
+      };
+    }
+    const cands = (analysis.candidates || []).slice().sort((a, b) => {
+      const aw = a.pairwise_win_rate?.pct ?? a.composite ?? -Infinity;
+      const bw = b.pairwise_win_rate?.pct ?? b.composite ?? -Infinity;
+      return bw - aw;
+    });
+    if (cands.length === 0) return null;
+    const winnerId = analysis.winner?.candidate_id;
+    return {
+      title: 'Name testing — win rate',
+      columns: ['Name', 'Win rate', 'Winner'],
+      rows: cands.map((c) => [
+        c.label || c.candidate_id || 'Name',
+        c.pairwise_win_rate?.pct != null ? (dpct(c.pairwise_win_rate.pct) ?? '—')
+          : (c.composite != null ? `composite ${dnum(c.composite)}` : '—'),
+        c.candidate_id === winnerId ? 'Yes' : '',
+      ]),
+    };
+  }
+
+  if (methodology === 'competitor') {
+    const brands = (analysis.brands || []).filter((b) => b && b.preference_pct != null);
+    if (brands.length === 0) return null;
+    return {
+      title: 'Share of preference — focal brand vs competitors',
+      columns: ['Brand', 'Preference', 'NPS'],
+      rows: brands.slice().sort((a, b) => b.preference_pct - a.preference_pct).map((b) => [
+        `${b.label || 'Brand'}${b.is_focal ? ' (focal)' : ''}`,
+        dpct(b.preference_pct) ?? '—',
+        dnum(b.nps?.score ?? b.nps_score, 0) ?? '—',
+      ]),
+    };
+  }
+
+  if (methodology === 'churn') {
+    const drivers = (analysis.drivers?.ranked || []).filter((d) => d && (d.reason || d.option || d.label));
+    if (drivers.length === 0 && analysis.winback?.winnable_pct == null) return null;
+    const rows = drivers.map((d) => [`Driver: ${d.reason || d.option || d.label}`, dpct(d.pct_of_respondents) ?? '—']);
+    if (analysis.winback?.winnable_pct != null) rows.push(['Winnable (would return)', dpct(analysis.winback.winnable_pct) ?? '—']);
+    return rows.length ? { title: 'Churn drivers + win-back', columns: ['Factor', '% of churned'], rows } : null;
+  }
+
+  if (methodology === 'compare') {
+    const concepts = (analysis.concepts || []).filter((c) => c && (c.final_choice_pct?.pct != null || c.dimensions?.appeal?.mean != null));
+    if (concepts.length === 0) return null;
+    const winnerId = analysis.overall_winner?.concept_id;
+    const rows = concepts.map((c) => [
+      c.label || c.concept_id || 'Concept',
+      c.final_choice_pct?.pct != null ? (dpct(c.final_choice_pct.pct) ?? '—')
+        : (c.dimensions?.appeal?.mean != null ? `appeal ${dnum(c.dimensions.appeal.mean)}` : '—'),
+      c.concept_id === winnerId ? 'Yes' : '',
+    ]);
+    if (analysis.final_choice?.none?.pct != null) rows.push(['None of these', dpct(analysis.final_choice.none.pct) ?? '—', '']);
+    return { title: 'Head-to-head — forced choice', columns: ['Concept', 'Forced choice', 'Winner'], rows };
+  }
+
+  // validate / marketing / research lead with their headline metrics (a few
+  // numbers, no per-row structure) — the flat headline carries them.
   return null;
 }
 
