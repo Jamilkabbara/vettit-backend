@@ -30,15 +30,10 @@ const { getReportMetadata } = require('./reportMetadata');
 
 const argb = (c) => 'FF' + (c || '').replace('#', '').toUpperCase();
 
-// 24-emotion framework order: 8 basic Plutchik + 16 nuanced research-derived.
-// Same order as src/types/creativeAnalysis.ts EMOTION_TAXONOMY_V2.
-const EMOTION_ORDER = [
-  // Plutchik 8
-  'joy', 'trust', 'fear', 'surprise', 'sadness', 'disgust', 'anger', 'anticipation',
-  // Nuanced 16
-  'amusement', 'awe', 'contentment', 'pride', 'love', 'satisfaction', 'relief', 'serenity',
-  'shame', 'embarrassment', 'guilt', 'contempt', 'envy', 'boredom', 'confusion', 'nostalgia',
-];
+// The emotion taxonomy is derived from the data at render time (see `emotionKeys`
+// in buildCreativeAttentionXLSX). A hardcoded list silently dropped emotions the
+// model now emits (calm, hope, curiosity, romance, irritation…) and showed blank
+// columns for retired ones — so we read the keys straight off the analysis.
 
 function styleHeader(cell) {
   cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: argb(BRAND.lime) } };
@@ -62,7 +57,17 @@ async function buildCreativeAttentionXLSX(pack, res) {
   const { mission } = pack;
   const ca = mission.creative_analysis || {};
   const frames = Array.isArray(ca.frame_analyses) ? ca.frame_analyses : [];
-  const benchmarks = Array.isArray(ca.channel_benchmarks) ? ca.channel_benchmarks : [];
+  // Channel sheet mirrors the PDF/PPTX centerpiece (summary.best_platform_fit) so
+  // every surface shows the same "where this creative earns attention" table.
+  const channels = (Array.isArray(ca.summary?.best_platform_fit) ? ca.summary.best_platform_fit.slice() : [])
+    .sort((a, b) => (b.fit_score ?? 0) - (a.fit_score ?? 0));
+  // Emotion taxonomy straight from the data (union of frame keys), most-prominent first.
+  const emotionKeys = (() => {
+    const set = new Set();
+    for (const f of frames) for (const k of Object.keys(f.emotions || {})) set.add(k);
+    const mean = (k) => { const vs = frames.map((f) => (f.emotions || {})[k]).filter((v) => typeof v === 'number'); return vs.length ? vs.reduce((s, v) => s + v, 0) / vs.length : -1; };
+    return [...set].sort((a, b) => mean(b) - mean(a) || a.localeCompare(b));
+  })();
   const meta = getReportMetadata(mission);
 
   const wb = new ExcelJS.Workbook();
@@ -132,15 +137,15 @@ async function buildCreativeAttentionXLSX(pack, res) {
     views: [{ state: 'frozen', xSplit: 0, ySplit: 1 }],
   });
   const frameHeaders = [
-    'Frame', 'Timestamp (s)', 'Engagement', 'Top emotion',
-    ...EMOTION_ORDER, 'Narrative', 'Verbatim',
+    'Frame', 'Timestamp (s)', 'Engagement', 'Message clarity', 'Audience resonance', 'Top emotion',
+    ...emotionKeys, 'Description',
   ];
   frameSheet.addRow(frameHeaders);
   frameSheet.getRow(1).eachCell((c) => styleHeader(c));
   frameSheet.columns = [
-    { width: 8 }, { width: 14 }, { width: 12 }, { width: 18 },
-    ...EMOTION_ORDER.map(() => ({ width: 12 })),
-    { width: 60 }, { width: 50 },
+    { width: 8 }, { width: 14 }, { width: 12 }, { width: 14 }, { width: 16 }, { width: 18 },
+    ...emotionKeys.map(() => ({ width: 12 })),
+    { width: 70 },
   ];
 
   frames.forEach((f, i) => {
@@ -149,10 +154,11 @@ async function buildCreativeAttentionXLSX(pack, res) {
       i + 1,
       f.timestamp ?? '',
       f.engagement_score ?? '',
+      f.message_clarity ?? '',
+      f.audience_resonance ?? '',
       topEmotion(emotions),
-      ...EMOTION_ORDER.map((k) => (typeof emotions[k] === 'number' ? emotions[k] : '')),
-      f.narrative || '',
-      f.verbatim || '',
+      ...emotionKeys.map((k) => (typeof emotions[k] === 'number' ? emotions[k] : '')),
+      f.brief_description || '',
     ];
     frameSheet.addRow(row);
   });
@@ -174,28 +180,27 @@ async function buildCreativeAttentionXLSX(pack, res) {
   }
 
   // ── 3. CROSS-CHANNEL BENCHMARKS ─────────────────────────────────
-  const benchSheet = wb.addWorksheet('Cross-Channel Benchmarks', {
+  const benchSheet = wb.addWorksheet('Channel Fit', {
     properties: { tabColor: { argb: argb(BRAND.lime) } },
   });
-  benchSheet.addRow(['Channel', 'Format', 'Norm (s)', 'Predicted (s)', 'Delta %', 'Assessment', 'Format match']);
+  benchSheet.addRow(['Channel', 'Fit (0-100)', 'Predicted active attention (s)', 'Platform norm (s)', 'Δ vs norm %', 'Rationale']);
   benchSheet.getRow(1).eachCell((c) => styleHeader(c));
   benchSheet.columns = [
-    { width: 32 }, { width: 16 }, { width: 12 }, { width: 14 }, { width: 12 }, { width: 50 }, { width: 14 },
+    { width: 36 }, { width: 12 }, { width: 26 }, { width: 16 }, { width: 12 }, { width: 60 },
   ];
-  benchmarks.forEach((b) => {
+  channels.forEach((c) => {
     benchSheet.addRow([
-      b.channel || '',
-      b.format || '',
-      b.norm_seconds ?? '',
-      b.predicted_seconds ?? '',
-      b.delta_pct ?? '',
-      b.assessment || '',
-      b.format_match === true ? 'Yes' : b.format_match === false ? 'No' : '—',
+      c.platform || '',
+      c.fit_score ?? '',
+      c.predicted_creative_attention_seconds ?? '',
+      c.platform_norm_active_attention_seconds ?? '',
+      c.delta_vs_norm_pct ?? '',
+      c.rationale || '',
     ]);
   });
-  if (benchmarks.length > 0) {
+  if (channels.length > 0) {
     benchSheet.addConditionalFormatting({
-      ref: `E2:E${benchmarks.length + 1}`,
+      ref: `E2:E${channels.length + 1}`,
       rules: [
         { type: 'cellIs', operator: 'greaterThanOrEqual', formulae: ['0'], priority: 1,
           style: { font: { color: { argb: argb(BRAND.lime) } } } },
@@ -216,7 +221,7 @@ async function buildCreativeAttentionXLSX(pack, res) {
     { width: 18 }, { width: 12 },
     ...frames.map(() => ({ width: 10 })),
   ];
-  EMOTION_ORDER.forEach((emo) => {
+  emotionKeys.forEach((emo) => {
     const perFrameVals = frames.map((f) =>
       typeof (f.emotions || {})[emo] === 'number' ? f.emotions[emo] : null);
     const numericVals = perFrameVals.filter((v) => typeof v === 'number');
@@ -226,10 +231,10 @@ async function buildCreativeAttentionXLSX(pack, res) {
     emoSheet.addRow([emo, aggregate, ...perFrameVals.map((v) => v ?? '')]);
   });
   // 3-color gradient on score cells (col B onwards, 24 emotion rows)
-  if (frames.length > 0 || EMOTION_ORDER.length > 0) {
+  if (emotionKeys.length > 0) {
     const lastCol = String.fromCharCode(65 + 1 + frames.length); // B + frames
     emoSheet.addConditionalFormatting({
-      ref: `B2:${lastCol}${EMOTION_ORDER.length + 1}`,
+      ref: `B2:${lastCol}${emotionKeys.length + 1}`,
       rules: [{
         type: 'colorScale', priority: 1,
         cfvo: [

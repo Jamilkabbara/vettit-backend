@@ -293,6 +293,29 @@ function analysisHeadlines(analysis) {
         break;
       }
 
+      case 'creative_attention': {
+        // CA's flat scorecard: engagement, attention split, distinctive brand
+        // asset, predicted dwell, strongest emotion, best channel. The per-
+        // channel grid lives in the centerpiece. Fields read verbatim from the
+        // vision analysis (summary + attention blocks).
+        const s = analysis.summary || {};
+        const att = analysis.attention || {};
+        if (s.overall_engagement_score != null) push('Overall engagement (0-100)', num(s.overall_engagement_score, 0));
+        push('Active attention', pct(att.active_attention_pct));
+        push('Passive attention', pct(att.passive_attention_pct));
+        if (att.distinctive_brand_asset_score != null) push('Distinctive brand asset (0-100)', num(att.distinctive_brand_asset_score, 0));
+        if (att.predicted_active_attention_seconds != null) push('Predicted active attention', `${num(att.predicted_active_attention_seconds)}s`);
+        const peak = Array.isArray(s.emotion_peaks) ? s.emotion_peaks[0] : null;
+        if (peak && peak.emotion) {
+          const emo = String(peak.emotion).charAt(0).toUpperCase() + String(peak.emotion).slice(1);
+          push('Strongest emotion', `${emo} (${num(peak.peak_value, 0)})`);
+        }
+        const topFit = Array.isArray(s.best_platform_fit)
+          ? s.best_platform_fit.slice().sort((a, b) => (b.fit_score ?? 0) - (a.fit_score ?? 0))[0] : null;
+        if (topFit && topFit.platform) push('Best channel fit', `${topFit.platform} (${num(topFit.fit_score, 0)}/100)`);
+        break;
+      }
+
       default:
         break;
     }

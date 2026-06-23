@@ -71,6 +71,69 @@ describe('audience_profiling export centerpiece', () => {
   });
 });
 
+describe('creative_attention export centerpiece + headline', () => {
+  // CA's signature lives in mission.creative_analysis (a vision analysis), NOT
+  // the survey `analysis` — so it's wired in via the mission, not the param.
+  const renderCA = (creative_analysis) => {
+    const mission = { id: 't', title: 'T', goal_type: 'creative_attention', questions: {}, creative_analysis };
+    return buildRenderModel(buildCanonicalReport(mission, null, []));
+  };
+  const ca = {
+    summary: {
+      overall_engagement_score: 70,
+      vs_benchmark: 'Performs above the luxury benchmark on engagement.',
+      strengths: ['Trust and pride dominate.'], weaknesses: ['Joy runs low.'],
+      recommendations: ['Add a typographic anchor.', 'Introduce warmth.'],
+      emotion_peaks: [{ emotion: 'trust', peak_value: 65 }, { emotion: 'pride', peak_value: 55 }],
+      best_platform_fit: [
+        { platform: 'Instagram Feed', fit_score: 88, predicted_creative_attention_seconds: 1.7, platform_norm_active_attention_seconds: 1.2, delta_vs_norm_pct: 42 },
+        { platform: 'Print', fit_score: 90, predicted_creative_attention_seconds: 3.2, platform_norm_active_attention_seconds: 2.5, delta_vs_norm_pct: 28 },
+      ],
+    },
+    attention: { active_attention_pct: 60, passive_attention_pct: 40, non_attention_pct: 0, distinctive_brand_asset_score: 74, predicted_active_attention_seconds: 1.8 },
+  };
+
+  test('centerpiece = per-channel fit grid, sorted by fit desc', () => {
+    const cp = renderCA(ca).centerpiece;
+    expect(cp).not.toBeNull();
+    expect(cp.title).toMatch(/channel fit/i);
+    expect(cp.columns).toHaveLength(5);
+    expect(cp.rows).toHaveLength(2);
+    expect(cp.rows[0]).toEqual(['Print', '90', '3.2s', '2.5s', '+28%']); // highest fit first
+    expect(cp.rows[1]).toEqual(['Instagram Feed', '88', '1.7s', '1.2s', '+42%']);
+  });
+
+  test('headline carries the attention scorecard (no empty headline for CA)', () => {
+    const h = renderCA(ca).headline;
+    expect(h).not.toBeNull();
+    expect(h.primary.label).toBe('Overall engagement (0-100)');
+    expect(h.all).toEqual(expect.arrayContaining([
+      { label: 'Active attention', value: '60%' },
+      { label: 'Distinctive brand asset (0-100)', value: '74' },
+      { label: 'Strongest emotion', value: 'Trust (65)' },
+      { label: 'Best channel fit', value: 'Print (90/100)' },
+    ]));
+  });
+
+  test('narrative + recs + key findings come from creative_analysis (insights null)', () => {
+    const m = renderCA(ca);
+    expect(m.synthesis).toMatch(/above the luxury benchmark/i);
+    expect(m.recommendations).toEqual(['Add a typographic anchor.', 'Introduce warmth.']);
+    expect(m.keyFindings.map((f) => f.title)).toEqual(['Strength — Trust and pride dominate.', 'Watch-out — Joy runs low.']);
+    expect(m.gate).toBeNull(); // CA skips the survey stat-gate
+  });
+
+  test('no channel fit → falls back to the attention scorecard table', () => {
+    const cp = renderCA({ summary: { overall_engagement_score: 70 }, attention: ca.attention }).centerpiece;
+    expect(cp.title).toMatch(/scorecard/i);
+    expect(cp.rows).toEqual(expect.arrayContaining([['Active attention', '60%'], ['Distinctive brand asset (0-100)', '74']]));
+  });
+
+  test('no creative_analysis data → centerpiece null (graceful)', () => {
+    expect(renderCA({ summary: {}, attention: {} }).centerpiece).toBeNull();
+  });
+});
+
 describe('§3 signature export parity — every methodology emits its instrument table', () => {
   test('pricing — Van Westendorp + Gabor-Granger', () => {
     const cp = centerpieceFor('pricing', {

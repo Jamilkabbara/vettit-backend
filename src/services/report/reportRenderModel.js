@@ -375,6 +375,37 @@ function buildCenterpiece(centerpiece) {
     return rows.length ? { title, columns: ['Metric', 'Value'], rows } : null;
   };
 
+  // CA export parity — the web renders a bespoke CreativeAttentionResultsPage;
+  // mirror its signature here so PDF/PPTX carry a real instrument table. The
+  // per-channel fit grid is the actionable read (where this creative earns
+  // attention) the flat headline can't hold; when channel fit is absent we fall
+  // back to the attention/engagement scorecard so the centerpiece still renders.
+  if (methodology === 'creative_attention') {
+    const fits = (analysis.summary?.best_platform_fit || []).filter((f) => f && f.platform);
+    if (fits.length) {
+      return {
+        title: 'Channel fit — where this creative earns attention',
+        columns: ['Channel', 'Fit (0-100)', 'Predicted active attention', 'Platform norm', 'vs. norm'],
+        rows: fits.slice().sort((a, b) => (b.fit_score ?? 0) - (a.fit_score ?? 0)).map((f) => [
+          f.platform,
+          f.fit_score != null ? String(f.fit_score) : '—',
+          f.predicted_creative_attention_seconds != null ? `${f.predicted_creative_attention_seconds}s` : '—',
+          f.platform_norm_active_attention_seconds != null ? `${f.platform_norm_active_attention_seconds}s` : '—',
+          f.delta_vs_norm_pct != null ? `${f.delta_vs_norm_pct >= 0 ? '+' : ''}${f.delta_vs_norm_pct}%` : '—',
+        ]),
+      };
+    }
+    const att = analysis.attention || {};
+    return kvTable('Creative attention — engagement & attention scorecard', [
+      ['Overall engagement (0-100)', dnum(analysis.summary?.overall_engagement_score, 0)],
+      ['Active attention', dpct(att.active_attention_pct)],
+      ['Passive attention', dpct(att.passive_attention_pct)],
+      ['Non-attention', dpct(att.non_attention_pct)],
+      ['Distinctive brand asset (0-100)', dnum(att.distinctive_brand_asset_score, 0)],
+      ['Predicted active attention', att.predicted_active_attention_seconds != null ? `${att.predicted_active_attention_seconds}s` : null],
+    ]);
+  }
+
   if (methodology === 'pricing') {
     const p = analysis.van_westendorp?.points || {};
     const r = analysis.acceptable_range;
