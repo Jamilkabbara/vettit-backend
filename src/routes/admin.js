@@ -782,6 +782,14 @@ router.post('/missions/:id/reanalyze', async (req, res, next) => {
       .single();
     if (mErr || !mission) return res.status(404).json({ error: 'Mission not found' });
 
+    // §A0 — reanalyze is the 6th door (synthesis → results). Gate Coming-Soon
+    // types for consistency with create/draft/checkout/free-launch/mark-paid,
+    // now that the two CA refunds are done (it's no longer the CA repair path).
+    // Auto-allows each type the moment it's removed from COMING_SOON_GOAL_TYPES.
+    if (isComingSoon(mission.goal_type)) {
+      return res.status(403).json(notAvailableError(mission.goal_type));
+    }
+
     // 2. Load all responses (persona simulation already done)
     const { data: responseRows, error: rErr } = await supabase
       .from('mission_responses')
@@ -862,7 +870,7 @@ router.post('/missions/bulk-reanalyze', async (req, res, next) => {
     // oldest stale missions first (most likely to have user complaints).
     const { data: candidates, error: cErr } = await supabase
       .from('missions')
-      .select('id, executive_summary, insights, mission_assets, completed_at')
+      .select('id, executive_summary, insights, mission_assets, completed_at, goal_type')
       .eq('status', 'completed')
       .or('executive_summary.is.null,insights.is.null')
       .order('completed_at', { ascending: true })
@@ -875,7 +883,7 @@ router.post('/missions/bulk-reanalyze', async (req, res, next) => {
     // Pull a wider net then refine below.
     const { data: extraCandidates } = await supabase
       .from('missions')
-      .select('id, executive_summary, insights, mission_assets, completed_at')
+      .select('id, executive_summary, insights, mission_assets, completed_at, goal_type')
       .eq('status', 'completed')
       .order('completed_at', { ascending: true })
       .limit(500);
@@ -891,6 +899,7 @@ router.post('/missions/bulk-reanalyze', async (req, res, next) => {
     for (const m of [...(candidates || []), ...(extraCandidates || [])]) {
       if (seen.has(m.id)) continue;
       seen.add(m.id);
+      if (isComingSoon(m.goal_type)) continue; // §A0 — never reanalyze a gated type
       if (isStale(m)) stale.push(m);
       if (stale.length >= limit) break;
     }

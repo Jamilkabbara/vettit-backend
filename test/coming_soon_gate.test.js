@@ -25,6 +25,8 @@ const mockCreateCheckoutSession = jest.fn(async () => ({ id: 'cs_test', url: 'ht
 jest.mock('../src/services/stripe', () => ({ createCheckoutSession: mockCreateCheckoutSession, createPromoOnStripe: jest.fn(), updateStripePromoActive: jest.fn() }));
 const mockRunMission = jest.fn(async () => ({}));
 jest.mock('../src/jobs/runMission', () => ({ runMission: mockRunMission }));
+const mockSynthesize = jest.fn(async () => ({ executive_summary: 'ok', kpis: [], recommendations: [] }));
+jest.mock('../src/services/ai/insights', () => ({ synthesizeInsights: mockSynthesize, aggregate: jest.fn() }));
 jest.mock('../src/db/missionSchema', () => ({
   updateMission: jest.fn(async () => ({})),
   sanitizeMissionPatch: (p) => ({ patch: p, rejected: [] }),
@@ -69,7 +71,7 @@ const draftRow = (goal_type) => ({ id: 'm1', user_id: 'u1', goal_type, status: '
 const freePromo = { code: 'FREELAUNCH', active: true, type: 'free', expires_at: null, max_uses: null, uses_count: 0 };
 const tick = () => new Promise((r) => setImmediate(r));
 
-beforeEach(() => { mockCreateCheckoutSession.mockClear(); mockRunMission.mockClear(); mockMissionRow = null; mockPromo = null; });
+beforeEach(() => { mockCreateCheckoutSession.mockClear(); mockRunMission.mockClear(); mockSynthesize.mockClear(); mockMissionRow = null; mockPromo = null; });
 
 describe('single source of truth', () => {
   test('exactly the 3 deferred types are gated', () => {
@@ -152,5 +154,20 @@ describe('admin mark-paid — POST /api/admin/missions/:id/mark-paid (ZERO run f
     await request(app).post('/api/admin/missions/m1/mark-paid').send({ reason: 'test' });
     await tick();
     expect(mockRunMission).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('admin reanalyze — POST /api/admin/missions/:id/reanalyze (6th door — NO synthesis for gated)', () => {
+  test.each(GATED)('gated %s → 403, synthesizeInsights NEVER called', async (goalType) => {
+    mockMissionRow = draftRow(goalType);
+    const res = await request(app).post('/api/admin/missions/m1/reanalyze').send({});
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('not_available');
+    expect(mockSynthesize).not.toHaveBeenCalled(); // gate fires before synthesis
+  });
+  test('a live type (validate) is NOT blocked by the gate', async () => {
+    mockMissionRow = draftRow('validate');
+    const res = await request(app).post('/api/admin/missions/m1/reanalyze').send({});
+    expect(res.body.error).not.toBe('not_available'); // gate let it through (downstream behavior aside)
   });
 });
