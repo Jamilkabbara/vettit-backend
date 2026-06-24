@@ -7,6 +7,7 @@
 const { callClaude, extractJSON } = require('./anthropic');
 const { WRITING_STYLE } = require('./writingStyle');
 const logger = require('../../utils/logger');
+const { computePersonas } = require('../analysis/personas');
 
 // Pass 22 Bug 22.13 — narrative 4-paragraph executive summary replaces the
 // 3-5-sentence under-750-char shape. Pass 22 Bug 22.16 — contradictions array
@@ -239,6 +240,12 @@ function buildComputedSummary(analysis, mission) {
 async function synthesizeInsights(mission, responses, analysis = null) {
   const questions = mission.questions || [];
   const agg = aggregate(responses, questions);
+
+  // §8 — "who responded" personas, computed DETERMINISTICALLY from the achieved
+  // respondent profiles (real shares + modal traits; no LLM, no recomputed stats).
+  // Attached to every return path so insights.personas is always grounded; a
+  // future LLM prose layer may enrich the strings but never the shares/grouping.
+  const personas = computePersonas(responses, mission);
 
   // Pass 46 Phase 3 — computed-analysis injection. When runMission hands
   // us the deterministic methodology analysis (src/services/analysis/),
@@ -537,6 +544,8 @@ If chart_data cannot be reliably emitted (very small sample, malformed responses
     // (Bali, General Research, Recommended Next Step, AI Insights). The
     // sanitizer is the canonical defense — applied before persistence so
     // every JSONB field stamped to missions.insights is clean.
+    // Deterministic personas win unless a future LLM path supplies its own.
+    if (!Array.isArray(parsed.personas) || !parsed.personas.length) parsed.personas = personas;
     return sanitizeAIOutputDeep(parsed);
   } catch (err) {
     logger.error('Insight synthesis failed; using computed fallback', { missionId: mission.id, err: err.message });
@@ -558,6 +567,7 @@ If chart_data cannot be reliably emitted (very small sample, malformed responses
       follow_ups: [],
       contradictions: [],
       segment_breakdowns: [],
+      personas,
     };
   }
 }
