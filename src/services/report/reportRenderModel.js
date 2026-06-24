@@ -266,13 +266,36 @@ function buildRenderModel(report) {
 }
 
 /**
+ * §9 — at a DIRECTIONAL sample (n below the soft threshold, set on the gate),
+ * the instrument can't support 2-decimal point estimates. Soften the displayed
+ * precision so the table doesn't imply false precision the base size can't earn:
+ * decimal percentages → whole numbers (66.7% → 67%), and any ≥2-decimal figure →
+ * 1 decimal (89.06 → 89.1, utility 0.18 → 0.2). Integers, ranges, and already-
+ * coarse values are untouched; the ranking/order (the honest read) is preserved.
+ * Only fires when the gate flags directional — authoritative reads keep full
+ * precision, so existing exports are byte-for-byte unchanged.
+ */
+function softenCenterpiecePrecision(cp, directional) {
+  if (!cp || !directional || !Array.isArray(cp.rows)) return cp;
+  const soft = (s) => (typeof s !== 'string' ? s : s
+    .replace(/(-?\d+)\.\d+%/g, (m) => `${Math.round(parseFloat(m))}%`)
+    .replace(/(-?\d+\.\d{2,})(?!%)/g, (m) => String(Math.round(parseFloat(m) * 10) / 10)));
+  return { ...cp, rows: cp.rows.map((r) => (Array.isArray(r) ? r.map(soft) : r)) };
+}
+
+function buildCenterpiece(centerpiece) {
+  const directional = !!(centerpiece && centerpiece.gate && centerpiece.gate.posture === 'directional');
+  return softenCenterpiecePrecision(buildCenterpieceRaw(centerpiece), directional);
+}
+
+/**
  * Build the centerpiece "instrument" view from the methodology analysis.
  * Returns null when there's no natural structured table beyond the flat
  * headline metrics. For brand_lift this is the FULL exposed-vs-control
  * funnel (every stage), which is the whole point of the methodology — not
  * a single numeric stage.
  */
-function buildCenterpiece(centerpiece) {
+function buildCenterpieceRaw(centerpiece) {
   if (!centerpiece || typeof centerpiece !== 'object') return null;
   const analysis = centerpiece.data;
   if (!analysis || typeof analysis !== 'object') return null;
