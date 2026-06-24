@@ -20,6 +20,7 @@ const { computeRatingStats } = require('../ai/insights');
 const { analysisHeadlines } = require('../exports/analysisHeadlines');
 const { computeStatGate } = require('./statGate');
 const { deriveFocalBrand, isGeneric } = require('../../utils/focalBrand');
+const { computePersonas } = require('../analysis/personas');
 
 const VERBATIM_CAP = 30;
 
@@ -524,9 +525,13 @@ function buildCanonicalReport(mission, analysis, responses) {
     // the "VETT synthesis" block.
     finding: finding || null,
     synthesis: execSummary || null,
-    // §3 — personas (n-gated), populated by the synthesis generator; empty until
-    // backfilled. Surfaced here so web + exports read one source.
-    personas: Array.isArray(insights.personas) ? insights.personas : [],
+    // §8 — "who responded" personas. Prefer the persisted insights.personas
+    // (written at synthesis); fall back to a deterministic compute from the rows
+    // so existing missions (insights.personas empty) still render personas when
+    // their responses carry profiles. Empty → section hidden on every surface.
+    personas: (Array.isArray(insights.personas) && insights.personas.length)
+      ? insights.personas
+      : computePersonas(rows, mission),
     screening,
     exec_summary: execSummary || null,
     survey,
