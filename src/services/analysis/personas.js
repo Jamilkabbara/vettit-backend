@@ -106,36 +106,43 @@ function computePersonas(responses, mission) { // eslint-disable-line no-unused-
   const total = profiles.length;
   if (total < 3) return []; // too few respondents to archetype honestly
 
-  // Choose the dimension giving the cleanest 2–4-way split: covers most of the
-  // sample, not too sparse, reasonably balanced.
-  const scoreDim = (dim) => {
-    const counts = {};
-    let known = 0;
-    for (const p of profiles) { const v = norm(p[dim]); if (v) { counts[v] = (counts[v] || 0) + 1; known += 1; } }
-    if (known < total * 0.6) return -1;
-    const groups = Object.values(counts);
-    const k = groups.length;
-    if (k < 2 || k > 6) return -1;
-    const minShare = Math.min(...groups) / total;
-    return (k >= 2 && k <= 4 ? 2 : 1) + minShare; // prefer 2–4 balanced groups
+  // Pick the dimension whose TOP values cover the most of the sample. Real
+  // synthetic profiles carry high-cardinality, free-text dimension values
+  // (decision_style "impulse-driven with quality threshold", 50+ distinct
+  // occupations, even seniority/income_band spill long-tail variants like
+  // "mid-high"/"entry") — so the old "reject any dimension with >6 distinct
+  // values" rule left EVERY real mission with zero personas. Instead we group by
+  // the dominant values (a real group of >=2 and >=MIN_SHARE) and fold the long
+  // tail into "Other", scoring each dimension by how much of the sample its top
+  // groups cover.
+  const MIN_SHARE = 0.08;     // a shown persona needs >=8% of the sample
+  const MIN_COVERAGE = 0.5;   // the chosen dimension's top groups must cover >=50%
+  const groupsForDim = (dim) => {
+    const byVal = new Map();
+    for (const p of profiles) { const v = norm(p[dim]); if (!v) continue; if (!byVal.has(v)) byVal.set(v, []); byVal.get(v).push(p); }
+    return [...byVal.entries()]
+      .map(([value, members]) => ({ value, members }))
+      .filter((g) => g.members.length >= 2 && g.members.length / total >= MIN_SHARE)
+      .sort((a, b) => b.members.length - a.members.length)
+      .slice(0, 4);
   };
   let best = null; let bestScore = -1;
-  for (const d of DIMENSIONS) { const s = scoreDim(d); if (s > bestScore) { bestScore = s; best = d; } }
-  if (!best || bestScore < 0) return [];
+  for (const dim of DIMENSIONS) {
+    const groups = groupsForDim(dim);
+    if (groups.length < 2) continue; // need >=2 real archetypes
+    const coverage = groups.reduce((sum, g) => sum + g.members.length, 0) / total;
+    if (coverage < MIN_COVERAGE) continue;
+    const score = coverage + 0.01 * groups.length; // tiebreak: prefer more groups
+    if (score > bestScore) { bestScore = score; best = { dim, groups }; }
+  }
+  if (!best) return [];
 
-  // Group, sort by size, keep top 4, fold any tail into "Other".
-  const groups = new Map();
-  for (const p of profiles) { const v = norm(p[best]); if (!v) continue; if (!groups.has(v)) groups.set(v, []); groups.get(v).push(p); }
-  const arr = [...groups.entries()].map(([value, members]) => ({ value, members }))
-    .sort((a, b) => b.members.length - a.members.length);
-  // A persona must describe a GROUP (>=2 respondents), never an individual. Keep
-  // the top 4 such groups; fold the long tail (incl. singletons) into "Other".
-  const significant = arr.filter((g) => g.members.length >= 2);
-  const top = significant.slice(0, 4);
-  const shown = new Set(top.map((g) => g.value));
-  const tailMembers = arr.filter((g) => !shown.has(g.value)).flatMap((g) => g.members);
-  const personas = top.map((g) => buildPersona(best, g.value, g.members, total));
-  if (tailMembers.length >= 2) personas.push(buildPersona(best, '__other__', tailMembers, total));
+  // Build personas from the top groups; fold everyone else (long tail + missing)
+  // into "Other" when that remainder is itself a real group (>=2).
+  const shownValues = new Set(best.groups.map((g) => g.value));
+  const tailMembers = profiles.filter((p) => { const v = norm(p[best.dim]); return !v || !shownValues.has(v); });
+  const personas = best.groups.map((g) => buildPersona(best.dim, g.value, g.members, total));
+  if (tailMembers.length >= 2) personas.push(buildPersona(best.dim, '__other__', tailMembers, total));
   // A single persona covering ~the whole sample says nothing — need >=2 to be useful.
   return personas.length >= 2 ? personas : [];
 }

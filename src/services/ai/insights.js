@@ -462,14 +462,18 @@ Pass 42 B1 — also emit the chart_data block. Frontend renders charts (distribu
 
 If chart_data cannot be reliably emitted (very small sample, malformed responses), omit the whole chart_data block. Frontend treats absence as "no charts" not "broken charts".${methodologySpecificInstr}`;
 
-  // Pass 47 — scale the synthesis token budget to the survey length.
-  // The fixed 4000 truncated the synthesis JSON for any real survey
-  // (per_question_insights for 9-23 questions + chart_data + an 800-word
-  // executive summary), so extractJSON threw and EVERY mission with >=9
-  // questions fell back to "contact support" — verified across 10/11
-  // Phase-2 missions. ~350 tokens/question (insight prose is heavier
-  // than a raw answer), floor 4000, cap 8000.
-  const synthMaxTokens = Math.min(8000, Math.max(4000, (questions.length || 0) * 350));
+  // Scale the synthesis token budget to the survey length. The OLD floor (4000)
+  // truncated LOW-question-count but output-rich methodologies: market_entry has
+  // only ~7 questions → it hit the 4000 floor, yet its JSON carries a per-market
+  // exec summary + a large chart_data block (per-question distributions × every
+  // segment) → "Unexpected end of JSON input" → computed fallback on a clean n=80
+  // run. The output budget scales with question COUNT but the real output scales
+  // with segments too, so the floor must be generous. insight_synth runs on
+  // sonnet-4-6 (large max output), so floor 8000 (2× the prior truncation point)
+  // / cap 12000 is safe. NB chart_data here is DISCARDED — runMission always
+  // overwrites insights.chart_data with the deterministic computeChartData — so a
+  // follow-up could drop the chart_data ask from this prompt to cut cost ~⅓.
+  const synthMaxTokens = Math.min(12000, Math.max(8000, (questions.length || 0) * 500));
 
   // Pass 47 — retry once on a parse failure (truncation/hiccup) before
   // giving up. Returns a parsed object or null.
