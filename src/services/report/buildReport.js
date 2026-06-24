@@ -316,31 +316,33 @@ function buildCanonicalReport(mission, analysis, responses) {
   // the focal brand's row), the survey question text + answer labels (e.g.
   // "recommend Our Brand to a friend"), and the insights (a KPI value + a rec).
   // The §2.3 fix only sanitised at analysis-GENERATION, so stored missions still
-  // leak it on every surface. Resolve a real focal label once (captured →
-  // brief-derived → neutral "the brand") and (a) rewrite the analysis focal label
-  // here, (b) scrub the placeholder from every rendered string via cleanText
-  // below. Clone, never mutate. (compare is concept-based — no focal field.)
+  // leak it on every surface. Resolve a real focal label and scrub the placeholder
+  // from every rendered string (via cleanText / scrubKpi / DQ-notes below).
+  //
+  //  GUARD (a) — engage ONLY when the focal brand was never properly captured
+  //    (the stored focal is a generic placeholder or unset). When a REAL brand is
+  //    on file, every string already uses it, so we leave them ALL untouched and
+  //    never rewrite an incidental "your brand"/"our company" inside a genuine
+  //    respondent verbatim.
+  //  GUARD (b) — the regex matches the placeholder as a WHOLE token (\b…\s+…\b):
+  //    it cannot eat "your"/"company" embedded in a longer word ("accompany",
+  //    "yourself") or anywhere the two tokens aren't adjacent.
+  // Clone, never mutate the loaded analysis. (compare is concept-based — no focal.)
   let focalScrubRe = null;
   let focalReal = null;
-  if (mission.goal_type === 'competitor') {
-    focalReal = deriveFocalBrand(
-      (analysis && analysis.focal_brand) || mission.brand_name,
-      mission.brief || mission.mission_statement,
-    );
-    focalScrubRe = /\b(?:our|your|my)\s+(?:brand|company)\b/gi;
-    if (analysis && typeof analysis === 'object') {
-      const focalGeneric = isGeneric(analysis.focal_brand);
-      const brandsLeak = Array.isArray(analysis.brands)
-        && analysis.brands.some((b) => b && (b.is_focal || b.isFocal) && isGeneric(b.label));
-      if (focalGeneric || brandsLeak) {
-        analysis = {
-          ...analysis,
-          focal_brand: focalGeneric ? focalReal : analysis.focal_brand,
-          brands: Array.isArray(analysis.brands)
-            ? analysis.brands.map((b) => ((b && (b.is_focal || b.isFocal) && isGeneric(b.label)) ? { ...b, label: focalReal } : b))
-            : analysis.brands,
-        };
-      }
+  if (mission.goal_type === 'competitor' && analysis && typeof analysis === 'object') {
+    const storedFocal = String(analysis.focal_brand || mission.brand_name || '').trim();
+    const focalUnresolved = storedFocal === '' || isGeneric(storedFocal);
+    if (focalUnresolved) {
+      focalReal = deriveFocalBrand(storedFocal, mission.brief || mission.mission_statement);
+      focalScrubRe = /\b(?:our|your|my)\s+(?:brand|company)\b/gi;
+      analysis = {
+        ...analysis,
+        focal_brand: isGeneric(analysis.focal_brand) ? focalReal : analysis.focal_brand,
+        brands: Array.isArray(analysis.brands)
+          ? analysis.brands.map((b) => ((b && (b.is_focal || b.isFocal) && isGeneric(b.label)) ? { ...b, label: focalReal } : b))
+          : analysis.brands,
+      };
     }
   }
 

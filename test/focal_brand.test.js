@@ -66,13 +66,39 @@ describe('competitor render scrubs the "Our Brand" placeholder on every surface'
     expect(JSON.stringify(rm)).not.toMatch(/our brand/i);
   });
 
-  test('focal label resolves to the neutral fallback, and the captured-brand case is untouched', () => {
+  test('unresolved focal resolves to the neutral fallback (no brand in brief)', () => {
     const rm = buildRenderModel(buildCanonicalReport(legacyMission, legacyMission.analysis, rows));
     expect(rm.headline.all.find((h) => /focal brand/i.test(h.label)).value).toBe('the brand');
-    // a properly-captured focal brand is never rewritten
-    const captured = { ...legacyMission, brief: 'Benchmark for Swvl against rivals', analysis: { ...legacyMission.analysis, focal_brand: 'Swvl', brands: [{ label: 'Swvl', is_focal: true, preference_pct: 40 }, { label: 'Careem', preference_pct: 60 }] }, insights: {}, questions: [], };
-    const rm2 = buildRenderModel(buildCanonicalReport(captured, captured.analysis, []));
-    expect(rm2.headline.all.find((h) => /focal brand/i.test(h.label)).value).toBe('Swvl');
+  });
+
+  // GUARD (a) — a properly-captured focal brand means EVERY string passes through
+  // untouched: the scrub never engages, so an incidental "your brand" inside a
+  // genuine verbatim/summary is NOT rewritten to the focal name.
+  test('captured real brand → scrub never fires (incidental "your brand" survives)', () => {
+    const captured = {
+      id: 't2', title: 'T', goal_type: 'competitor', brief: 'Benchmark Swvl vs rivals',
+      questions: [{ id: 'q1', type: 'open_text', text: 'What do you think of Swvl?' }],
+      insights: { executive_summary: 'Respondents said they love your brand experience and would recommend it.' },
+      analysis: {
+        methodology: 'competitor', focal_brand: 'Swvl',
+        brands: [{ label: 'Swvl', is_focal: true, preference_pct: 40 }, { label: 'Careem', preference_pct: 60 }],
+      },
+    };
+    const rm = buildRenderModel(buildCanonicalReport(captured, captured.analysis, [{ question_id: 'q1', answer: 'I like your brand app', persona_id: 'p1' }]));
+    expect(rm.headline.all.find((h) => /focal brand/i.test(h.label)).value).toBe('Swvl');
+    // the incidental phrase is preserved verbatim — NOT turned into "Swvl experience"
+    expect(JSON.stringify(rm)).toMatch(/your brand/i);
+    expect(JSON.stringify(rm)).not.toMatch(/Swvl experience/i);
+  });
+
+  // GUARD (b) — even when the scrub IS active (generic focal), it only replaces
+  // the whole-token placeholder, never a substring inside a longer word.
+  test('whole-token only — "accompany" / "yourself" are not eaten', () => {
+    const gb = { ...legacyMission, insights: { ...legacyMission.insights, executive_summary: 'We will accompany you; ask yourself about Our Brand.' } };
+    const blob = JSON.stringify(buildRenderModel(buildCanonicalReport(gb, gb.analysis, rows)));
+    expect(blob).toMatch(/accompany/i);     // "company" substring untouched
+    expect(blob).toMatch(/yourself/i);      // "your" substring untouched
+    expect(blob).not.toMatch(/our brand/i); // the whole-token placeholder IS replaced
   });
 
   test('does not mutate the caller\'s stored analysis (clone)', () => {
