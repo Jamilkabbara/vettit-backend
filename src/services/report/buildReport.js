@@ -19,6 +19,7 @@
 const { computeRatingStats } = require('../ai/insights');
 const { analysisHeadlines } = require('../exports/analysisHeadlines');
 const { computeStatGate } = require('./statGate');
+const { deriveFocalBrand, isGeneric } = require('../../utils/focalBrand');
 
 const VERBATIM_CAP = 30;
 
@@ -310,6 +311,39 @@ function buildCanonicalReport(mission, analysis, responses) {
   const caSummary = (creativeCA && creativeCA.summary && typeof creativeCA.summary === 'object')
     ? creativeCA.summary : {};
 
+  // §2.3 safety net at RENDER time — legacy competitor missions baked the literal
+  // "Our Brand" placeholder into THREE stored places: the analysis (focal_brand +
+  // the focal brand's row), the survey question text + answer labels (e.g.
+  // "recommend Our Brand to a friend"), and the insights (a KPI value + a rec).
+  // The §2.3 fix only sanitised at analysis-GENERATION, so stored missions still
+  // leak it on every surface. Resolve a real focal label once (captured →
+  // brief-derived → neutral "the brand") and (a) rewrite the analysis focal label
+  // here, (b) scrub the placeholder from every rendered string via cleanText
+  // below. Clone, never mutate. (compare is concept-based — no focal field.)
+  let focalScrubRe = null;
+  let focalReal = null;
+  if (mission.goal_type === 'competitor') {
+    focalReal = deriveFocalBrand(
+      (analysis && analysis.focal_brand) || mission.brand_name,
+      mission.brief || mission.mission_statement,
+    );
+    focalScrubRe = /\b(?:our|your|my)\s+(?:brand|company)\b/gi;
+    if (analysis && typeof analysis === 'object') {
+      const focalGeneric = isGeneric(analysis.focal_brand);
+      const brandsLeak = Array.isArray(analysis.brands)
+        && analysis.brands.some((b) => b && (b.is_focal || b.isFocal) && isGeneric(b.label));
+      if (focalGeneric || brandsLeak) {
+        analysis = {
+          ...analysis,
+          focal_brand: focalGeneric ? focalReal : analysis.focal_brand,
+          brands: Array.isArray(analysis.brands)
+            ? analysis.brands.map((b) => ((b && (b.is_focal || b.isFocal) && isGeneric(b.label)) ? { ...b, label: focalReal } : b))
+            : analysis.brands,
+        };
+      }
+    }
+  }
+
   // Pass 49 — per-question micro-summaries, generated once at synthesis and
   // cached on insights.per_question_insights, attached to each survey question
   // so web + exports + chat render identical "what this means" text.
@@ -364,9 +398,26 @@ function buildCanonicalReport(mission, analysis, responses) {
   // of spaces on every rendered string, at the ONE canonical layer so web + PDF
   // + PPTX + XLSX are all clean. (Synthetic-respondent / LLM prose carried a
   // stray space before commas — visible across the live PDF.)
-  const cleanText = (s) => (typeof s === 'string'
-    ? s.replace(/\s+([,.;:!?])/g, '$1').replace(/[ \t]{2,}/g, ' ').trim()
-    : s);
+  const cleanText = (s) => {
+    if (typeof s !== 'string') return s;
+    let out = s.replace(/\s+([,.;:!?])/g, '$1').replace(/[ \t]{2,}/g, ' ').trim();
+    // §2.3 — replace the "Our Brand"/"Your Brand"/… focal placeholder with the
+    // resolved focal label on every rendered string (competitor only).
+    if (focalScrubRe && focalReal) out = out.replace(focalScrubRe, focalReal);
+    return out;
+  };
+  // §2.3 — focal scrub for KPIs (not routed through cleanText). No-op for
+  // non-competitor missions, so existing key_findings are byte-for-byte unchanged.
+  const scrubKpi = (k) => {
+    if (!focalScrubRe || !focalReal) return k;
+    if (typeof k === 'string') return k.replace(focalScrubRe, focalReal);
+    if (!k || typeof k !== 'object') return k;
+    const out = { ...k };
+    for (const f of ['title', 'headline', 'label', 'value', 'description', 'body']) {
+      if (typeof out[f] === 'string') out[f] = out[f].replace(focalScrubRe, focalReal);
+    }
+    return out;
+  };
 
   let execSummary = typeof insights.executive_summary === 'string' && insights.executive_summary
     ? insights.executive_summary
@@ -451,7 +502,7 @@ function buildCanonicalReport(mission, analysis, responses) {
       }
       : null,
     key_findings: (Array.isArray(insights.kpis) && insights.kpis.length)
-      ? insights.kpis
+      ? insights.kpis.map(scrubKpi)
       // CA: surface the creative's strengths + watch-outs as the key findings.
       : (creativeCA ? [
         ...(Array.isArray(caSummary.strengths) ? caSummary.strengths.map((t) => `Strength — ${t}`) : []),
@@ -477,7 +528,11 @@ function buildCanonicalReport(mission, analysis, responses) {
     screening,
     exec_summary: execSummary || null,
     survey,
-    data_quality_notes: buildDataQualityNotes(survey, rows),
+    // §2.3 — a data-quality note can quote a raw answer value ("…not in the
+    // saved option list (Our Brand)") — scrub the focal placeholder there too.
+    data_quality_notes: buildDataQualityNotes(survey, rows)
+      .map((n) => ((focalScrubRe && focalReal && n && typeof n.note === 'string')
+        ? { ...n, note: n.note.replace(focalScrubRe, focalReal) } : n)),
     methodology_disclaimer: DISCLAIMER,
   };
 }
