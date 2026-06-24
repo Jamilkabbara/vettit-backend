@@ -295,6 +295,21 @@ function buildCanonicalReport(mission, analysis, responses) {
   const questions = Array.isArray(mission.questions) ? mission.questions : [];
   const rows = Array.isArray(responses) ? responses : [];
 
+  // creative_attention keeps its signature in mission.creative_analysis — a
+  // vision analysis of the creative — NOT the survey `analysis` (null for CA).
+  // Surface it as the headline + centerpiece + narrative source so the SHARED
+  // canonical exporters (PDF/PPTX) render the real creative read, at parity with
+  // CA's bespoke web page + XLSX, instead of falling back to an empty headline.
+  const creativeCA = (mission.goal_type === 'creative_attention'
+    && mission.creative_analysis && typeof mission.creative_analysis === 'object')
+    ? mission.creative_analysis
+    : null;
+  if (creativeCA && (!analysis || typeof analysis !== 'object')) {
+    analysis = { methodology: 'creative_attention', ...creativeCA };
+  }
+  const caSummary = (creativeCA && creativeCA.summary && typeof creativeCA.summary === 'object')
+    ? creativeCA.summary : {};
+
   // Pass 49 — per-question micro-summaries, generated once at synthesis and
   // cached on insights.per_question_insights, attached to each survey question
   // so web + exports + chat render identical "what this means" text.
@@ -353,7 +368,11 @@ function buildCanonicalReport(mission, analysis, responses) {
     ? s.replace(/\s+([,.;:!?])/g, '$1').replace(/[ \t]{2,}/g, ' ').trim()
     : s);
 
-  let execSummary = typeof insights.executive_summary === 'string' ? insights.executive_summary : '';
+  let execSummary = typeof insights.executive_summary === 'string' && insights.executive_summary
+    ? insights.executive_summary
+    // CA has no survey-synthesis insights; its narrative lives in the creative
+    // analysis summary (benchmark verdict, then attention arc).
+    : (creativeCA ? (caSummary.vs_benchmark || caSummary.attention_arc || '') : '');
   execSummary = cleanText(execSummary.replace(/\s*A fuller written narrative was unavailable for this run[.;]?.*$/i, '')) || '';
 
   const distinctPersonas = new Set(rows.map((r) => r.persona_id).filter(Boolean)).size;
@@ -422,22 +441,31 @@ function buildCanonicalReport(mission, analysis, responses) {
         // §2.4 — statistical-integrity gate, attached once at the canonical layer
         // so web + all exports render the SAME honesty verdict and none headline
         // a degenerate figure (e.g. an OPP from n=5).
-        gate: computeStatGate(
+        // CA is a vision analysis, not a survey — its confidence concept is
+        // channel-norm benchmarking, not respondent n; skip the survey stat gate.
+        gate: mission.goal_type === 'creative_attention' ? null : computeStatGate(
           analysis.methodology || mission.goal_type,
           analysis,
           distinctPersonas || analysis.n || null,
         ),
       }
       : null,
-    key_findings: Array.isArray(insights.kpis) ? insights.kpis : [],
+    key_findings: (Array.isArray(insights.kpis) && insights.kpis.length)
+      ? insights.kpis
+      // CA: surface the creative's strengths + watch-outs as the key findings.
+      : (creativeCA ? [
+        ...(Array.isArray(caSummary.strengths) ? caSummary.strengths.map((t) => `Strength — ${t}`) : []),
+        ...(Array.isArray(caSummary.weaknesses) ? caSummary.weaknesses.map((t) => `Watch-out — ${t}`) : []),
+      ] : []),
     // B1 — recommendations in the canonical report so web + exports + chat all
     // render the SAME list (was rendered per-page from insights only).
-    recommendations: Array.isArray(insights.recommendations)
+    recommendations: ((Array.isArray(insights.recommendations) && insights.recommendations.length)
       ? insights.recommendations
-        .map((r) => (typeof r === 'string' ? r : (r && (r.text || r.recommendation || r.body || r.title)) || ''))
-        .map(cleanText)
-        .filter((r) => r && r.trim())
-      : [],
+      // CA: the creative analysis carries its own action list.
+      : (creativeCA && Array.isArray(caSummary.recommendations) ? caSummary.recommendations : []))
+      .map((r) => (typeof r === 'string' ? r : (r && (r.text || r.recommendation || r.body || r.title)) || ''))
+      .map(cleanText)
+      .filter((r) => r && r.trim()),
     // §3 — the hero finding (one-liner) + synthesis (the editorial paragraph the
     // mockup leads with). synthesis is the exec summary; web/exports render it as
     // the "VETT synthesis" block.
