@@ -141,25 +141,83 @@ function deterministicKpis(report) {
     .map((m) => ({ label: String(m.label), value: String(m.value), trend: 'neutral' }));
 }
 
-/** Deterministic, grounded recommendation floor (never empty, never hedged).
- *  Builds a fuller set (up to 5) so every methodology carries a real list, not
- *  a single line — each rec is tied to an actual figure (headline action, the
- *  next strongest metrics, the dominant open-end theme, the honest small-n
- *  caveat). LLM enrichment still replaces these when available. */
+/** Signed-utility formatter: 1 → "+1", -0.84 → "-0.84" (≤2dp, trailing zeros trimmed). */
+function fmtUtil(v) {
+  const n = Math.round(Number(v) * 100) / 100;
+  return (n >= 0 ? '+' : '') + n;
+}
+
+/**
+ * Direction-aware action recs for ranked, signed-score methodologies — where a
+ * feature's SIGN is the meaning: a strong positive is one to BUILD, a strong
+ * negative is one to DROP (respondents actively reject it), and a near-zero is
+ * an INDIFFERENT feature to deprioritise. The old flat floor called all of them
+ * "among the strongest signals", which mislabels a -0.84 anti-feature and a
+ * utility-0 indifferent one as positive signals. Three buckets, split by an
+ * indifference band around zero. Returns [] for shapes this doesn't apply to
+ * (→ the generic floor below). Currently roadmap MaxDiff utilities; extend here
+ * for other signed scores (e.g. brand-lift absolute lift).
+ */
+function rankedFeatureRecs(methodology, analysis) {
+  if (!analysis || methodology !== 'roadmap') return [];
+  const feats = (analysis.maxdiff && Array.isArray(analysis.maxdiff.features) ? analysis.maxdiff.features : [])
+    .filter((f) => f && f.utility != null && Number.isFinite(Number(f.utility)) && (f.label || f.feature_id));
+  if (feats.length < 2) return [];
+  const lab = (f) => f.label || f.feature_id;
+  const sorted = feats.slice().sort((a, b) => Number(b.utility) - Number(a.utility));
+  const utils = sorted.map((f) => Number(f.utility));
+  const spread = Math.max(...utils) - Math.min(...utils);
+  const NEAR = Math.max(0.2, spread * 0.1); // indifference band around zero
+  const out = [];
+  const win = sorted.filter((f) => Number(f.utility) > NEAR);
+  if (win.length) {
+    const lead = win.slice(0, 2).map((f) => `${lab(f)} (${fmtUtil(f.utility)})`).join(' and ');
+    out.push(`Prioritise ${lead} — ${win.length > 1 ? 'they carry' : 'it carries'} the strongest preference; build ${win.length > 1 ? 'them' : 'it'} first.`);
+  }
+  const drop = sorted.filter((f) => Number(f.utility) < -NEAR).sort((a, b) => Number(a.utility) - Number(b.utility));
+  if (drop.length) {
+    const names = drop.slice(0, 3).map((f) => `${lab(f)} (${fmtUtil(f.utility)})`).join(', ');
+    out.push(`Drop or defer ${names} — ${drop.length > 1 ? 'these scored' : 'it scored'} clearly negative, so respondents would rather ${drop.length > 1 ? 'they' : 'it'} not be prioritised.`);
+  }
+  const indiff = sorted.filter((f) => Math.abs(Number(f.utility)) <= NEAR);
+  if (indiff.length) {
+    const names = indiff.slice(0, 3).map((f) => lab(f)).join(', ');
+    out.push(`Hold ${names} as low priority — near-zero utility means ${indiff.length > 1 ? 'they barely move' : 'it barely moves'} preference either way; don't invest here ahead of the leaders.`);
+  }
+  return out;
+}
+
+/** Deterministic, grounded recommendation floor (never empty, never hedged,
+ *  never mis-signed). Direction-aware: ranked signed-score methodologies get
+ *  prioritise / drop / hold buckets (rankedFeatureRecs); everything else leads
+ *  with the headline action + neutral secondary metrics (no false "strongest
+ *  signal" claim that misfires on a negative or near-zero figure), then the
+ *  dominant open-end theme + the honest small-n caveat. LLM enrichment still
+ *  replaces these when available. */
 function deterministicRecommendations(report) {
   const recs = [];
   const s = report.header && report.header.sample;
   const h = report.headline;
-  const all = (h && Array.isArray(h.all)) ? h.all : [];
-  if (h && h.metric && h.value) {
-    recs.push(`Act on the headline finding (${h.metric}: ${h.value}) and review the full survey below for the supporting detail behind it.`);
-  }
-  // One grounded action per additional top metric (the headline is already used).
-  for (const m of all.slice(1, 5)) {
-    if (m && m.label && m.value != null && String(m.value).trim()) {
-      recs.push(`Weigh ${m.label} (${m.value}) in the decision — it is among the strongest signals in this study.`);
+  const cp = report.centerpiece;
+  const methodology = (cp && cp.methodology) || (report.header && report.header.methodology) || null;
+
+  const ranked = rankedFeatureRecs(methodology, cp && cp.data);
+  if (ranked.length) {
+    recs.push(...ranked);
+  } else {
+    if (h && h.metric && h.value) {
+      recs.push(`Act on the headline finding (${h.metric}: ${h.value}) and review the full survey below for the supporting detail behind it.`);
+    }
+    // Secondary metrics: cite them, but DON'T assert importance/direction — the
+    // old floor called every one "among the strongest signals", which mislabels
+    // a negative or near-zero figure.
+    for (const m of (h && Array.isArray(h.all) ? h.all : []).slice(1, 3)) {
+      if (m && m.label && m.value != null && String(m.value).trim()) {
+        recs.push(`Factor in ${m.label} (${m.value}) alongside the headline when weighing the decision.`);
+      }
     }
   }
+
   // The dominant open-end theme is a real next-step driver, in respondents' words.
   const openQ = (report.survey || []).find((q) => q && q.renderer === 'open_text_verbatims' && q.data && Array.isArray(q.data.themes) && q.data.themes.length);
   if (openQ) {
