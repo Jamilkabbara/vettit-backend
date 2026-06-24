@@ -217,6 +217,36 @@ describe('§3 signature export parity — every methodology emits its instrument
   });
 });
 
+describe('§9 — directional (small n) softens false precision; authoritative keeps it', () => {
+  const roadmap = (n) => ({
+    methodology: 'roadmap', n,
+    maxdiff: { features: [{ feature_id: 'f1', label: 'A', utility: 0.1778 }, { feature_id: 'f2', label: 'B', utility: -0.3556 }] },
+    kano: { features: [] },
+  });
+
+  test('directional roadmap (n=5) rounds 2-dp utilities to 1 dp', () => {
+    const cp = centerpieceFor('roadmap', roadmap(5));
+    expect(cp.rows[0]).toEqual(['A', '0.2', '—']);   // 0.18 → 0.2
+    expect(cp.rows[1]).toEqual(['B', '-0.4', '—']);  // -0.36 → -0.4
+  });
+
+  test('authoritative roadmap (n=80) keeps full 2-dp precision', () => {
+    const cp = centerpieceFor('roadmap', roadmap(80));
+    expect(cp.rows[0]).toEqual(['A', '0.18', '—']);  // unchanged
+    expect(cp.rows[1]).toEqual(['B', '-0.36', '—']);
+  });
+
+  test('directional softens decimal percentages to whole numbers', () => {
+    const cp = centerpieceFor('satisfaction', {
+      methodology: 'satisfaction', n: 6,
+      nps: { score: 12, promoters_pct: 33.33, passives_pct: 33.33, detractors_pct: 33.34 },
+      csat: { top2_pct: 66.7 },
+    });
+    // 33.33% → 34% (Promoters), 66.7% → 67% (CSAT) at directional n
+    expect(cp.rows).toEqual(expect.arrayContaining([['Promoters', '33%'], ['CSAT (top-2-box)', '67%']]));
+  });
+});
+
 describe('headline-only types + empty data fall back to the headline (centerpiece null)', () => {
   test('validate / marketing / research have no dedicated centerpiece', () => {
     expect(centerpieceFor('validate', { methodology: 'validate', scores: { reaction: { mean: 7 } } })).toBeNull();

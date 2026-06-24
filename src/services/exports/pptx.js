@@ -369,8 +369,18 @@ function buildPPTX(pack, res) {
     slide.addText(items, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: FONT, valign: 'top' });
   }
 
-  // ── THE FULL SURVEY (one slide per question, correct renderer) ──
-  model.survey.forEach((q, qi) => {
+  // ── SURVEY (curated for a DECK, not the full document) ──
+  // §9 — a deck should SUMMARISE, not reproduce every raw task. Skip the
+  // repetitive instrument-mechanic questions (MaxDiff / Kano / forced-choice /
+  // paired-comparison) whose aggregate IS the centerpiece, and cap the rest. The
+  // PDF + XLSX still render every question — this only de-densifies the deck
+  // (e.g. an n=5 roadmap was 30 slides, ~23 of them near-identical MaxDiff/Kano).
+  const INSTRUMENT_RENDERERS = new Set(['max_diff', 'kano', 'forced_choice', 'paired_comparison']);
+  const MAX_SURVEY_SLIDES = 12;
+  const allSurvey = Array.isArray(model.survey) ? model.survey : [];
+  const deckSurvey = allSurvey.filter((q) => !INSTRUMENT_RENDERERS.has(q.renderer));
+  const shownSurvey = deckSurvey.slice(0, MAX_SURVEY_SLIDES);
+  shownSurvey.forEach((q, qi) => {
     const slide = pptx.addSlide();
     addDarkBackground(slide);
     // §5 — insight LEADS: the plain-language read is the slide headline; the
@@ -380,6 +390,20 @@ function buildPPTX(pack, res) {
     addSectionHeader(slide, eyebrow, q.insight || q.text);
     renderSurveyBody(slide, q);
   });
+  // One note slide when the deck omitted questions — point to the full exports.
+  const omittedCount = allSurvey.length - shownSurvey.length;
+  if (omittedCount > 0) {
+    const instrumentCount = allSurvey.length - deckSurvey.length;
+    const slide = pptx.addSlide();
+    addDarkBackground(slide);
+    addSectionHeader(slide, '· FULL SURVEY', `${shownSurvey.length} of ${allSurvey.length} questions shown`);
+    const lines = [`This deck summarises the survey; ${omittedCount} question${omittedCount === 1 ? '' : 's'} omitted here for brevity.`];
+    if (instrumentCount > 0) lines.push(`Includes ${instrumentCount} MaxDiff / Kano / forced-choice instrument task${instrumentCount === 1 ? '' : 's'} — their aggregate is the centerpiece above.`);
+    lines.push('The complete per-question breakdown is in the PDF and XLSX exports.');
+    slide.addText(lines.map((t) => ({ text: t, options: { fontSize: 14, color: hex(BRAND.text2), bullet: { code: '25CF', indent: 18 }, paraSpaceAfter: 12, breakLine: true } })), {
+      x: 0.5, y: 1.65, w: 12.3, h: 5, fontFace: FONT, valign: 'top',
+    });
+  }
 
   // ── DATA QUALITY NOTES (canonical cleaned notes) ──
   if (model.dataQualityNotes.length > 0) {
