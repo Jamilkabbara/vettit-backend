@@ -40,6 +40,24 @@ describe('computePersonas — grouping + shares', () => {
     expect(ps.every((p) => p.n >= 2)).toBe(true);
   });
 
+  test('high-cardinality free-text dims are skipped; groups by the dominant dimension', () => {
+    // Regression for the market_entry real-run (mission b8f5abce): real synthetic
+    // profiles carry a UNIQUE free-text decision_style per respondent (50+ distinct)
+    // + many distinct occupations, but seniority has dominant top values. The old
+    // "reject >6 distinct values" rule returned [] on a clean n=80 run.
+    const profs = [];
+    const add = (sen, n) => { for (let i = 0; i < n; i += 1) { const k = profs.length; profs.push({ persona_id: `p${k}`, persona_profile: { seniority: sen, decision_style: `unique-style-phrase-${k}`, occupation: `occupation-${k}`, values: ['quality'], age: 30 } }); } };
+    add('mid', 18); add('senior', 14); add('junior', 6); add('entry', 2); // 40 total
+    const ps = computePersonas(profs, {});
+    expect(ps.length).toBeGreaterThanOrEqual(3);
+    expect(ps.map((p) => p.name)).toEqual(expect.arrayContaining([
+      'Mid-Career Professionals', 'Senior Professionals', 'Early-Career Professionals',
+    ]));
+    // the 5% / n=2 'entry' tail is folded into "Other", never its own persona
+    expect(ps.find((p) => p.name === 'Other Respondents')?.n).toBe(2);
+    expect(ps.every((p) => p.n >= 2)).toBe(true);
+  });
+
   test('dedupes by persona_id and excludes screened-out respondents', () => {
     const r = [
       { persona_id: 'p1', persona_profile: prof({ decision_style: 'analytical' }) },
