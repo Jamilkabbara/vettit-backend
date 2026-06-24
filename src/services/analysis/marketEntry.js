@@ -40,6 +40,25 @@ function marketOf(row) {
   return (p.market || p._market || p.country || row.market || '').toString().trim() || null;
 }
 
+// D3 — WTP answers are localised price-BAND labels, often DUAL-market
+// ("Saudi Arabia: SAR 31–40 per meal / Egypt: EGP 181–250 per meal"). Pull the
+// segment relevant to THIS market and trim it to the price band ("SAR 31–40").
+// Best-effort + graceful: unknown markets fall back to the cleaned full label, so
+// the WTP cell shows a real tier (never the old empty "—") whenever data exists.
+const MARKET_HINTS = {
+  SA: ['saudi', 'sar', 'ksa'], EG: ['egypt', 'egp'], AE: ['uae', 'emirates', 'aed', 'dubai', 'abu dhabi'],
+  QA: ['qatar', 'qar'], KW: ['kuwait', 'kwd'], BH: ['bahrain', 'bhd'], OM: ['oman', 'omr'],
+  JO: ['jordan', 'jod'], LB: ['lebanon', 'lbp'], MA: ['morocco', 'mad'],
+};
+function bandForMarket(label, market) {
+  if (!label) return null;
+  const segs = String(label).split(/\s+\/\s+/).map((x) => x.trim()).filter(Boolean);
+  const hints = MARKET_HINTS[String(market).toUpperCase()] || [String(market || '').toLowerCase()].filter(Boolean);
+  const seg = segs.find((x) => hints.some((h) => h && x.toLowerCase().includes(h)))
+    || (segs.length === 1 ? segs[0] : null) || String(label);
+  return seg.replace(/^[^:]{1,32}:\s*/, '').replace(/\s*per\s+[\w-]+\.?\s*$/i, '').trim() || null;
+}
+
 function computeMarketEntry(rows, questions, mission) {
   const skeleton = {
     methodology: 'market_entry',
@@ -91,9 +110,17 @@ function computeMarketEntry(rows, questions, mission) {
       const appealVals = appealRows.map((r) => num(r.answer)).filter((v) => v !== null && v >= 1 && v <= APPEAL_MAX);
       const appeal_mean = appealVals.length ? round2(appealVals.reduce((s, v) => s + v, 0) / appealVals.length) : null;
 
+      // WTP answers are price-BAND labels (e.g. "…SAR 31–40 per meal…"), not
+      // numbers — num() always returned null, leaving an empty "—". Report the
+      // MODAL band per market (the most-selected tier), trimmed to this market's
+      // segment. Display-only: wtp does NOT feed demand_index.
       const wtpRows = wtpId ? rowsForMarket(mk, [wtpId]) : [];
-      const wtpVals = wtpRows.map((r) => num(r.answer)).filter((v) => v !== null && v > 0);
-      const wtp = wtpVals.length ? round2(wtpVals.reduce((s, v) => s + v, 0) / wtpVals.length) : null;
+      const wtpCounts = {};
+      for (const r of wtpRows) { const a = norm(r.answer); if (a) wtpCounts[a] = (wtpCounts[a] || 0) + 1; }
+      const wtpModal = Object.entries(wtpCounts).sort((x, y) => y[1] - x[1])[0];
+      // wtpModal[0] is normalized (lowercased); recover the original-cased answer.
+      const wtpRaw = wtpModal ? (wtpRows.find((r) => norm(r.answer) === wtpModal[0]) || {}).answer : null;
+      const wtp = wtpRaw ? bandForMarket(wtpRaw, mk) : null;
 
       const barrierRows = barrierIds.length ? rowsForMarket(mk, barrierIds) : [];
       const barrierBase = new Set(barrierRows.map((r) => r.persona_id)).size;
