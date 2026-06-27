@@ -48,8 +48,10 @@ const FIXTURES = {
       price: 'AED 25–35 per meal',
       positioning: 'premium convenience',
     },
-    targeting: { countries: ['SA', 'EG'] },
-    targeted_markets: ['Saudi Arabia', 'Egypt'],
+    // Nested under geography — that's the shape the persona generator + real
+    // frontend use (generatePersonaBatch reads targeting.geography.countries). A
+    // flat { countries } silently fell through to "Global" → off-target strays.
+    targeting: { geography: { countries: ['SA', 'EG'] } },
   },
   audience_profiling: {
     respondents: 60, // >=50 so the analysis segments rather than reporting aggregate-only
@@ -59,7 +61,7 @@ const FIXTURES = {
       segmentation_focus: 'attitudes toward premium vs value, convenience, novelty, and brand loyalty',
       markets: 'UAE',
     },
-    targeting: { countries: ['AE'] },
+    targeting: { geography: { countries: ['AE'] } },
   },
 };
 
