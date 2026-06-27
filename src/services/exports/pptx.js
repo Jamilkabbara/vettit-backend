@@ -155,9 +155,9 @@ function cleanResponses(responses) {
 
 // Render one survey question's body onto its slide (left column; the slide
 // header already carries the eyebrow + question text).
-function renderSurveyBody(slide, q) {
+function renderSurveyBody(slide, q, frameOverride) {
   const body = q.body;
-  const FRAME = { x: 0.5, y: 1.65, w: 12.3, h: 5.2 };
+  const FRAME = frameOverride || { x: 0.5, y: 1.65, w: 12.3, h: 5.2 };
 
   if (body.kind === 'scale') {
     drawBars(slide, body.bars.map((b) => ({ label: b.label, value: b.pct, count: b.count })), {
@@ -218,8 +218,17 @@ function renderSurveyBody(slide, q) {
     slide.addText(body.empty_message, { ...FRAME, fontSize: 13, italic: true, color: hex(BRAND.text3), fontFace: FONT });
     return;
   }
-  drawBars(slide, body.bars.map((b) => ({ label: b.label, value: b.pct, count: b.count })), {
-    ...FRAME, subtitle: body.note || undefined, showCount: true,
+  // Deck cap — drawBars floors row height, so too many bars overflow the frame
+  // and collide with the narration box. Show the top 12; the PDF/XLSX keep every
+  // row. (Bars arrive ordered by share.)
+  const allBars = Array.isArray(body.bars) ? body.bars : [];
+  const MAX_BARS = 12;
+  const bars = allBars.slice(0, MAX_BARS);
+  const capNote = allBars.length > MAX_BARS
+    ? `${body.note ? `${body.note} · ` : ''}Top ${MAX_BARS} of ${allBars.length} shown`
+    : (body.note || undefined);
+  drawBars(slide, bars.map((b) => ({ label: b.label, value: b.pct, count: b.count })), {
+    ...FRAME, subtitle: capNote, showCount: true,
   });
 }
 
@@ -383,12 +392,27 @@ function buildPPTX(pack, res) {
   shownSurvey.forEach((q, qi) => {
     const slide = pptx.addSlide();
     addDarkBackground(slide);
-    // §5 — insight LEADS: the plain-language read is the slide headline; the
-    // question text rides in the eyebrow, the chart is the body.
-    const tag = `${String(qi + 5).padStart(2, '0')} · Q${q.number} · ${q.renderer_label.toUpperCase()}${q.isScreening ? ' · SCREENER' : ''}`;
-    const eyebrow = q.insight ? `${tag}  —  ${q.text}` : tag;
-    addSectionHeader(slide, eyebrow, q.insight || q.text);
-    renderSurveyBody(slide, q);
+    // D1/D2 — the header carries the tag (eyebrow) + the QUESTION (title); the
+    // narration moves to a "WHAT THIS MEANS" box BELOW the chart, mirroring the
+    // PDF, so the headline never collides with the question header. The screener
+    // tag is de-duped: renderer_label is already "SCREENER" for a screener, so
+    // don't also append "· SCREENER".
+    const typeTag = (q.renderer_label || '').toUpperCase();
+    const screenerTag = (q.isScreening && q.renderer !== 'screener') ? ' · SCREENER' : '';
+    const tag = `${String(qi + 5).padStart(2, '0')} · Q${q.number} · ${typeTag}${screenerTag}`;
+    addSectionHeader(slide, tag, q.text);
+    const insight = (q.insight && String(q.insight).trim()) ? String(q.insight).trim() : '';
+    renderSurveyBody(slide, q, insight
+      ? { x: 0.5, y: 1.65, w: 12.3, h: 4.05 }
+      : { x: 0.5, y: 1.65, w: 12.3, h: 5.2 });
+    if (insight) {
+      slide.addText('WHAT THIS MEANS', {
+        x: 0.5, y: 5.82, w: 12.3, h: 0.28, fontSize: 10, bold: true, color: hex(BRAND.lime), fontFace: FONT, charSpacing: 2,
+      });
+      slide.addText(insight, {
+        x: 0.5, y: 6.12, w: 12.3, h: 1.2, fontSize: 12, color: hex(BRAND.text1), fontFace: FONT, valign: 'top', shrinkText: true,
+      });
+    }
   });
   // One note slide when the deck omitted questions — point to the full exports.
   const omittedCount = allSurvey.length - shownSurvey.length;

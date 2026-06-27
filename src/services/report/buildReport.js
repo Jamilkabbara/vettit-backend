@@ -29,6 +29,9 @@ const METHODOLOGY_LABELS = {
   satisfaction: 'Customer Satisfaction', pricing: 'Pricing Study', roadmap: 'Feature Roadmap',
   research: 'Market Research', competitor: 'Competitor Analysis', naming_messaging: 'Naming & Messaging',
   churn_research: 'Churn Study', brand_lift: 'Brand Lift Study', creative_attention: 'Creative Attention',
+  // D5 — the two newest types were missing, so the header fell back to the
+  // generic "Research Study" default despite a correct goal_type.
+  market_entry: 'Market Entry', audience_profiling: 'Audience Profiling',
 };
 
 /** Numeric coercion: null for non-numbers (incl. ''/null). */
@@ -147,14 +150,50 @@ function pickRenderer(q, numericAnswers) {
   return Array.isArray(q.options) && q.options.length ? 'single_select' : 'open_text_verbatims';
 }
 
-/** Counts distribution {answer: count} over scalar answers. */
-function countDistribution(answers) {
+/** D6 — normalize a label for matching: lowercase, drop parentheticals
+ *  ("(Egypt)", "(SA / EG)"), punctuation → space, collapse. */
+function normOption(s) {
+  return String(s == null ? '' : s)
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** D6 — map a multi/single-select answer to its canonical saved option when it's
+ *  an obvious variant. The synthetic-respondent simulator paraphrases/truncates
+ *  options (e.g. "Almarai chilled food products (Egypt)" or bare "Almarai chilled
+ *  food products" for the option "Kiri / Almarai chilled food products (Saudi
+ *  Arabia / Egypt)"), which otherwise fragments the chart into near-duplicate
+ *  bars. Conservative: exact (parenthetical-stripped) match, else a UNIQUE
+ *  containment match of >=8 chars; otherwise leave the value untouched (the
+ *  data-quality "option drift" note still flags it). */
+function canonicalizeAnswer(value, normalizedOptions) {
+  const a = normOption(value);
+  if (!a) return value;
+  const exact = normalizedOptions.find((o) => o.n === a);
+  if (exact) return exact.label;
+  if (a.length >= 8) {
+    const hits = normalizedOptions.filter((o) => o.n && (o.n.includes(a) || a.includes(o.n)));
+    if (hits.length === 1) return hits[0].label;
+  }
+  return value;
+}
+
+/** Counts distribution {answer: count} over scalar answers (flattening
+ *  multi-select arrays). When `options` is supplied, variant answers are merged
+ *  back to their canonical saved option (D6) so the chart shows one bar/option. */
+function countDistribution(answers, options) {
+  const opts = (Array.isArray(options) && options.length)
+    ? options.filter((o) => o != null && String(o).trim()).map((o) => ({ label: String(o), n: normOption(o) }))
+    : null;
   const dist = {};
   for (const a of answers) {
     if (a === null || a === undefined) continue;
     const values = Array.isArray(a) ? a : [a];
     for (const v of values) {
-      const k = String(v);
+      const k = String(opts ? canonicalizeAnswer(v, opts) : v);
       dist[k] = (dist[k] || 0) + 1;
     }
   }
@@ -215,11 +254,11 @@ function shapeQuestionData(q, renderer, responses, analysis) {
       const scale_max = detectScale(q, allVals).max;
       return { per_attribute, n: objAnswers.length, shape: 'matrix', scale_max };
     }
-    return { distribution: countDistribution(answers), n_respondents: n, n, shape: 'endorsement' };
+    return { distribution: countDistribution(answers, q.options), n_respondents: n, n, shape: 'endorsement' };
   }
 
   if (renderer === 'multi_select') {
-    return { distribution: countDistribution(answers), n_respondents: n, n };
+    return { distribution: countDistribution(answers, q.options), n_respondents: n, n };
   }
 
   if (renderer === 'max_diff') {
@@ -235,7 +274,7 @@ function shapeQuestionData(q, renderer, responses, analysis) {
   }
 
   // single_select / forced_choice / paired_comparison / screener / kano
-  return { distribution: countDistribution(answers), n };
+  return { distribution: countDistribution(answers, q.options), n };
 }
 
 /** Plain-language renderer label for the survey appendix. */
