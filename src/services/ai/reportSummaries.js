@@ -25,6 +25,7 @@
 
 const { callClaude } = require('./anthropic');
 const { clusterOpenEndThemes } = require('./openEndThemes');
+const { WRITING_STYLE } = require('./writingStyle');
 const logger = require('../../utils/logger');
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -303,7 +304,7 @@ async function generateReportSummaries(report, opts = {}) {
   const posture = sample && sample.posture === 'directional'
     ? `This is a directional sample (n=${sample.n}); carry that caveat — never imply statistical certainty.`
     : '';
-  const SYS = `You are VETT's research analyst. Write plain-language summaries grounded ENTIRELY in the figures provided — never invent, estimate, or round differently. ${posture} No hedging, no apologies, no "summary unavailable" language. Lead with the finding. Return ONLY valid JSON.`;
+  const SYS = `You are VETT's research analyst. Write plain-language summaries grounded ENTIRELY in the figures provided, never invent, estimate, or round differently. ${posture} No hedging, no apologies, no "summary unavailable" language. Lead with the finding. Return ONLY valid JSON.${WRITING_STYLE}`;
 
   // 2a) Executive summary + KPI tiles + recommendations (one grounded call).
   let kpis = deterministicKpis(report);

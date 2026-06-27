@@ -123,7 +123,7 @@
   <div class="section-divider"></div>
   {{#each report.keyFindings}}
   <div class="followup">
-    <h3 class="followup-title">{{this.title}}{{#if this.value}} — {{this.value}}{{/if}}</h3>
+    <h3 class="followup-title">{{this.title}}{{#if this.value}}: {{this.value}}{{/if}}</h3>
     {{#if this.body}}<p class="followup-rationale">{{this.body}}</p>{{/if}}
   </div>
   {{/each}}
@@ -151,7 +151,7 @@
   <div class="section-divider"></div>
   {{#each ca.frame_analyses}}
   <div class="followup">
-    <h3 class="followup-title">Frame {{add @index 1}}{{#if this.timestamp}} — {{this.timestamp}}s{{/if}}{{#if this.engagement_score}} · Engagement {{this.engagement_score}}/100{{/if}}</h3>
+    <h3 class="followup-title">Frame {{add @index 1}}{{#if this.timestamp}}, {{this.timestamp}}s{{/if}}{{#if this.engagement_score}} · Engagement {{this.engagement_score}}/100{{/if}}</h3>
     {{#if this.brief_description}}<p class="followup-rationale">{{this.brief_description}}</p>{{/if}}
     {{#if this.audience_resonance}}<p class="followup-rationale" style="color: var(--text3);">Audience resonance: {{this.audience_resonance}}</p>{{/if}}
     {{#if this.message_clarity}}<p class="followup-rationale" style="color: var(--text3);">Message clarity: {{this.message_clarity}}</p>{{/if}}

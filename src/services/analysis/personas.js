@@ -75,7 +75,7 @@ function buildPersona(dim, value, members, total) {
   const vals = topN(members.flatMap((m) => (Array.isArray(m.values) ? m.values : [])), 2);
   const ds = modal(members.map((m) => m.decision_style));
   const ages = members.map((m) => Number(m.age)).filter((a) => Number.isFinite(a));
-  const ageRange = ages.length ? `ages ${Math.min(...ages)}–${Math.max(...ages)}` : null;
+  const ageRange = ages.length ? `ages ${Math.min(...ages)}-${Math.max(...ages)}` : null;
   const parts = [];
   if (vals.length) parts.push(`prioritise ${listText(vals)}`);
   if (ds) parts.push(`${ds} decision-makers`);
