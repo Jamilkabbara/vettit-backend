@@ -27,6 +27,7 @@
  */
 
 const { byQuestion, personaCount, num, distribution, shares } = require('./shared');
+const logger = require('../../utils/logger');
 
 const MIN_RELIABLE_N = 30; // WO §2.4 — below this a market reads directional
 const INTENT_TOP2 = new Set(['definitely would buy', 'probably would buy']);
@@ -100,7 +101,7 @@ function computeMarketEntry(rows, questions, mission) {
     const rowsForMarket = (mk, ids) => all.filter((r) => ids.includes(r.question_id)
       && marketFor(r.persona_id) === mk);
 
-    const markets = marketSet.map((mk) => {
+    const allMarkets = marketSet.map((mk) => {
       const intentRows = intentId ? rowsForMarket(mk, [intentId]) : [];
       const intentBase = new Set(intentRows.map((r) => r.persona_id)).size;
       const intentTop2 = intentRows.filter((r) => INTENT_TOP2.has(norm(r.answer))).length;
@@ -167,6 +168,29 @@ function computeMarketEntry(rows, questions, mission) {
         competitors,
       };
     }).sort((a, b) => (b.demand_index ?? -1) - (a.demand_index ?? -1));
+
+    // (c) — surface only real, targeted markets. A market becomes a standalone
+    // row only if it's in the targeted set (when known) AND clears a small base
+    // floor, so a generation stray — e.g. one off-target "AE" persona leaking
+    // into an SA+EG study — doesn't become an n=1 market alongside the real ones.
+    const allowedMarkets = new Set([
+      ...(Array.isArray(mission?.targeting?.geography?.countries) ? mission.targeting.geography.countries : []),
+      ...(Array.isArray(mission?.targeting?.countries) ? mission.targeting.countries : []),
+      ...declared,
+    ].map((x) => norm(x)).filter(Boolean));
+    // Primary filter is the targeted set; the base floor only culls literal
+    // singletons (n=1) for the no-targeting case (an off-target n>=2 cluster is
+    // still dropped by the targeted-set check above when targeting is known).
+    const STRAY_MAX_N = 1;
+    let markets = allMarkets.filter((m) => (allowedMarkets.size === 0 || allowedMarkets.has(norm(m.market))) && m.n > STRAY_MAX_N);
+    if (!markets.length) markets = allMarkets.filter((m) => m.n > STRAY_MAX_N); // targeted-set name/code mismatch → fall back to the base floor
+    if (!markets.length) markets = allMarkets;                                  // ultra-defensive: never return an empty market set
+    const droppedMarkets = allMarkets.filter((m) => !markets.includes(m));
+    if (droppedMarkets.length) {
+      logger.info('market_entry: dropped stray/off-target markets', {
+        kept: markets.map((m) => `${m.market}(${m.n})`), dropped: droppedMarkets.map((m) => `${m.market}(${m.n})`),
+      });
+    }
 
     const best = markets.find((m) => m.demand_index != null) || null;
     // top barrier across all markets

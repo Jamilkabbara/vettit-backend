@@ -131,10 +131,16 @@ async function generatePersonas(mission, count, options = {}) {
 }
 
 async function generatePersonaBatch(mission, targeting, batchCount, startIndex, options = {}) {
-  const countries = targeting.geography?.countries?.join(', ') || 'Global';
-  const cities = targeting.geography?.cities?.join(', ') || 'Any';
-  const ageRanges = targeting.demographics?.ageRanges?.join(', ') || '18-65';
-  const genders = targeting.demographics?.genders?.join(', ') || 'All';
+  // Read BOTH the nested (geography.countries) and flat (targeting.countries)
+  // shapes — a flat targeting object silently fell through to "Global", so the
+  // generator was unconstrained and emitted off-target strays (e.g. an "AE"
+  // persona in an SA+EG study, anchored by the example below).
+  const geo = targeting.geography || {};
+  const demo = targeting.demographics || {};
+  const countries = (geo.countries || targeting.countries || []).join(', ') || 'Global';
+  const cities = (geo.cities || targeting.cities || []).join(', ') || 'Any';
+  const ageRanges = (demo.ageRanges || targeting.ageRanges || []).join(', ') || '18-65';
+  const genders = (demo.genders || targeting.genders || []).join(', ') || 'All';
   const b2b = targeting.b2b || targeting.professional;
   const psycho = targeting.psychographics;
   const screenerBlock = buildScreenerConstraints(mission, { stricter: !!options.stricter });
@@ -182,23 +188,37 @@ Return ONLY this JSON:
 
 Generate exactly ${batchCount} personas. Vary ALL attributes realistically. IDs must be sequential starting from P${String(startIndex + 1).padStart(3, '0')}.`;
 
-  const response = await callClaude({
-    callType: 'persona_gen',
-    missionId: mission.id,
-    userId: mission.user_id,
-    messages: [{ role: 'user', content: userPrompt }],
-    systemPrompt: PERSONA_SYSTEM_PROMPT,
-    maxTokens: 4000,
-    enablePromptCache: true,
-  });
-
-  try {
-    const parsed = extractJSON(response.text);
-    return parsed.personas || [];
-  } catch (err) {
-    logger.warn('Persona batch parse failed — skipping batch', { err: err.message });
+  // 10 rich personas (prose bios + several arrays) overflowed the old 4000-token
+  // cap → truncated JSON → "Unexpected end of JSON input" → the WHOLE batch was
+  // silently dropped (run a39ce46e: 70/80). Give the batch real headroom
+  // (persona_gen runs on haiku-4-5, which supports it) and retry once on a parse
+  // failure before giving up — same treatment as the synthesis fix (#74).
+  const callAndParse = async () => {
+    const response = await callClaude({
+      callType: 'persona_gen',
+      missionId: mission.id,
+      userId: mission.user_id,
+      messages: [{ role: 'user', content: userPrompt }],
+      systemPrompt: PERSONA_SYSTEM_PROMPT,
+      maxTokens: 8000,
+      enablePromptCache: true,
+    });
+    try {
+      return extractJSON(response.text).personas || [];
+    } catch (err) {
+      logger.warn('Persona batch parse failed (will retry once)', { missionId: mission.id, err: err.message });
+      return null;
+    }
+  };
+  let personas = await callAndParse();
+  if (personas == null) personas = await callAndParse();
+  if (personas == null) {
+    logger.error('Persona batch dropped after retry — generated n will fall short', {
+      missionId: mission.id, batchCount, startIndex,
+    });
     return [];
   }
+  return personas;
 }
 
 module.exports = { generatePersonas };

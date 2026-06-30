@@ -530,6 +530,18 @@ async function runMission(missionId, opts = {}) {
     // enforced defensively: a violation is clamped + logged loudly
     // because it means the counters drifted again.
     let qualifiedRespondent = loopQualifiedCount != null ? loopQualifiedCount : targetCount;
+    // (b) — never report more qualified respondents than were actually simulated.
+    // The legacy batch path assumed "always deliver" (qualified = paid-for target),
+    // but a dropped persona batch (e.g. a truncated generation) leaves fewer
+    // personas. Cap at the real count + surface the shortfall LOUDLY instead of
+    // silently overstating n (run a39ce46e: 70 simulated but reported 80).
+    if (qualifiedRespondent > totalSimulated) {
+      logger.error('Mission run: generation UNDER-DELIVERED — capping qualified to actual', {
+        missionId, requested: qualifiedRespondent, simulated: totalSimulated,
+        shortfall: qualifiedRespondent - totalSimulated,
+      });
+      qualifiedRespondent = totalSimulated;
+    }
     if (loopRecruitedCount != null && qualifiedRespondent > loopRecruitedCount) {
       logger.error('Mission run: INVARIANT VIOLATION qualified > recruited — clamping', {
         missionId, qualified: qualifiedRespondent, recruited: loopRecruitedCount,
