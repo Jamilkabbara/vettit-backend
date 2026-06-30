@@ -67,3 +67,39 @@ describe('personaSetForSegment / filter', () => {
     expect(filterResponsesBySegment(mission, R, 'bogus:x')).toBeNull();
   });
 });
+
+// D7 — segments are attached to the report AFTER buildCanonicalReport's no-dash
+// scrub, so the segment builder must itself emit dash-free keys + labels (price
+// bands like "SAR 31–40" are the carriers) while STILL resolving to respondents.
+describe('buildSegments — D7 no em/en dashes', () => {
+  const priceMission = {
+    goal_type: 'market_entry',
+    questions: [{ id: 'q1', type: 'single', text: 'Acceptable price per meal?' }],
+  };
+  const PR = [];
+  // 4 personas: 2 picked the en-dash band, 2 picked the em-dash band.
+  const ans = { a: 'SAR 31–40 per meal', b: 'SAR 31–40 per meal', c: 'Premium — over SAR 60', d: 'Premium — over SAR 60' };
+  for (const p of ['a', 'b', 'c', 'd']) PR.push({ persona_id: p, question_id: 'q1', answer: ans[p], persona_profile: { id: p } });
+  const segs = buildSegments(priceMission, PR);
+
+  test('no segment key or label contains an em/en dash', () => {
+    expect(segs.length).toBeGreaterThan(0);
+    for (const seg of segs) {
+      expect(seg.key).not.toMatch(/[—–]/);
+      expect(seg.label).not.toMatch(/[—–]/);
+    }
+  });
+  test('en-dash price band scrubs to a hyphen and still resolves to its 2 respondents', () => {
+    const seg = segs.find((s) => s.key === 'ans:q1:SAR 31-40 per meal');
+    expect(seg).toBeTruthy();
+    expect(seg.n).toBe(2);
+    const subset = filterResponsesBySegment(priceMission, PR, seg.key);
+    expect(new Set(subset.map((r) => r.persona_id))).toEqual(new Set(['a', 'b']));
+  });
+  test('em-dash band scrubs to a comma and still resolves to its 2 respondents', () => {
+    const seg = segs.find((s) => s.key === 'ans:q1:Premium, over SAR 60');
+    expect(seg).toBeTruthy();
+    const subset = filterResponsesBySegment(priceMission, PR, seg.key);
+    expect(new Set(subset.map((r) => r.persona_id))).toEqual(new Set(['c', 'd']));
+  });
+});

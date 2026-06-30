@@ -16,6 +16,7 @@
  */
 
 const { scaleNum } = require('./buildReport');
+const { sanitizeDashesString } = require('../../utils/textSanitize');
 
 const SEG_FLOOR = 2; // do not offer a segment that resolves to fewer than this
 
@@ -120,7 +121,10 @@ function buildSegments(mission, responses) {
       if (r.question_id !== q.id) continue;
       const p = personaId(r); if (!p || seen.has(p)) continue; seen.add(p);
       const vals = isMulti ? (Array.isArray(r.answer) ? r.answer : [r.answer]) : [r.answer];
-      for (const v of vals) { if (v == null || v === '') continue; const k = String(v); counts.set(k, (counts.get(k) || 0) + 1); }
+      // D7 — count by the dash-free value so the segment KEY, LABEL, and the
+      // match below all key off the same no-dash string ("SAR 31-40", never
+      // "SAR 31–40"). Price-band option values are the only dash carriers here.
+      for (const v of vals) { if (v == null || v === '') continue; const k = sanitizeDashesString(String(v)); counts.set(k, (counts.get(k) || 0) + 1); }
     }
     for (const [val, n] of counts.entries()) {
       if (n >= SEG_FLOOR && n < total) { // n<total: a segment that's everyone isn't a cut
@@ -166,7 +170,9 @@ function personaSetForSegment(mission, responses, key) {
       if (r.question_id !== qid) continue;
       const p = personaId(r); if (!p) continue;
       const vals = isMulti ? (Array.isArray(r.answer) ? r.answer : [r.answer]) : [r.answer];
-      if (vals.some((v) => String(v) === val)) set.add(p);
+      // D7 — match on the dash-free value, mirroring the key built above so a
+      // scrubbed segment key still resolves to its respondents.
+      if (vals.some((v) => sanitizeDashesString(String(v)) === val)) set.add(p);
     }
     return set;
   }
