@@ -52,7 +52,7 @@ describe('analysisHeadlines — pricing', () => {
   test('OPP + acceptable range + Gabor-Granger', () => {
     const rows = analysisHeadlines(analysis);
     expect(valOf(rows, 'Optimal price (Van Westendorp OPP)')).toBe('95');
-    expect(valOf(rows, 'Acceptable price range')).toBe('72–110');
+    expect(valOf(rows, 'Acceptable price range')).toBe('72-110'); // D7: en-dash range → hyphen
     expect(valOf(rows, 'Gabor-Granger')).toBe('79');
     expect(valOf(rows, 'WTP ceiling')).toBe('102.5');
     expect(valOf(rows, 'Currency')).toBe('USD');
@@ -211,8 +211,8 @@ describe('analysisHeadlines — competitor', () => {
   test('focal + per-brand preference + biggest gaps', () => {
     const rows = analysisHeadlines(analysis);
     expect(valOf(rows, 'Focal brand')).toBe('Acme');
-    expect(valOf(rows, 'Acme (focal) — preference')).toBe('30%');
-    expect(valOf(rows, 'Globex — preference')).toBe('45%');
+    expect(valOf(rows, 'Acme (focal) preference')).toBe('30%'); // D7: dropped em-dash from label
+    expect(valOf(rows, 'Globex preference')).toBe('45%');
     expect(valOf(rows, 'Gap on "Reliability" vs Globex')).toBe('-1.1 pts');
   });
 });
@@ -303,7 +303,7 @@ describe('analysisHeadlines — display rounding (Pass 50)', () => {
       van_westendorp: { n: 5, points: { opp: 180, pmc: 159.9999999, pme: 234.9999999 } },
       acceptable_range: { low: 160, high: 234.9999999 },
     });
-    expect(valOf(rows, 'Acceptable price range')).toBe('160–235');
+    expect(valOf(rows, 'Acceptable price range')).toBe('160-235'); // D7: en-dash range → hyphen
     expect(valOf(rows, 'Optimal price (Van Westendorp OPP)')).toBe('180');
     expect(valOf(rows, 'Point of marginal cheapness')).toBe('160');
     expect(valOf(rows, 'Point of marginal expensiveness')).toBe('235');

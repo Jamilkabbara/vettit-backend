@@ -29,6 +29,14 @@ const ExcelJS = require('exceljs');
 const { BRAND } = require('./shared');
 const { buildCanonicalReport } = require('../report/buildReport');
 const { buildRenderModel } = require('../report/reportRenderModel');
+const { sanitizeDashesString } = require('../../utils/textSanitize');
+
+// D7 — the Report/Survey/Personas sheets render the already-scrubbed render
+// model, but the Raw-responses and Demographic sheets read respondent data
+// (simulated verbatims, occupations) straight off the rows, bypassing it. Scrub
+// those leaf strings here so no em/en dash survives on ANY sheet. sd() is a
+// null/number-safe pass-through.
+const sd = (v) => (typeof v === 'string' ? sanitizeDashesString(v) : v);
 
 // exceljs uses ARGB with leading alpha FF
 const argb = (c) => 'FF' + (c || '').replace('#', '').toUpperCase();
@@ -99,7 +107,7 @@ function buildXLSX(pack, res) {
   if (model.gate && model.gate.posture === 'directional' && model.gate.note) {
     rep.mergeCells(`A${row}:F${row + 1}`);
     const g = rep.getCell(`A${row}`);
-    g.value = `⚠ DIRECTIONAL — ${model.gate.note}${model.gate.n ? ` (n=${model.gate.n})` : ''}`;
+    g.value = `⚠ DIRECTIONAL: ${model.gate.note}${model.gate.n ? ` (n=${model.gate.n})` : ''}`;
     g.font = { name: 'Calibri', size: 10, bold: true, color: { argb: argb(BRAND.amber) } };
     g.alignment = { vertical: 'top', wrapText: true };
     row += 3;
@@ -320,13 +328,13 @@ function buildXLSX(pack, res) {
     raw.addRow({
       persona_id:  r.persona_id,
       age:         p.age,
-      gender:      p.gender,
-      country:     p.country || p.country_code,
-      city:        p.city,
-      occupation:  p.occupation || p.role,
+      gender:      sd(p.gender),
+      country:     sd(p.country || p.country_code),
+      city:        sd(p.city),
+      occupation:  sd(p.occupation || p.role),
       question_id: r.question_id,
-      question:    qById[r.question_id]?.text || '',
-      answer:      answerVal,
+      question:    sd(qById[r.question_id]?.text || ''),
+      answer:      sd(answerVal),
     });
   });
 
@@ -381,7 +389,7 @@ function buildXLSX(pack, res) {
     startRow++;
     entries.forEach(([label, count], idx) => {
       const p = Math.round((count / totalPersonas) * 100);
-      sheet.getCell(`A${startRow}`).value = label;
+      sheet.getCell(`A${startRow}`).value = sd(label);
       sheet.getCell(`B${startRow}`).value = count;
       sheet.getCell(`C${startRow}`).value = `${p}%`;
       if (idx % 2 === 0) {

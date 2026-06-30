@@ -138,7 +138,7 @@ function statCard(slide, x, y, w, h, label, value, trendColor = BRAND.lime) {
     fontSize: 9, color: hex(BRAND.text3), fontFace: FONT, charSpacing: 1, valign: 'top',
     shrinkText: true,
   });
-  slide.addText(String(value || '—'), {
+  slide.addText(String(value || 'n/a'), {
     x: x + 0.15, y: y + 0.6, w: w - 0.3, h: h - 0.7,
     fontSize: 24, bold: true, color: hex(trendColor), fontFace: FONT,
     shrinkText: true, autoFit: true,

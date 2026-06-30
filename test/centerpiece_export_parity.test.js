@@ -119,7 +119,8 @@ describe('creative_attention export centerpiece + headline', () => {
     const m = renderCA(ca);
     expect(m.synthesis).toMatch(/above the luxury benchmark/i);
     expect(m.recommendations).toEqual(['Add a typographic anchor.', 'Introduce warmth.']);
-    expect(m.keyFindings.map((f) => f.title)).toEqual(['Strength — Trust and pride dominate.', 'Watch-out — Joy runs low.']);
+    // D7 — the render model scrubs the em-dash AI tell: " — " becomes ", ".
+    expect(m.keyFindings.map((f) => f.title)).toEqual(['Strength, Trust and pride dominate.', 'Watch-out, Joy runs low.']);
     expect(m.gate).toBeNull(); // CA skips the survey stat-gate
   });
 
@@ -142,7 +143,7 @@ describe('§3 signature export parity — every methodology emits its instrument
     });
     expect(cp).not.toBeNull();
     expect(cp.title).toMatch(/Van Westendorp/i);
-    expect(cp.rows).toEqual(expect.arrayContaining([['Optimal price (OPP)', '49'], ['Acceptable range', '35–69']]));
+    expect(cp.rows).toEqual(expect.arrayContaining([['Optimal price (OPP)', '49'], ['Acceptable range', '35-69']]));
   });
 
   test('satisfaction — NPS / CSAT / CES', () => {
@@ -226,14 +227,15 @@ describe('§9 — directional (small n) softens false precision; authoritative k
 
   test('directional roadmap (n=5) rounds 2-dp utilities to 1 dp', () => {
     const cp = centerpieceFor('roadmap', roadmap(5));
-    expect(cp.rows[0]).toEqual(['A', '0.2', '—']);   // 0.18 → 0.2
-    expect(cp.rows[1]).toEqual(['B', '-0.4', '—']);  // -0.36 → -0.4
+    // D7 — the empty Kano-class cell renders "n/a", not a lone em-dash.
+    expect(cp.rows[0]).toEqual(['A', '0.2', 'n/a']);   // 0.18 → 0.2
+    expect(cp.rows[1]).toEqual(['B', '-0.4', 'n/a']);  // -0.36 → -0.4
   });
 
   test('authoritative roadmap (n=80) keeps full 2-dp precision', () => {
     const cp = centerpieceFor('roadmap', roadmap(80));
-    expect(cp.rows[0]).toEqual(['A', '0.18', '—']);  // unchanged
-    expect(cp.rows[1]).toEqual(['B', '-0.36', '—']);
+    expect(cp.rows[0]).toEqual(['A', '0.18', 'n/a']);  // unchanged
+    expect(cp.rows[1]).toEqual(['B', '-0.36', 'n/a']);
   });
 
   test('directional softens decimal percentages to whole numbers', () => {

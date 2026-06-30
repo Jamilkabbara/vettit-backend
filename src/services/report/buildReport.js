@@ -21,6 +21,7 @@ const { analysisHeadlines } = require('../exports/analysisHeadlines');
 const { computeStatGate } = require('./statGate');
 const { deriveFocalBrand, isGeneric } = require('../../utils/focalBrand');
 const { computePersonas } = require('../analysis/personas');
+const { sanitizeDashesDeep } = require('../../utils/textSanitize');
 
 const VERBATIM_CAP = 30;
 
@@ -508,7 +509,10 @@ function buildCanonicalReport(mission, analysis, responses) {
     distribution: (screenerQ.data && screenerQ.data.distribution) || {},
   } : null;
 
-  return {
+  // D7 — strip em/en dashes from EVERY user-facing string in the report (web +
+  // exports read this), regardless of source (LLM narration, the analysis data,
+  // or deterministic copy like persona "ages 29-45" / WTP "SAR 31-40").
+  return sanitizeDashesDeep({
     schema_version: 1,
     header: {
       title: cleanText(mission.title) || 'Untitled mission',
@@ -580,7 +584,7 @@ function buildCanonicalReport(mission, analysis, responses) {
       .map((n) => ((focalScrubRe && focalReal && n && typeof n.note === 'string')
         ? { ...n, note: n.note.replace(focalScrubRe, focalReal) } : n)),
     methodology_disclaimer: DISCLAIMER,
-  };
+  });
 }
 
 module.exports = {

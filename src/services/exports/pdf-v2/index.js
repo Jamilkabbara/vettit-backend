@@ -28,6 +28,7 @@ const { renderPdfFromHtml, getFontFaceCss } = require('./engine');
 const { getReportMetadata } = require('../reportMetadata');
 const { buildCanonicalReport } = require('../../report/buildReport');
 const { buildRenderModel } = require('../../report/reportRenderModel');
+const { sanitizeDashesDeep, sanitizeDashesString } = require('../../../utils/textSanitize');
 
 /* ─── Template + CSS loading (once per process) ─────────────────────────── */
 
@@ -150,9 +151,11 @@ function buildViewModel(pack) {
     generatedDate:      meta.report_generated_label,
 
     // Creative-attention body (separate goal type, out of Pass-48 scope).
-    ca: mission?.creative_analysis || null,
+    // D7 — deep-scrub the raw LLM creative_analysis so the CA-specific PDF
+    // sections inherit the no-dash rule (the canonical `model` already is).
+    ca: sanitizeDashesDeep(mission?.creative_analysis || null),
     media_url: mission?.media_url || null,
-    brand_name: mission?.brand_name || null,
+    brand_name: sanitizeDashesString(mission?.brand_name) || null,
 
     fontFaceCss:        getFontFaceCss(),
     baseCss:            loadBaseCss(),

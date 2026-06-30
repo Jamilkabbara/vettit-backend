@@ -20,6 +20,8 @@
  * them into rows/bars/tables the export libraries can paint.
  */
 
+const { sanitizeDashesDeep } = require('../../utils/textSanitize');
+
 /** Integer percent of a part over a total (0 when total is 0). Mirrors web pct(). */
 function pct(n, total) {
   return total > 0 ? Math.round((n / total) * 100) : 0;
@@ -57,7 +59,7 @@ function shapeSurveyBody(q) {
       average: data.average,
       n: data.n || 0,
       ci,
-      headline: `Average ${data.average ?? '—'} / ${data.scale_max} (n=${data.n || 0}${ci ? ` · ${ci}` : ''})`,
+      headline: `Average ${data.average ?? 'n/a'} / ${data.scale_max} (n=${data.n || 0}${ci ? ` · ${ci}` : ''})`,
       bars: keys.map((k) => ({ label: String(k), count: dist[k] || 0, pct: pct(dist[k] || 0, total) })),
     };
   }
@@ -235,7 +237,11 @@ function buildRenderModel(report) {
     body: shapeSurveyBody(q),
   }));
 
-  return {
+  // D7 — belt scrub. The canonical report is already dash-free, but this model
+  // adds its OWN literals (centerpiece titles like "Market demand scorecard —
+  // every target market", column headers, notes) that never passed through the
+  // buildReport scrub. Wrap the whole model so exports inherit a clean view.
+  return sanitizeDashesDeep({
     header: {
       title: h.title || 'Untitled mission',
       brief: h.brief || '',
@@ -262,7 +268,7 @@ function buildRenderModel(report) {
       note: n.note,
     })),
     disclaimer: report.methodology_disclaimer || null,
-  };
+  });
 }
 
 /**
@@ -307,12 +313,12 @@ function buildCenterpieceRaw(centerpiece) {
       if (!f || f.lift_abs == null) continue;
       const stage = f.text || f.funnel_stage || f.question_id || 'Stage';
       // §D2 — every KPI shows absolute lift (pp) AND relative lift (%) + sig.
-      const rel = f.lift_rel_pct != null ? `${f.lift_rel_pct >= 0 ? '+' : ''}${Math.round(f.lift_rel_pct)}%` : '—';
+      const rel = f.lift_rel_pct != null ? `${f.lift_rel_pct >= 0 ? '+' : ''}${Math.round(f.lift_rel_pct)}%` : 'n/a';
       if (f.type === 'proportion') {
         rows.push({
           stage,
-          exposed: f.exposed?.rate != null ? `${Math.round(f.exposed.rate * 100)}%` : '—',
-          control: f.control?.rate != null ? `${Math.round(f.control.rate * 100)}%` : '—',
+          exposed: f.exposed?.rate != null ? `${Math.round(f.exposed.rate * 100)}%` : 'n/a',
+          control: f.control?.rate != null ? `${Math.round(f.control.rate * 100)}%` : 'n/a',
           abs: `${f.lift_abs >= 0 ? '+' : ''}${Math.round(f.lift_abs * 100)} pp`,
           rel,
           significance: sigLabel(f.significance),
@@ -321,8 +327,8 @@ function buildCenterpieceRaw(centerpiece) {
       } else if (f.type === 'mean') {
         rows.push({
           stage,
-          exposed: f.exposed?.mean != null ? String(f.exposed.mean) : '—',
-          control: f.control?.mean != null ? String(f.control.mean) : '—',
+          exposed: f.exposed?.mean != null ? String(f.exposed.mean) : 'n/a',
+          control: f.control?.mean != null ? String(f.control.mean) : 'n/a',
           abs: `${f.lift_abs >= 0 ? '+' : ''}${f.lift_abs}`,
           rel,
           significance: sigLabel(f.significance),
@@ -344,18 +350,18 @@ function buildCenterpieceRaw(centerpiece) {
   if (methodology === 'market_entry') {
     const markets = Array.isArray(analysis.markets) ? analysis.markets : [];
     if (markets.length === 0) return null;
-    const signalLabel = (s) => (s === 'go' ? 'GO' : s === 'caution' ? 'CAUTION' : s === 'no_go' ? 'NO-GO' : '—');
+    const signalLabel = (s) => (s === 'go' ? 'GO' : s === 'caution' ? 'CAUTION' : s === 'no_go' ? 'NO-GO' : 'n/a');
     return {
       title: 'Market demand scorecard — every target market',
       columns: ['Market', 'Demand (0-100)', 'Signal', 'Purchase intent', 'Appeal (1-7)', 'WTP', 'Top barrier', 'n'],
       rows: markets.map((m) => [
         m.directional ? `${m.market} (directional)` : m.market,
-        m.demand_index != null ? String(m.demand_index) : '—',
+        m.demand_index != null ? String(m.demand_index) : 'n/a',
         signalLabel(m.signal),
-        m.purchase_intent_pct != null ? `${m.purchase_intent_pct}%` : '—',
-        m.appeal_mean != null ? String(m.appeal_mean) : '—',
-        m.wtp != null ? String(m.wtp) : '—',
-        (m.barriers && m.barriers[0]) ? `${m.barriers[0].label} (${m.barriers[0].pct}%)` : '—',
+        m.purchase_intent_pct != null ? `${m.purchase_intent_pct}%` : 'n/a',
+        m.appeal_mean != null ? String(m.appeal_mean) : 'n/a',
+        m.wtp != null ? String(m.wtp) : 'n/a',
+        (m.barriers && m.barriers[0]) ? `${m.barriers[0].label} (${m.barriers[0].pct}%)` : 'n/a',
         String(m.n ?? '?'),
       ]),
     };
@@ -369,7 +375,7 @@ function buildCenterpieceRaw(centerpiece) {
     if (segments.length === 0) return null;
     const definingTrait = (s) => {
       const sig = Array.isArray(s.signature) ? s.signature.slice() : [];
-      if (sig.length === 0) return '—';
+      if (sig.length === 0) return 'n/a';
       sig.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
       const t = sig[0];
       return `${t.label} (${t.delta >= 0 ? '+' : ''}${t.delta})`;
@@ -379,7 +385,7 @@ function buildCenterpieceRaw(centerpiece) {
       columns: ['Segment', 'Size', 'n', 'Defining trait (vs. avg)', 'Primary'],
       rows: segments.map((s) => [
         s.name || s.id || 'Segment',
-        s.size_pct != null ? `${s.size_pct}%` : '—',
+        s.size_pct != null ? `${s.size_pct}%` : 'n/a',
         String(s.n ?? '?'),
         definingTrait(s),
         s.is_primary ? 'Yes' : '',
@@ -411,10 +417,10 @@ function buildCenterpieceRaw(centerpiece) {
         columns: ['Channel', 'Fit (0-100)', 'Predicted active attention', 'Platform norm', 'vs. norm'],
         rows: fits.slice().sort((a, b) => (b.fit_score ?? 0) - (a.fit_score ?? 0)).map((f) => [
           f.platform,
-          f.fit_score != null ? String(f.fit_score) : '—',
-          f.predicted_creative_attention_seconds != null ? `${f.predicted_creative_attention_seconds}s` : '—',
-          f.platform_norm_active_attention_seconds != null ? `${f.platform_norm_active_attention_seconds}s` : '—',
-          f.delta_vs_norm_pct != null ? `${f.delta_vs_norm_pct >= 0 ? '+' : ''}${f.delta_vs_norm_pct}%` : '—',
+          f.fit_score != null ? String(f.fit_score) : 'n/a',
+          f.predicted_creative_attention_seconds != null ? `${f.predicted_creative_attention_seconds}s` : 'n/a',
+          f.platform_norm_active_attention_seconds != null ? `${f.platform_norm_active_attention_seconds}s` : 'n/a',
+          f.delta_vs_norm_pct != null ? `${f.delta_vs_norm_pct >= 0 ? '+' : ''}${f.delta_vs_norm_pct}%` : 'n/a',
         ]),
       };
     }
@@ -466,7 +472,7 @@ function buildCenterpieceRaw(centerpiece) {
       columns: ['Feature', 'MaxDiff utility', 'Kano'],
       rows: feats.slice().sort((a, b) => b.utility - a.utility).map((f) => {
         const cls = kano.get(String(f.feature_id ?? f.label));
-        return [f.label || f.feature_id || 'Feature', dnum(f.utility) ?? '—', cls ? (KANO[cls] || cls) : '—'];
+        return [f.label || f.feature_id || 'Feature', dnum(f.utility) ?? 'n/a', cls ? (KANO[cls] || cls) : 'n/a'];
       }),
     };
   }
@@ -477,7 +483,7 @@ function buildCenterpieceRaw(centerpiece) {
       return {
         title: 'Name / tagline reach — TURF',
         columns: ['Add', 'Incremental reach', 'Cumulative reach'],
-        rows: ladder.map((s) => [s.option || s.candidate_id || '—', dpct(s.incremental_reach_pct) ?? '—', dpct(s.cumulative_reach_pct) ?? '—']),
+        rows: ladder.map((s) => [s.option || s.candidate_id || 'n/a', dpct(s.incremental_reach_pct) ?? 'n/a', dpct(s.cumulative_reach_pct) ?? 'n/a']),
       };
     }
     const cands = (analysis.candidates || []).slice().sort((a, b) => {
@@ -492,8 +498,8 @@ function buildCenterpieceRaw(centerpiece) {
       columns: ['Name', 'Win rate', 'Winner'],
       rows: cands.map((c) => [
         c.label || c.candidate_id || 'Name',
-        c.pairwise_win_rate?.pct != null ? (dpct(c.pairwise_win_rate.pct) ?? '—')
-          : (c.composite != null ? `composite ${dnum(c.composite)}` : '—'),
+        c.pairwise_win_rate?.pct != null ? (dpct(c.pairwise_win_rate.pct) ?? 'n/a')
+          : (c.composite != null ? `composite ${dnum(c.composite)}` : 'n/a'),
         c.candidate_id === winnerId ? 'Yes' : '',
       ]),
     };
@@ -507,8 +513,8 @@ function buildCenterpieceRaw(centerpiece) {
       columns: ['Brand', 'Preference', 'NPS'],
       rows: brands.slice().sort((a, b) => b.preference_pct - a.preference_pct).map((b) => [
         `${b.label || 'Brand'}${b.is_focal ? ' (focal)' : ''}`,
-        dpct(b.preference_pct) ?? '—',
-        dnum(b.nps?.score ?? b.nps_score, 0) ?? '—',
+        dpct(b.preference_pct) ?? 'n/a',
+        dnum(b.nps?.score ?? b.nps_score, 0) ?? 'n/a',
       ]),
     };
   }
@@ -516,8 +522,8 @@ function buildCenterpieceRaw(centerpiece) {
   if (methodology === 'churn') {
     const drivers = (analysis.drivers?.ranked || []).filter((d) => d && (d.reason || d.option || d.label));
     if (drivers.length === 0 && analysis.winback?.winnable_pct == null) return null;
-    const rows = drivers.map((d) => [`Driver: ${d.reason || d.option || d.label}`, dpct(d.pct_of_respondents) ?? '—']);
-    if (analysis.winback?.winnable_pct != null) rows.push(['Winnable (would return)', dpct(analysis.winback.winnable_pct) ?? '—']);
+    const rows = drivers.map((d) => [`Driver: ${d.reason || d.option || d.label}`, dpct(d.pct_of_respondents) ?? 'n/a']);
+    if (analysis.winback?.winnable_pct != null) rows.push(['Winnable (would return)', dpct(analysis.winback.winnable_pct) ?? 'n/a']);
     return rows.length ? { title: 'Churn drivers + win-back', columns: ['Factor', '% of churned'], rows } : null;
   }
 
@@ -527,11 +533,11 @@ function buildCenterpieceRaw(centerpiece) {
     const winnerId = analysis.overall_winner?.concept_id;
     const rows = concepts.map((c) => [
       c.label || c.concept_id || 'Concept',
-      c.final_choice_pct?.pct != null ? (dpct(c.final_choice_pct.pct) ?? '—')
-        : (c.dimensions?.appeal?.mean != null ? `appeal ${dnum(c.dimensions.appeal.mean)}` : '—'),
+      c.final_choice_pct?.pct != null ? (dpct(c.final_choice_pct.pct) ?? 'n/a')
+        : (c.dimensions?.appeal?.mean != null ? `appeal ${dnum(c.dimensions.appeal.mean)}` : 'n/a'),
       c.concept_id === winnerId ? 'Yes' : '',
     ]);
-    if (analysis.final_choice?.none?.pct != null) rows.push(['None of these', dpct(analysis.final_choice.none.pct) ?? '—', '']);
+    if (analysis.final_choice?.none?.pct != null) rows.push(['None of these', dpct(analysis.final_choice.none.pct) ?? 'n/a', '']);
     return { title: 'Head-to-head — forced choice', columns: ['Concept', 'Forced choice', 'Winner'], rows };
   }
 

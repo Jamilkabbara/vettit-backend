@@ -13,7 +13,7 @@
 const WRITING_STYLE = `
 WRITING STYLE:
 - Use commas, periods, parentheses, and colons.
-- Do NOT use em-dashes (—) or double-dashes (--). Replace with a comma, period, or parenthetical.
+- Do NOT use em-dashes (—), en-dashes (–), or double-dashes (--) ANYWHERE in your output. Replace with a comma, period, parenthesis, or the word "and". For ranges and number spans use a plain hyphen ("SAR 31-40", "ages 25-44"), never an en-dash.
 - Do NOT use semicolons unless strictly necessary for separating list items containing commas.
 - Write in clear, direct sentences. No throat-clearing.
 - Avoid the phrases: "It's worth noting", "It's important to remember", "Furthermore", "Moreover", "It should be noted", "Of course".

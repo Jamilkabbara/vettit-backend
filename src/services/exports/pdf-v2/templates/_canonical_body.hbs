@@ -100,7 +100,7 @@
   <div class="section-divider"></div>
   {{#each report.keyFindings}}
   <div class="followup">
-    <h3 class="followup-title">{{this.title}}{{#if this.value}} — {{this.value}}{{/if}}</h3>
+    <h3 class="followup-title">{{this.title}}{{#if this.value}}: {{this.value}}{{/if}}</h3>
     {{#if this.body}}<p class="followup-rationale">{{this.body}}</p>{{/if}}
   </div>
   {{/each}}

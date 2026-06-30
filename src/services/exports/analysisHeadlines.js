@@ -85,7 +85,7 @@ function analysisHeadlines(analysis) {
         push('Optimal price (Van Westendorp OPP)', num(opp));
         const range = analysis.acceptable_range;
         if (range && range.low != null && range.high != null) {
-          push('Acceptable price range', `${num(range.low)}–${num(range.high)}`);
+          push('Acceptable price range', `${num(range.low)}-${num(range.high)}`);
         }
         // VW range corners (point of marginal cheapness / expensiveness).
         const pts = analysis.van_westendorp?.points || {};
@@ -202,7 +202,7 @@ function analysisHeadlines(analysis) {
         // Per-brand preference share.
         for (const b of analysis.brands || []) {
           if (!b || b.preference_pct == null) continue;
-          push(`${b.label}${b.is_focal ? ' (focal)' : ''} — preference`, pct(b.preference_pct));
+          push(`${b.label}${b.is_focal ? ' (focal)' : ''} preference`, pct(b.preference_pct));
         }
         // Biggest gaps vs best competitor (gaps sorted ascending = worst first).
         for (const g of (analysis.gaps || []).slice(0, 3)) {
@@ -256,7 +256,7 @@ function analysisHeadlines(analysis) {
         if (analysis.n != null) push('Responses analyzed', analysis.n);
         for (const q of (analysis.per_question || []).slice(0, 12)) {
           if (!q) continue;
-          const label = q.text ? `Base — ${String(q.text).slice(0, 60)}` : `Base — ${q.question_id}`;
+          const label = q.text ? `Base: ${String(q.text).slice(0, 60)}` : `Base: ${q.question_id}`;
           push(label, q.n);
         }
         break;
@@ -271,7 +271,7 @@ function analysisHeadlines(analysis) {
             push(`Segment: ${s.name}`, `${num(s.size_pct, 1) ?? s.size_pct}% (n=${s.n})`);
           }
         } else {
-          push('Segmentation', 'Aggregate profile only — sample too small to segment');
+          push('Segmentation', 'Aggregate profile only, sample too small to segment');
         }
         if (analysis.key_dimension) {
           const lbl = (analysis.dimensions || []).find((d) => d.key === analysis.key_dimension)?.label || analysis.key_dimension;
@@ -285,9 +285,9 @@ function analysisHeadlines(analysis) {
         if (analysis.best_demand_index != null) push('Best demand index (0-100)', analysis.best_demand_index);
         for (const m of analysis.markets || []) {
           if (!m) continue;
-          const sig = m.signal ? m.signal.replace('_', '-') : '—';
-          const intent = m.purchase_intent_pct != null ? `${m.purchase_intent_pct}%` : '—';
-          push(m.market, `demand ${m.demand_index ?? '—'}/100 · intent ${intent} · ${sig}${m.directional ? ' (directional)' : ''}`);
+          const sig = m.signal ? m.signal.replace('_', '-') : 'n/a';
+          const intent = m.purchase_intent_pct != null ? `${m.purchase_intent_pct}%` : 'n/a';
+          push(m.market, `demand ${m.demand_index ?? 'n/a'}/100 · intent ${intent} · ${sig}${m.directional ? ' (directional)' : ''}`);
         }
         if (analysis.top_barrier) push('Top adoption barrier', analysis.top_barrier);
         break;
@@ -342,8 +342,8 @@ function brandLiftStageTable(analysis) {
     if (f.type === 'proportion') {
       rows.push({
         stage,
-        exposed: f.exposed?.rate != null ? `${Math.round(f.exposed.rate * 100)}%` : '—',
-        control: f.control?.rate != null ? `${Math.round(f.control.rate * 100)}%` : '—',
+        exposed: f.exposed?.rate != null ? `${Math.round(f.exposed.rate * 100)}%` : 'n/a',
+        control: f.control?.rate != null ? `${Math.round(f.control.rate * 100)}%` : 'n/a',
         lift: `+${Math.round(f.lift_abs * 100)} pts`,
         significance: sigLabel(f.significance),
         n: `${f.exposed?.n ?? '?'} / ${f.control?.n ?? '?'}`,
@@ -351,8 +351,8 @@ function brandLiftStageTable(analysis) {
     } else if (f.type === 'mean') {
       rows.push({
         stage,
-        exposed: f.exposed?.mean != null ? (num(f.exposed.mean) ?? '—') : '—',
-        control: f.control?.mean != null ? (num(f.control.mean) ?? '—') : '—',
+        exposed: f.exposed?.mean != null ? (num(f.exposed.mean) ?? 'n/a') : 'n/a',
+        control: f.control?.mean != null ? (num(f.control.mean) ?? 'n/a') : 'n/a',
         lift: `+${num(f.lift_abs) ?? f.lift_abs}`,
         significance: sigLabel(f.significance),
         n: `${f.exposed?.n ?? '?'} / ${f.control?.n ?? '?'}`,

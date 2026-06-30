@@ -17,6 +17,7 @@
 
 const supabase = require('../../db/supabase');
 const { callClaude, streamClaude, MODEL_ROUTING } = require('./anthropic');
+const { sanitizeDashesString } = require('../../utils/textSanitize');
 const { aggregate } = require('./insights');
 const logger = require('../../utils/logger');
 
@@ -298,10 +299,14 @@ async function sendMessage({ userId, scope, missionId = null, userMessage, pageS
     enablePromptCache: true,
   });
 
+  // D7 — strip em/en dashes from the chatbot reply (the prompt rule reduces them;
+  // this guarantees it for the stored history + the returned reply).
+  const replyText = sanitizeDashesString(result.text);
+
   await supabase.from('chat_messages').insert({
     session_id: session.id,
     role: 'assistant',
-    content: result.text,
+    content: replyText,
     tokens_in:  result.inputTokens,
     tokens_out: result.outputTokens,
     cost_usd:   result.costUsd,
@@ -313,7 +318,7 @@ async function sendMessage({ userId, scope, missionId = null, userMessage, pageS
   return {
     blocked: false,
     sessionId: session.id,
-    reply: result.text,
+    reply: replyText,
     quota: updatedQuota,
     model: result.model,
   };

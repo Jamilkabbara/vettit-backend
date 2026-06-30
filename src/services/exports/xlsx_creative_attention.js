@@ -27,6 +27,7 @@
 const ExcelJS = require('exceljs');
 const { BRAND } = require('./shared');
 const { getReportMetadata } = require('./reportMetadata');
+const { sanitizeDashesDeep, sanitizeDashesString } = require('../../utils/textSanitize');
 
 const argb = (c) => 'FF' + (c || '').replace('#', '').toUpperCase();
 
@@ -55,7 +56,10 @@ function topEmotion(emotions = {}) {
 
 async function buildCreativeAttentionXLSX(pack, res) {
   const { mission } = pack;
-  const ca = mission.creative_analysis || {};
+  // D7 — deep-scrub the LLM-generated creative_analysis once so every cell
+  // rendered from it (frame descriptions, summary, strengths/weaknesses/recs,
+  // channel names) inherits the no-dash rule, mirroring the canonical exporters.
+  const ca = sanitizeDashesDeep(mission.creative_analysis || {});
   const frames = Array.isArray(ca.frame_analyses) ? ca.frame_analyses : [];
   // Channel sheet mirrors the PDF/PPTX centerpiece (summary.best_platform_fit) so
   // every surface shows the same "where this creative earns attention" table.
@@ -72,7 +76,7 @@ async function buildCreativeAttentionXLSX(pack, res) {
 
   const wb = new ExcelJS.Workbook();
   wb.creator = 'VETT';
-  wb.title = mission.title || 'VETT Creative Attention Report';
+  wb.title = sanitizeDashesString(mission.title) || 'VETT Creative Attention Report';
   wb.created = new Date();
 
   // ── 1. COVER ────────────────────────────────────────────────────
@@ -97,7 +101,7 @@ async function buildCreativeAttentionXLSX(pack, res) {
 
   cover.mergeCells('A5:D6');
   const brandTitle = cover.getCell('A5');
-  brandTitle.value = mission.brand_name || mission.title || 'Creative Attention';
+  brandTitle.value = sanitizeDashesString(mission.brand_name || mission.title) || 'Creative Attention';
   brandTitle.font = { name: 'Calibri', size: 22, bold: true };
   brandTitle.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
 
