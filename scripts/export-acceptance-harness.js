@@ -32,6 +32,7 @@ const JSZip = require('jszip');
 const { buildPDF } = require('../src/services/exports/pdf-v2');
 const { buildPPTX } = require('../src/services/exports/pptx');
 const { buildXLSX } = require('../src/services/exports/xlsx');
+const { buildCanonicalReport } = require('../src/services/report/buildReport');
 
 const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, { auth: { persistSession: false } });
 
@@ -131,20 +132,152 @@ function multiSelectFrag(mission, report) {
   return issues;
 }
 
+// ── synthetic ugly-data fixtures (§3 "holds on ugly data") ───────────────
+// Each takes a REAL base {mission, responses} and injects ONE pathology, then
+// runs the identical render→check→rasterize pipeline. Nothing is fabricated
+// wholesale — the mutation rides on real stored data so the render path stays
+// real. What we're proving: the exporters HOLD (no crash, no NaN, no dash leak,
+// no collision) on inputs uglier than any real mission, and the rasterized PNGs
+// are there for the human visual pass on overflow/truncation.
+const LONG_TITLE = 'A Deliberately Overlong Market Entry Readiness Assessment For The Gulf Dairy Category That Wraps Across Four Full Lines To Stress The Report Cover And The Title Slide Without Clipping Or Truncating The Header Block';
+const LABEL_200 = 'This is an intentionally and excessively verbose survey answer option label engineered to run about two hundred characters long so that it stresses bar-label truncation and wrapping across the PDF chart, the PPTX slide bars and the XLSX cell without breaking the layout.';
+const OPTS_11 = ['Instagram', 'TikTok', 'YouTube', 'Snapchat', 'X (Twitter)', 'Facebook', 'LinkedIn', 'Pinterest', 'Reddit', 'WhatsApp', 'Telegram'];
+
+function uglyFixtures(base) {
+  const clone = (o) => JSON.parse(JSON.stringify(o));
+  const out = [];
+
+  // (1) 4-line title — cover + title-slide header overflow.
+  {
+    const mission = clone(base.mission);
+    mission.title = LONG_TITLE;
+    out.push({ mission, responses: base.responses, tag: 'ugly_title4line', note: 'title wraps ~4 lines' });
+  }
+
+  // (2) 200-char option label — bar-label truncation across all 3 surfaces.
+  {
+    const mission = clone(base.mission);
+    const qid = 'ugly_q_longlabel';
+    mission.questions = [...(mission.questions || []), {
+      id: qid, type: 'single', text: 'Which statement best matches your view?',
+      options: [LABEL_200, 'A short option', 'Another short option'],
+    }];
+    const responses = [...base.responses];
+    for (let i = 0; i < 30; i += 1) {
+      responses.push({ question_id: qid, answer: [LABEL_200, 'A short option', 'Another short option'][i % 3], persona_id: `ugly_ll_${i}` });
+    }
+    out.push({ mission, responses, tag: 'ugly_label200', note: '200-char bar label' });
+  }
+
+  // (3) 11-option multi-select — many-bar layout + D6 fragmentation: a drift
+  //     variant "YouTube (mobile)" must fold back to "YouTube" (11 bars, not 12).
+  {
+    const mission = clone(base.mission);
+    const qid = 'ugly_q_multi11';
+    mission.questions = [...(mission.questions || []), {
+      id: qid, type: 'multi', text: 'Which platforms do you use weekly? (select all that apply)', options: OPTS_11,
+    }];
+    const responses = [...base.responses];
+    for (let i = 0; i < 44; i += 1) {
+      const picks = OPTS_11.filter((_, j) => ((i + j) % 4) < 2 || (i % 11) === j); // deterministic, every option covered
+      if (i % 13 === 0) picks.push('YouTube (mobile)'); // drift → must canonicalize to YouTube
+      responses.push({ question_id: qid, answer: picks, persona_id: `ugly_m_${i}` });
+    }
+    out.push({ mission, responses, tag: 'ugly_multi11', note: '11-option multi-select + 1 drift variant' });
+  }
+
+  // (4) 1-respondent segment — the singleton-market floor (D9). Collapse the
+  //     real sample to a SINGLE respondent so n=1 flows through the stat gate,
+  //     centerpiece, personas and every chart. Must render (directional posture,
+  //     no NaN, no divide-by-zero), not crash.
+  {
+    const mission = clone(base.mission);
+    const idField = base.responses.some((r) => r && r.persona_id) ? 'persona_id'
+      : (base.responses.some((r) => r && r.respondent_id) ? 'respondent_id' : null);
+    let responses;
+    if (idField) {
+      const counts = {};
+      for (const r of base.responses) { const k = r[idField]; if (k != null) counts[k] = (counts[k] || 0) + 1; }
+      const one = Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+      responses = base.responses.filter((r) => String(r[idField]) === String(one));
+    } else {
+      const seen = new Set();
+      responses = base.responses.filter((r) => { if (seen.has(r.question_id)) return false; seen.add(r.question_id); return true; });
+    }
+    out.push({ mission, responses, tag: 'ugly_segment_n1', note: `n=1 (${responses.length} answers)` });
+  }
+
+  return out;
+}
+
+// Render PDF+PPTX+XLSX for one fixture, run structural checks, rasterize the PDF,
+// write every artifact. Shared by the real-mission path and the ugly path.
+async function processPack(m, resp, tag, outDir) {
+  const pack = { mission: m, responses: resp || [] };
+  const r = { tag, type: m.goal_type, id: m.id, n: m.delivered_respondent_count || m.respondent_count };
+  try {
+    const clean = (resp || []).filter((x) => x && x.screened_out !== true);
+    const report = buildCanonicalReport(m, m.analysis || null, clean);
+    const [pdf, pptx, xlsx] = await Promise.all([renderPDF(pack), renderPPTX(pack), renderXLSX(pack)]);
+    fs.writeFileSync(path.join(outDir, `${tag}.pdf`), pdf);
+    fs.writeFileSync(path.join(outDir, `${tag}.pptx`), pptx);
+    fs.writeFileSync(path.join(outDir, `${tag}.xlsx`), xlsx);
+    const pdfR = await pdfTextAndOverlaps(pdf);
+    const pptxR = await pptxAnalyze(pptx);
+    const xt = await xlsxText(xlsx);
+    const pngs = await rasterizePDF(pdf, path.join(outDir, tag));
+    r.dashes = (pdfR.text.match(DASH) || []).length + (pptxR.text.match(DASH) || []).length + (xt.match(DASH) || []).length;
+    r.pptxEditable = pptxR.pics === 0 && pptxR.shapes > 0;
+    r.pptxPics = pptxR.pics;
+    r.methodLabel = /Research Study/.test(pdfR.text) ? 'GENERIC (D5!)' : 'ok';
+    r.recsNumbered = pptxR.recsNumbered.found ? (pptxR.recsNumbered.numbered ? 'numbered' : 'BULLETS (§3a-2)') : 'n/a';
+    r.scorecard = pptxR.scorecardBalance ? (pptxR.scorecardBalance.even ? 'balanced' : 'IMBALANCED (§3a-4)') : 'n/a';
+    r.pdfOverlaps = pdfR.overlaps;
+    // §3a-5 — adjacent-cell mash the bbox heuristic misses: a digit directly
+    // abutting a signal word with no space ("55CAUTION", "68GO").
+    r.pdfMash = (pdfR.text.match(/\d(GO|CAUTION|NO[-_]?GO)\b/g) || []).length;
+    r.d6 = multiSelectFrag(m, report);
+    r.pages = pdfR.pages; r.slides = pptxR.slides; r.pngs = pngs.length;
+    r.ok = true;
+  } catch (e) { r.ok = false; r.err = e.message; }
+  return r;
+}
+
 (async () => {
   const outDir = process.argv[2] || './harness-out';
-  const idsArg = process.argv.slice(3);
+  const rest = process.argv.slice(3);
+  const uglyMode = rest[0] === 'ugly';
+  const idsArg = uglyMode ? rest.slice(1) : rest;
   fs.mkdirSync(outDir, { recursive: true });
 
-  const ids = idsArg.length ? idsArg : [
-    'e29883ee-ed7e-4e97-99c3-1e20a5fb0ca4', // research n=100 (fix real ids below at runtime)
-  ];
-  // If no ids passed, auto-pick one completed mission per goal_type.
+  // Fixtures are a uniform { mission, responses|null, tag }. responses===null →
+  // load from DB in the loop (real-mission path); a concrete array → use as-is
+  // (ugly path, already mutated).
   let fixtures = [];
-  if (idsArg.length) {
+  if (uglyMode) {
+    // Load ONE rich base — a completed market_entry (scorecard + personas +
+    // richest layout, the surface most sensitive to n=1 and overflow), else the
+    // best completed mission — and derive the 4 pathologies from it.
+    let base;
+    if (idsArg.length) {
+      const { data } = await db.from('missions').select('*').eq('id', idsArg[0]).limit(1);
+      base = (data || [])[0];
+    } else {
+      const { data } = await db.from('missions').select('*').eq('status', 'completed').eq('goal_type', 'market_entry').limit(50);
+      base = (data || []).sort((a, b) => ((b.insights ? 2 : 0) + (b.analysis ? 1 : 0)) - ((a.insights ? 2 : 0) + (a.analysis ? 1 : 0)))[0];
+      if (!base) { const { data: any } = await db.from('missions').select('*').eq('status', 'completed').limit(1); base = (any || [])[0]; }
+    }
+    if (!base) { console.error('no completed base mission found for ugly mode'); process.exit(1); }
+    const { data: resp } = await db.from('mission_responses').select('*').eq('mission_id', base.id).limit(6000);
+    const baseClean = (resp || []).filter((x) => x && x.screened_out !== true);
+    const nBase = new Set(baseClean.map((x) => x.persona_id).filter(Boolean)).size || '?';
+    console.log(`ugly base: ${base.goal_type} ${base.id.slice(0, 8)} (n=${nBase}, ${baseClean.length} answers)\n`);
+    fixtures = uglyFixtures({ mission: base, responses: baseClean });
+  } else if (idsArg.length) {
     const { data } = await db.from('missions').select('*').in('id', idsArg);
-    fixtures = data || [];
+    fixtures = (data || []).map((m) => ({ mission: m, responses: null, tag: `${m.goal_type || 'unknown'}_${m.id.slice(0, 8)}` }));
   } else {
+    // Auto-pick the richest completed mission per goal_type.
     const { data } = await db.from('missions').select('*').eq('status', 'completed').limit(3000);
     const byType = {};
     for (const m of (data || [])) {
@@ -152,44 +285,21 @@ function multiSelectFrag(mission, report) {
       const score = (m.insights ? 2 : 0) + (m.analysis ? 1 : 0) + Math.min(2, (m.delivered_respondent_count || m.respondent_count || 0) / 50);
       if (!byType[g] || score > byType[g]._s) byType[g] = { ...m, _s: score };
     }
-    fixtures = Object.values(byType);
+    fixtures = Object.values(byType).map((m) => ({ mission: m, responses: null, tag: `${m.goal_type || 'unknown'}_${m.id.slice(0, 8)}` }));
   }
 
-  const { buildCanonicalReport } = require('../src/services/report/buildReport');
   const rows = [];
-  for (const m of fixtures) {
-    const { data: resp } = await db.from('mission_responses').select('*').eq('mission_id', m.id).limit(6000);
-    const pack = { mission: m, responses: resp || [] };
-    const tag = `${(m.goal_type || 'unknown')}_${m.id.slice(0, 8)}`;
-    const r = { tag, type: m.goal_type, id: m.id, n: m.delivered_respondent_count || m.respondent_count };
-    try {
-      const clean = (resp || []).filter((x) => x && x.screened_out !== true);
-      const report = buildCanonicalReport(m, m.analysis || null, clean);
-      const [pdf, pptx, xlsx] = await Promise.all([renderPDF(pack), renderPPTX(pack), renderXLSX(pack)]);
-      fs.writeFileSync(path.join(outDir, `${tag}.pdf`), pdf);
-      fs.writeFileSync(path.join(outDir, `${tag}.pptx`), pptx);
-      fs.writeFileSync(path.join(outDir, `${tag}.xlsx`), xlsx);
-      const pdfR = await pdfTextAndOverlaps(pdf);
-      const pptxR = await pptxAnalyze(pptx);
-      const xt = await xlsxText(xlsx);
-      const pngs = await rasterizePDF(pdf, path.join(outDir, tag));
-      r.dashes = (pdfR.text.match(DASH) || []).length + (pptxR.text.match(DASH) || []).length + (xt.match(DASH) || []).length;
-      r.pptxEditable = pptxR.pics === 0 && pptxR.shapes > 0;
-      r.pptxPics = pptxR.pics;
-      r.methodLabel = /Research Study/.test(pdfR.text) ? 'GENERIC (D5!)' : 'ok';
-      r.recsNumbered = pptxR.recsNumbered.found ? (pptxR.recsNumbered.numbered ? 'numbered' : 'BULLETS (§3a-2)') : 'n/a';
-      r.scorecard = pptxR.scorecardBalance ? (pptxR.scorecardBalance.even ? 'balanced' : 'IMBALANCED (§3a-4)') : 'n/a';
-      r.pdfOverlaps = pdfR.overlaps;
-      // §3a-5 — adjacent-cell mash the bbox heuristic misses: a digit directly
-      // abutting a signal word with no space ("55CAUTION", "68GO").
-      r.pdfMash = (pdfR.text.match(/\d(GO|CAUTION|NO[-_]?GO)\b/g) || []).length;
-      r.d6 = multiSelectFrag(m, report);
-      r.pages = pdfR.pages; r.slides = pptxR.slides; r.pngs = pngs.length;
-      r.ok = true;
-    } catch (e) { r.ok = false; r.err = e.message; }
+  for (const f of fixtures) {
+    let resp = f.responses;
+    if (resp === null || resp === undefined) {
+      const { data } = await db.from('mission_responses').select('*').eq('mission_id', f.mission.id).limit(6000);
+      resp = data || [];
+    }
+    const r = await processPack(f.mission, resp, f.tag, outDir);
+    if (f.note) r.note = f.note;
     rows.push(r);
-    console.log(`${r.ok ? '✓' : '✗'} ${tag.padEnd(28)} ${r.ok
-      ? `dash:${r.dashes} edit:${r.pptxEditable ? 'Y' : 'N'} method:${r.methodLabel} recs:${r.recsNumbered} score:${r.scorecard} mash:${r.pdfMash} d6:${r.d6.length ? r.d6.join('|') : 'clean'} [${r.pages}p/${r.slides}s]`
+    console.log(`${r.ok ? '✓' : '✗'} ${f.tag.padEnd(28)} ${r.ok
+      ? `dash:${r.dashes} edit:${r.pptxEditable ? 'Y' : 'N'} method:${r.methodLabel} recs:${r.recsNumbered} score:${r.scorecard} mash:${r.pdfMash} d6:${r.d6.length ? r.d6.join('|') : 'clean'} [${r.pages}p/${r.slides}s]${f.note ? `  «${f.note}»` : ''}`
       : 'ERROR ' + r.err}`);
   }
 
