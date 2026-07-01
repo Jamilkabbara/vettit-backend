@@ -76,7 +76,7 @@
     <thead>
       <tr style="border-bottom: 1pt solid var(--border);">
         {{#each report.centerpiece.columns}}
-        <th style="text-align:{{#if @first}}left{{else}}right{{/if}}; padding:6pt 0; color: var(--text3);">{{this}}</th>
+        <th style="text-align:{{#if @first}}left{{else}}right{{/if}}; padding:6pt 0 6pt {{#if @first}}0{{else}}14pt{{/if}}; color: var(--text3);">{{this}}</th>
         {{/each}}
       </tr>
     </thead>
@@ -84,7 +84,7 @@
       {{#each report.centerpiece.rows}}
       <tr style="border-bottom: 0.5pt solid var(--border);">
         {{#each this}}
-        <td style="padding:5pt 0; text-align:{{#if @first}}left{{else}}right{{/if}}; font-variant-numeric: tabular-nums; color: {{#if @first}}var(--text1){{else}}var(--text2){{/if}};">{{this}}</td>
+        <td style="padding:5pt 0 5pt {{#if @first}}0{{else}}14pt{{/if}}; text-align:{{#if @first}}left{{else}}right{{/if}}; font-variant-numeric: tabular-nums; color: {{#if @first}}var(--text1){{else}}var(--text2){{/if}};">{{this}}</td>
         {{/each}}
       </tr>
       {{/each}}

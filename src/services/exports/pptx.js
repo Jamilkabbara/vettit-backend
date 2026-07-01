@@ -355,7 +355,9 @@ function buildPPTX(pack, res) {
     const items = [];
     model.recommendations.forEach((r, i) => {
       if (i > 0) items.push({ text: '', options: { breakLine: true } });
-      items.push({ text: r, options: { fontSize: 13, color: 'FFFFFF', bullet: { code: '25CF', indent: 18 }, paraSpaceAfter: 12 } });
+      // §3a-2 — numbered list (1. 2. 3.), matching the XLSX recommendations
+      // sheet, instead of undifferentiated bullets.
+      items.push({ text: `${i + 1}. ${r}`, options: { fontSize: 13, color: 'FFFFFF', indent: 18, paraSpaceAfter: 12 } });
     });
     slide.addText(items, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: FONT, valign: 'top' });
   }
@@ -422,7 +424,7 @@ function buildPPTX(pack, res) {
     addDarkBackground(slide);
     addSectionHeader(slide, '· FULL SURVEY', `${shownSurvey.length} of ${allSurvey.length} questions shown`);
     const lines = [`This deck summarises the survey; ${omittedCount} question${omittedCount === 1 ? '' : 's'} omitted here for brevity.`];
-    if (instrumentCount > 0) lines.push(`Includes ${instrumentCount} MaxDiff / Kano / forced-choice instrument task${instrumentCount === 1 ? '' : 's'} — their aggregate is the centerpiece above.`);
+    if (instrumentCount > 0) lines.push(`Includes ${instrumentCount} MaxDiff / Kano / forced-choice instrument task${instrumentCount === 1 ? '' : 's'}; their aggregate is the centerpiece above.`);
     lines.push('The complete per-question breakdown is in the PDF and XLSX exports.');
     slide.addText(lines.map((t) => ({ text: t, options: { fontSize: 14, color: hex(BRAND.text2), bullet: { code: '25CF', indent: 18 }, paraSpaceAfter: 12, breakLine: true } })), {
       x: 0.5, y: 1.65, w: 12.3, h: 5, fontFace: FONT, valign: 'top',
