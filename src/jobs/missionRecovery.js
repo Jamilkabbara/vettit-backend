@@ -384,6 +384,14 @@ async function reconcileOrphanPendingPayment(m) {
     await updateMission(supabase, m.id, {
       status:  'paid',
       paid_at: piPaidAt,
+      // P0-6 — stamp the Stripe-confirmed amount + PI id so revenue reporting
+      // is confirmed, not estimated. This recovery path previously marked paid
+      // WITHOUT paid_amount_cents (the main cause of the paid_at-but-null-amount
+      // rows the admin Costs panel flags). amount_received is the captured cents.
+      latest_payment_intent_id: pi.id,
+      paid_amount_cents: Number.isFinite(pi.amount_received) ? pi.amount_received
+        : (Number.isFinite(pi.amount) ? pi.amount : null),
+      paid_amount_estimated: false,
     }, { caller: 'cron:missionRecovery:job2:webhook_miss_recovered' });
 
     setImmediate(() => {
