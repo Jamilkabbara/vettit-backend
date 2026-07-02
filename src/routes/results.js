@@ -11,6 +11,14 @@ const { authenticate } = require('../middleware/auth');
 const supabase = require('../db/supabase');
 const logger   = require('../utils/logger');
 
+// WO#4 — cross-user admin read. The authenticate middleware populates req.user
+// from the verified JWT, so req.user.email is trustworthy (not client-supplied).
+// When the requester is the admin, results/report/export reads may load ANY
+// user's mission. This is the SAME server-side admin allowlist that gates the
+// /api/admin routers; RLS is not loosened and regular users stay owner-only.
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'kabbarajamil@gmail.com';
+const isAdminReq = (req) => !!(req.user && req.user.email === ADMIN_EMAIL);
+
 const { loadMissionForExport } = require('../services/exports/shared');
 // Pass 25 Phase 0: PDF rebuilt on Puppeteer + Handlebars (was pdfkit).
 // See docs/PDF_EXPORT_AUDIT.md. Old pdfkit module retained for one deploy
@@ -48,12 +56,12 @@ router.get('/:missionId', authenticate, async (req, res, next) => {
 
     // Cheap status check first — avoids loading responses + aggregating
     // for missions that aren't ready.
-    const { data: mission, error: mErr } = await supabase
+    let mq = supabase
       .from('missions')
       .select('id, status, respondent_count, questions, mission_assets, failure_reason')
-      .eq('id', missionId)
-      .eq('user_id', req.user.id)
-      .single();
+      .eq('id', missionId);
+    if (!isAdminReq(req)) mq = mq.eq('user_id', req.user.id); // admin may read any user's mission
+    const { data: mission, error: mErr } = await mq.single();
 
     if (mErr || !mission) return res.status(404).json({ error: 'Mission not found' });
 
@@ -428,7 +436,7 @@ function computeFilteredBrandLiftResults({ blr, filtered, questions, lift_mode, 
 router.get('/:missionId/report', authenticate, async (req, res, next) => {
   try {
     const { buildCanonicalReport } = require('../services/report/buildReport');
-    const pack = await loadMissionForExport(req.params.missionId, req.user.id);
+    const pack = await loadMissionForExport(req.params.missionId, req.user.id, { isAdmin: isAdminReq(req) });
     if (!pack) return res.status(404).json({ error: 'Mission not found' });
     if (pack.error) return res.status(400).json({ error: pack.error });
 
@@ -484,7 +492,7 @@ router.post('/:missionId/summaries/regenerate', authenticate, async (req, res, n
   try {
     const { buildCanonicalReport } = require('../services/report/buildReport');
     const { generateReportSummaries } = require('../services/ai/reportSummaries');
-    const pack = await loadMissionForExport(req.params.missionId, req.user.id);
+    const pack = await loadMissionForExport(req.params.missionId, req.user.id, { isAdmin: isAdminReq(req) });
     if (!pack) return res.status(404).json({ error: 'Mission not found' });
     if (pack.error) return res.status(400).json({ error: pack.error });
 
@@ -527,12 +535,12 @@ router.post('/:missionId/summaries/regenerate', authenticate, async (req, res, n
 
 router.get('/:missionId/status', authenticate, async (req, res, next) => {
   try {
-    const { data: mission, error } = await supabase
+    let sq = supabase
       .from('missions')
       .select('id, status, respondent_count, started_at, completed_at')
-      .eq('id', req.params.missionId)
-      .eq('user_id', req.user.id)
-      .single();
+      .eq('id', req.params.missionId);
+    if (!isAdminReq(req)) sq = sq.eq('user_id', req.user.id); // admin may read any user's mission
+    const { data: mission, error } = await sq.single();
 
     if (error || !mission) return res.status(404).json({ error: 'Mission not found' });
 
@@ -561,7 +569,7 @@ router.get('/:missionId/status', authenticate, async (req, res, next) => {
 // ─── GET /api/results/:missionId/export/pdf ──────────────────
 router.get('/:missionId/export/pdf', authenticate, async (req, res, next) => {
   try {
-    const pack = await loadMissionForExport(req.params.missionId, req.user.id);
+    const pack = await loadMissionForExport(req.params.missionId, req.user.id, { isAdmin: isAdminReq(req) });
     if (!pack)        return res.status(404).json({ error: 'Mission not found' });
     if (pack.error)   return res.status(400).json({ error: pack.error });
 
@@ -573,7 +581,7 @@ router.get('/:missionId/export/pdf', authenticate, async (req, res, next) => {
 // ─── GET /api/results/:missionId/export/pptx ─────────────────
 router.get('/:missionId/export/pptx', authenticate, async (req, res, next) => {
   try {
-    const pack = await loadMissionForExport(req.params.missionId, req.user.id);
+    const pack = await loadMissionForExport(req.params.missionId, req.user.id, { isAdmin: isAdminReq(req) });
     if (!pack)      return res.status(404).json({ error: 'Mission not found' });
     if (pack.error) return res.status(400).json({ error: pack.error });
 
@@ -585,7 +593,7 @@ router.get('/:missionId/export/pptx', authenticate, async (req, res, next) => {
 // ─── GET /api/results/:missionId/export/xlsx ─────────────────
 router.get('/:missionId/export/xlsx', authenticate, async (req, res, next) => {
   try {
-    const pack = await loadMissionForExport(req.params.missionId, req.user.id);
+    const pack = await loadMissionForExport(req.params.missionId, req.user.id, { isAdmin: isAdminReq(req) });
     if (!pack)      return res.status(404).json({ error: 'Mission not found' });
     if (pack.error) return res.status(400).json({ error: pack.error });
 
@@ -605,12 +613,12 @@ router.get('/:missionId/export/xlsx', authenticate, async (req, res, next) => {
 // channel mix hash, audience segment, kpi template) for 30 days.
 router.get('/:missionId/brand-lift-benchmarks', authenticate, async (req, res, next) => {
   try {
-    const { data: mission, error } = await supabase
+    let bq = supabase
       .from('missions')
       .select('id, user_id, goal_type, targeting, campaign_channels, brand_lift_template')
-      .eq('id', req.params.missionId)
-      .eq('user_id', req.user.id)
-      .single();
+      .eq('id', req.params.missionId);
+    if (!isAdminReq(req)) bq = bq.eq('user_id', req.user.id); // admin may read any user's mission
+    const { data: mission, error } = await bq.single();
     if (error || !mission) return res.status(404).json({ error: 'Mission not found' });
     if (mission.goal_type !== 'brand_lift') {
       return res.status(400).json({ error: 'not_a_brand_lift_mission' });
@@ -644,7 +652,7 @@ router.get('/:missionId/brand-lift-benchmarks', authenticate, async (req, res, n
 router.get('/:missionId/export/raw', authenticate, async (req, res, next) => {
   try {
     const { buildCanonicalReport } = require('../services/report/buildReport');
-    const pack = await loadMissionForExport(req.params.missionId, req.user.id);
+    const pack = await loadMissionForExport(req.params.missionId, req.user.id, { isAdmin: isAdminReq(req) });
     if (!pack)      return res.status(404).json({ error: 'Mission not found' });
     if (pack.error) return res.status(400).json({ error: pack.error });
 
@@ -690,7 +698,7 @@ router.get('/:missionId/export/raw', authenticate, async (req, res, next) => {
 // Short marketing-ready audience profile built from the persona set.
 router.get('/:missionId/export/audience-brief', authenticate, async (req, res, next) => {
   try {
-    const pack = await loadMissionForExport(req.params.missionId, req.user.id);
+    const pack = await loadMissionForExport(req.params.missionId, req.user.id, { isAdmin: isAdminReq(req) });
     if (!pack)      return res.status(404).json({ error: 'Mission not found' });
     if (pack.error) return res.status(400).json({ error: pack.error });
 

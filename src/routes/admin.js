@@ -261,6 +261,24 @@ router.get('/missions', async (req, res, next) => {
 });
 
 /**
+ * GET /api/admin/missions/:id — WO#4 single mission ROW for the admin
+ * cross-user results view. The web results pages read the mission row with a
+ * browser-side, RLS-scoped supabase query (owner-only). When the ADMIN opens
+ * another user's mission, that client query returns nothing; the page falls
+ * back to THIS endpoint. It uses the service-key client (no user_id filter) and
+ * is gated by the router-level authenticate + adminOnly, so cross-user read is
+ * granted only server-side to the admin allowlist. RLS is untouched.
+ */
+router.get('/missions/:id', async (req, res, next) => {
+  try {
+    const { data: mission, error } = await supabase
+      .from('missions').select('*').eq('id', req.params.id).single();
+    if (error || !mission) return res.status(404).json({ error: 'Mission not found' });
+    res.json({ mission });
+  } catch (err) { next(err); }
+});
+
+/**
  * GET /api/admin/users — paginated user list with mission stats.
  * ?limit&offset&search&segment
  */
@@ -418,7 +436,15 @@ router.get('/ai-costs', async (req, res, next) => {
       // Pass 34 C3 — non-mission calls bucketed by purpose so admin
       // can see chatbot / clarify / targeting spend separately.
       by_purpose:      byPurpose,
-      model_mix:       modelMix.data    || [],
+      // Remap admin_ai_model_mix RPC columns (model/call_count/percentage/
+      // total_cost_usd) to the keys the FE ModelMix bars bind (calls/cost_usd/
+      // pct_of_cost). Without this the Model Mix rows render "— calls / —%".
+      model_mix:       (modelMix.data || []).map((m) => ({
+        model:       m.model,
+        calls:       m.call_count,
+        cost_usd:    m.total_cost_usd,
+        pct_of_cost: m.percentage,
+      })),
       mission_margins: margins.data     || [],
       daily_buckets:   dailyBuckets,
       last_updated:    new Date().toISOString(),
@@ -1273,7 +1299,15 @@ router.get('/revenue', async (req, res, next) => {
       avg_order:      { value: avgOrder,    delta_pct: 0 },
       mission_count:  curr.length,
       goal_breakdown: goalBreakdown,
-      daily_buckets:  bucketsRes.data || [],
+      // Remap daily_revenue_buckets RPC columns (bucket_date/ai_cost_usd) to the
+      // keys the FE daily chart binds (day/cost_usd). Without this the X-axis day
+      // labels are blank and the Cost/Profit series collapse to zero. Same fix
+      // the /ai-costs handler already applies to its daily buckets.
+      daily_buckets:  (bucketsRes.data || []).map((b) => ({
+        day:         b.bucket_date,
+        revenue_usd: b.revenue_usd,
+        cost_usd:    b.ai_cost_usd,
+      })),
       last_updated:   new Date().toISOString(),
     });
   } catch (err) { next(err); }
