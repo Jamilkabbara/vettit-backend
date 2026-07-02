@@ -182,9 +182,17 @@ router.get('/dashboard', async (req, res, next) => {
       });
     }
 
+    // WO#4 Phase 2 — capacity was a hardcoded placeholder (15 MB / 3%) while the
+    // pg_database_size RPC result was fetched and discarded. Use the real number;
+    // null (renders as em-dash) when the RPC is unavailable, never a fake value.
+    // Free-tier reference: 500 MB (Supabase free plan database cap).
+    const dbBytes = typeof dbSizeRes?.data === 'number'
+      ? dbSizeRes.data
+      : (typeof dbSizeRes?.data?.[0]?.pg_database_size === 'number' ? dbSizeRes.data[0].pg_database_size : null);
+    const dbMb = dbBytes != null ? Math.round((dbBytes / (1024 * 1024)) * 10) / 10 : null;
     const capacity = {
-      supabase_db_size_mb: 15,
-      supabase_db_size_pct_of_free_tier: 3,
+      supabase_db_size_mb: dbMb,
+      supabase_db_size_pct_of_free_tier: dbMb != null ? Math.round((dbMb / 500) * 100) : null,
       resend_sends_this_month: null,
       railway_credits_remaining_usd: null,
     };

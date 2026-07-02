@@ -210,7 +210,24 @@ router.get('/missions', async (req, res, next) => {
 
     if (status)    q = q.eq('status', status);
     if (goal_type) q = q.eq('goal_type', goal_type);
-    if (search)    q = q.ilike('brief', `%${search}%`);
+    if (search) {
+      // WO#4 BUG A follow-up — search by USER too, not just brief. The live
+      // Missions tab lists every user's missions (verified on prod), but page 1
+      // is dominated by the owner's own rows, so a specific user's mission was
+      // effectively unfindable: the search only matched brief text. Resolve the
+      // search against profiles first (name/company), then match missions whose
+      // brief ILIKEs OR whose user_id is one of the matching profiles.
+      const clean = search.replace(/[%_,()]/g, ' ').trim();
+      const { data: matchedProfiles } = clean
+        ? await supabase.from('profiles').select('id')
+          .or(`full_name.ilike.%${clean}%,first_name.ilike.%${clean}%,last_name.ilike.%${clean}%,company_name.ilike.%${clean}%`)
+          .limit(50)
+        : { data: [] };
+      const ids = (matchedProfiles || []).map((p) => p.id);
+      q = ids.length
+        ? q.or(`brief.ilike.%${clean}%,user_id.in.(${ids.join(',')})`)
+        : q.ilike('brief', `%${clean}%`);
+    }
 
     const { data, error, count } = await q;
     if (error) throw error;
