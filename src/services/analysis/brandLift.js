@@ -37,6 +37,7 @@ const {
   round4,
   personaCount,
   num,
+  isSkip,
 } = require('./shared');
 
 // Pass 46 Phase 3 — multi-select brand-contains math only applies to the
@@ -118,7 +119,9 @@ function yesLikeOptions(options) {
 /** Scalar answer for single-choice rows; stray arrays use their first element. */
 function scalarAnswer(answer) {
   const a = Array.isArray(answer) ? answer[0] : answer;
-  if (a === null || a === undefined || a === '') return null;
+  // A 'not_applicable' skip is excluded (null) so it never sits in a funnel-rate
+  // denominator.
+  if (a === null || a === undefined || a === '' || isSkip(a)) return null;
   return String(a);
 }
 

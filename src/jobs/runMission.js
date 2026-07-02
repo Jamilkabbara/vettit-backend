@@ -26,6 +26,7 @@ const supabase = require('../db/supabase');
 const logger = require('../utils/logger');
 const { generatePersonas } = require('../services/ai/personas');
 const { simulateAllResponses } = require('../services/ai/simulate');
+const { normalizeAnswerForStorage } = require('../utils/answerValue');
 const { synthesizeInsights, aggregate } = require('../services/ai/insights');
 const { generateTargetingBrief } = require('../services/ai/targetingBrief');
 const { analyzeCreative }       = require('../services/ai/creativeAttention');
@@ -383,16 +384,43 @@ async function runMission(missionId, opts = {}) {
       persona_id:      r.persona_id,
       persona_profile: r.persona_profile,
       question_id:     r.question_id,
-      answer:          r.answer,
+      // Never store SQL null against the NOT NULL JSONB column — a skip
+      // (not_applicable) is stored as the sentinel string, not null.
+      answer:          normalizeAnswerForStorage(r.answer),
       screened_out:    Boolean((r.persona_profile || {}).screened_out),
       exposure_status: exposureByPersonaId[r.persona_id] || 'not_applicable',
     }));
+    let responsePersistError = null;
     for (let i = 0; i < rows.length; i += RESPONSE_INSERT_CHUNK) {
       const { error: insErr } = await supabase
         .from('mission_responses')
         .insert(rows.slice(i, i + RESPONSE_INSERT_CHUNK));
       if (insErr) {
-        logger.warn('Mission run: responses insert chunk failed', { missionId, err: insErr });
+        responsePersistError = insErr;
+        logger.error('Mission run: responses insert chunk failed', { missionId, err: insErr });
+      }
+    }
+
+    // FAIL LOUD — a survey mission that simulated responses but could not
+    // persist them would otherwise complete "clean" over an EMPTY table: the
+    // paying customer gets a report built on zero data, and the acceptance
+    // harness reads it as fine. That silent false-clean is more dangerous than
+    // the null itself. Refuse to complete: throwing routes to the fatal handler
+    // below, which marks the mission FAILED, alerts ops for a re-run, and
+    // notifies the customer. Ground truth is the DB count, never the in-memory
+    // `responses` array (Doctrine #16 — a counter derived from memory lied here:
+    // delivered=40 over 0 persisted rows).
+    if (mission.goal_type !== 'creative_attention' && (responses || []).length > 0) {
+      if (responsePersistError) {
+        throw new Error(`response persistence failed (${responsePersistError.code || ''} ${responsePersistError.message || responsePersistError}); refusing to complete over unsaved responses`);
+      }
+      const { count: persistedCount, error: countErr } = await supabase
+        .from('mission_responses')
+        .select('id', { count: 'exact', head: true })
+        .eq('mission_id', missionId);
+      if (countErr) throw new Error(`could not verify persisted responses: ${countErr.message}`);
+      if (!persistedCount) {
+        throw new Error(`0 responses persisted for a survey mission that simulated ${(responses || []).length} rows; refusing to complete over an empty responses table`);
       }
     }
 

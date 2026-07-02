@@ -40,6 +40,7 @@ const {
   distribution,
   ratingStats,
   round4,
+  isSkip,
 } = require('./shared');
 
 /** Options whose text contains 'yes' (case-insensitive) count as affirmative. */
@@ -52,7 +53,10 @@ function yesLikeOptions(options) {
 /** Scalar answer for single-choice rows; stray arrays use their first element. */
 function scalarAnswer(answer) {
   const a = Array.isArray(answer) ? answer[0] : answer;
-  if (a === null || a === undefined || a === '') return null;
+  // A 'not_applicable' skip is excluded (returns null) so it never lands in a
+  // rate denominator — e.g. aided ad-recall skipped by non-recallers must not
+  // deflate the recall rate.
+  if (a === null || a === undefined || a === '' || isSkip(a)) return null;
   return String(a);
 }
 

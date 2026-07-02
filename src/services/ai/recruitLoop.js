@@ -39,6 +39,7 @@ const logger = require('../../utils/logger');
 const { generatePersonas } = require('./personas');
 const { simulateResponses, passesScreening } = require('./simulate');
 const { updateMission } = require('../../db/missionSchema');
+const { normalizeAnswerForStorage } = require('../../utils/answerValue');
 
 /**
  * Returns true if the env flag is set and the mission has the
@@ -357,7 +358,10 @@ async function runRecruitmentLoop(mission, supabase) {
       persona_id:      r.persona_id,
       persona_profile: r.persona_profile,
       question_id:     r.question_id,
-      answer:          r.answer,
+      // Never store SQL null against the NOT NULL JSONB column — a skip
+      // (not_applicable) is stored as the sentinel string, not null (else the
+      // whole chunk insert 23502s and the rows silently vanish).
+      answer:          normalizeAnswerForStorage(r.answer),
       screened_out:    false,
       exposure_status: persona._exposure_status || 'not_applicable',
     }));

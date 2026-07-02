@@ -22,6 +22,7 @@ const { computeStatGate } = require('./statGate');
 const { deriveFocalBrand, isGeneric } = require('../../utils/focalBrand');
 const { computePersonas } = require('../analysis/personas');
 const { sanitizeDashesDeep } = require('../../utils/textSanitize');
+const { isSkip } = require('../../utils/answerValue');
 
 const VERBATIM_CAP = 30;
 
@@ -191,9 +192,10 @@ function countDistribution(answers, options) {
     : null;
   const dist = {};
   for (const a of answers) {
-    if (a === null || a === undefined) continue;
+    if (isSkip(a)) continue; // a 'not_applicable' skip is never a bar
     const values = Array.isArray(a) ? a : [a];
     for (const v of values) {
+      if (isSkip(v)) continue;
       const k = String(opts ? canonicalizeAnswer(v, opts) : v);
       dist[k] = (dist[k] || 0) + 1;
     }
@@ -207,7 +209,9 @@ function countDistribution(answers, options) {
  * generic min..max) — never the hardcoded 1-5 of aggregate().
  */
 function shapeQuestionData(q, renderer, responses, analysis) {
-  const answers = responses.filter((r) => r.question_id === q.id).map((r) => r.answer);
+  // 'not_applicable' skips (and residual null/empty) are excluded before any
+  // shaping so n, distributions, means, and % denominators are applicable-only.
+  const answers = responses.filter((r) => r.question_id === q.id).map((r) => r.answer).filter((a) => !isSkip(a));
   const n = answers.length;
 
   if (renderer.startsWith('scale_')) {
@@ -306,7 +310,7 @@ function buildDataQualityNotes(survey, responses) {
     for (const a of answers) {
       const values = Array.isArray(a) ? a : [a];
       for (const v of values) {
-        if (v === null || v === undefined) continue;
+        if (isSkip(v)) continue; // a 'not_applicable' skip is not option-drift
         if (typeof v === 'object') continue;
         const norm = String(v).trim().toLowerCase();
         if (norm && !optionSet.has(norm) && !q.renderer.startsWith('scale_')) drift.add(String(v));

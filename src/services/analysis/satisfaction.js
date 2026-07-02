@@ -35,7 +35,7 @@
  */
 
 const {
-  byQuestion, distribution, ratingStats, round4, personaCount, num,
+  byQuestion, distribution, ratingStats, round4, personaCount, num, isSkip,
 } = require('./shared');
 
 // ── Local helpers (each Phase 3 module is self-contained; only shared.js
@@ -50,7 +50,7 @@ function norm(v) {
 function scalarAnswered(rows) {
   return (rows || []).filter((r) => {
     const a = r && r.answer;
-    return (typeof a === 'string' && a.trim() !== '') || typeof a === 'number' || typeof a === 'boolean';
+    return !isSkip(a) && ((typeof a === 'string' && a.trim() !== '') || typeof a === 'number' || typeof a === 'boolean');
   });
 }
 
@@ -58,8 +58,8 @@ function scalarAnswered(rows) {
 function answered(rows) {
   return (rows || []).filter((r) => {
     const a = r && r.answer;
-    if (a === null || a === undefined || a === '') return false;
-    if (Array.isArray(a) && a.length === 0) return false;
+    if (isSkip(a)) return false; // null / '' / the new 'not_applicable' skip
+    if (Array.isArray(a) && a.length === 0) return false; // empty multi-select is not a respondent here
     return true;
   });
 }

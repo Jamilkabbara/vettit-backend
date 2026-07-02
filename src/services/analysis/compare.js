@@ -49,7 +49,7 @@
  */
 
 const {
-  ratingStats, round4, personaCount, shares, distribution,
+  ratingStats, round4, personaCount, shares, distribution, isSkip,
 } = require('./shared');
 
 const norm = (v) => String(v ?? '').trim().toLowerCase();
@@ -144,7 +144,7 @@ function computeCompareInner(rows, questions, mission) {
     rowsByQ.get(r.question_id).push(r);
   }
   const answered = (qid) => (rowsByQ.get(qid) || [])
-    .filter((r) => r.answer !== null && r.answer !== undefined);
+    .filter((r) => !isSkip(r.answer)); // excludes null/empty AND the 'not_applicable' skip
 
   // ── Concept registry (insertion order = report order): mission
   // concepts first, then concept_ids discovered on battery questions. ──

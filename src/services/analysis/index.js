@@ -16,7 +16,7 @@
  */
 
 const logger = require('../../utils/logger');
-const { byQuestion, distribution, ratingStats, shares, personaCount } = require('./shared');
+const { byQuestion, distribution, ratingStats, shares, personaCount, isSkip } = require('./shared');
 
 const { computeBrandLift }    = require('./brandLift');
 const { computeMarketing }    = require('./marketing');
@@ -47,14 +47,17 @@ function computeResearch(rows, questions) {
       perQuestion.push({ question_id: q.id, text: q.text || null, n: 0, block: null });
       continue;
     }
+    // Exclude 'not_applicable' skips so n + % denominators are applicable-only.
+    const applicable = qRows.filter((r) => !isSkip(r.answer));
+    const nApplicable = personaCount(applicable);
     if (q.type === 'rating' || q.type === 'nps' || q.type === 'scale') {
-      perQuestion.push({ question_id: q.id, text: q.text || null, n: personaCount(qRows), stats: ratingStats(qRows) });
+      perQuestion.push({ question_id: q.id, text: q.text || null, n: nApplicable, stats: ratingStats(applicable) });
     } else if (q.type === 'text' || q.type === 'open') {
-      const verbatims = qRows.map((r) => (typeof r.answer === 'string' ? r.answer : null)).filter(Boolean).slice(0, 30);
-      perQuestion.push({ question_id: q.id, text: q.text || null, n: personaCount(qRows), verbatims });
+      const verbatims = applicable.map((r) => (typeof r.answer === 'string' ? r.answer : null)).filter(Boolean).slice(0, 30);
+      perQuestion.push({ question_id: q.id, text: q.text || null, n: nApplicable, verbatims });
     } else {
-      const dist = distribution(qRows);
-      perQuestion.push({ question_id: q.id, text: q.text || null, n: personaCount(qRows), ...shares(dist, personaCount(qRows)) });
+      const dist = distribution(applicable);
+      perQuestion.push({ question_id: q.id, text: q.text || null, n: nApplicable, ...shares(dist, nApplicable) });
     }
   }
   return { methodology: 'research', n: personaCount(rows), per_question: perQuestion };
