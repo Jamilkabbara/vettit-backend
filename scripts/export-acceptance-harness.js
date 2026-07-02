@@ -95,19 +95,34 @@ async function pptxAnalyze(buf) {
       recsNumbered.found = true;
       recsNumbered.numbered = /\b1\.\s/.test(flat) && /\b2\.\s/.test(flat);
     }
-    // scorecard: >=3 sibling stat-card text boxes with off:x — check even spacing
-    const offs = [...xml.matchAll(/<a:off x="(\d+)" y="(\d+)"\/>/g)].map((m) => Number(m[1]));
-    if (/scorecard|score card|demand|KPI|metric/i.test(flat) && offs.length >= 3) {
-      const xs = [...new Set(offs)].sort((a, b) => a - b);
-      if (xs.length >= 3) {
-        const gaps = xs.slice(1).map((v, i) => v - xs[i]);
-        const maxGap = Math.max(...gaps), minGap = Math.min(...gaps);
-        // Conservative: only flag EGREGIOUS imbalance. The x-offset scan picks
-        // up title/accent shapes too, so a modest spread is noise, not a defect.
-        // (Definitive scorecard-balance needs the PPTX imaged — no LibreOffice
-        // offline — so this is a coarse smell test, confirmed by the visual pass.)
-        scorecardBalance = { even: (maxGap - minGap) / (maxGap || 1) < 0.75, gaps };
-      }
+    // §3a-4 scorecard balance — measured on a genuine TILE ROW only.
+    // The prior heuristic scanned EVERY <a:off x> on any slide whose text merely
+    // contained "demand"/"metric"/etc, so a full-bleed background + margins +
+    // prose produced wildly uneven gaps and false-flagged healthy decks (pricing
+    // a149a9d1 tripped on the word "demand" in narrative on slide 11, whose 4
+    // offsets were page layout, not tiles). Now: find a horizontal band (shared
+    // y) of >=3 shapes with SIMILAR width — the actual stat tiles — and judge the
+    // evenness of THAT row's spacing. No uniform tile row => n/a (not imbalanced);
+    // scorecard fidelity beyond that is the human visual pass.
+    const geo = [];
+    for (const sp of xml.split(/<p:sp>/).slice(1)) {
+      const off = sp.match(/<a:off x="(-?\d+)" y="(-?\d+)"\/>/);
+      const ext = sp.match(/<a:ext cx="(\d+)" cy="(\d+)"\/>/);
+      if (off && ext) geo.push({ x: Number(off[1]), y: Number(off[2]), w: Number(ext[1]) });
+    }
+    const bands = {};
+    for (const s of geo) { const yb = Math.round(s.y / 100000); (bands[yb] = bands[yb] || []).push(s); }
+    for (const yb of Object.keys(bands)) {
+      const rowShapes = bands[yb].sort((a, b) => a.x - b.x);
+      if (rowShapes.length < 3) continue;
+      const ws = rowShapes.map((s) => s.w);
+      const wMean = ws.reduce((a, b) => a + b, 0) / ws.length;
+      if ((Math.max(...ws) - Math.min(...ws)) / (wMean || 1) > 0.35) continue; // not uniform tiles
+      const xs = rowShapes.map((s) => s.x);
+      const gaps = xs.slice(1).map((v, i) => v - xs[i]);
+      const maxGap = Math.max(...gaps), minGap = Math.min(...gaps);
+      scorecardBalance = { even: (maxGap - minGap) / (maxGap || 1) < 0.5, gaps, tiles: rowShapes.length };
+      break; // first genuine tile row wins
     }
   }
   return { slides: slideNames.length, text, pics, shapes, scorecardBalance, recsNumbered };
