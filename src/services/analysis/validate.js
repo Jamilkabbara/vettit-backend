@@ -39,7 +39,7 @@
  */
 
 const {
-  byQuestion, distribution, ratingStats, round4, personaCount, num,
+  byQuestion, distribution, ratingStats, round4, personaCount, num, isSkip,
 } = require('./shared');
 
 // ── Local helpers (each Phase 3 module is self-contained; only shared.js
@@ -54,7 +54,7 @@ function norm(v) {
 function scalarAnswered(rows) {
   return (rows || []).filter((r) => {
     const a = r && r.answer;
-    return (typeof a === 'string' && a.trim() !== '') || typeof a === 'number' || typeof a === 'boolean';
+    return !isSkip(a) && ((typeof a === 'string' && a.trim() !== '') || typeof a === 'number' || typeof a === 'boolean');
   });
 }
 

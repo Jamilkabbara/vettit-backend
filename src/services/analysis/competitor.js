@@ -75,7 +75,7 @@
  */
 
 const {
-  ratingStats, round4, personaCount, shares, distribution, num,
+  ratingStats, round4, personaCount, shares, distribution, num, isSkip,
 } = require('./shared');
 
 const norm = (v) => String(v ?? '').trim().toLowerCase();
@@ -149,7 +149,7 @@ function computeCompetitorInner(rows, questions, mission) {
     rowsByQ.get(r.question_id).push(r);
   }
   const answered = (qid) => (rowsByQ.get(qid) || [])
-    .filter((r) => r.answer !== null && r.answer !== undefined);
+    .filter((r) => !isSkip(r.answer)); // excludes null/empty AND the 'not_applicable' skip
 
   // ── Brand registry (insertion order = report order): mission focal +
   // competitors, then brands discovered in question options. ──

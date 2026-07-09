@@ -8,6 +8,7 @@ const { callClaude, extractJSON } = require('./anthropic');
 const { WRITING_STYLE } = require('./writingStyle');
 const logger = require('../../utils/logger');
 const { computePersonas } = require('../analysis/personas');
+const { isSkip } = require('../../utils/answerValue');
 
 // Pass 22 Bug 22.13 — narrative 4-paragraph executive summary replaces the
 // 3-5-sentence under-750-char shape. Pass 22 Bug 22.16 — contradictions array
@@ -81,7 +82,9 @@ function computeRatingStats(nums) {
 function aggregate(responses, questions) {
   const byQ = {};
   for (const q of questions) {
-    const ans = responses.filter(r => r.question_id === q.id).map(r => r.answer);
+    // A 'not_applicable' skip (or residual null/empty) is NOT a value — drop it
+    // so it never becomes a distribution bar or inflates a % denominator.
+    const ans = responses.filter(r => r.question_id === q.id).map(r => r.answer).filter(a => !isSkip(a));
     byQ[q.id] = {
       id: q.id,
       text: q.text,

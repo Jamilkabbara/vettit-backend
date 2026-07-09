@@ -9,6 +9,8 @@
  * tests with hand-computed fixtures (test/analysis_shared.test.js).
  */
 
+const { isSkip } = require('../../utils/answerValue');
+
 /** Numeric coercion that treats '', null, undefined, NaN as null. */
 function num(v) {
   if (v === null || v === undefined || v === '') return null;
@@ -36,7 +38,10 @@ function distribution(rows) {
   const dist = {};
   for (const r of rows || []) {
     const a = r.answer;
-    if (a === null || a === undefined) continue;
+    // A skip (the 'not_applicable' sentinel / null / empty) is not a value:
+    // never a bar, and — since shares() defaults its base to the summed
+    // distribution — never in the % denominator either.
+    if (isSkip(a)) continue;
     const values = Array.isArray(a) ? a : [a];
     for (const v of values) {
       const key = String(v);
@@ -163,6 +168,7 @@ function personaCount(rows) {
 }
 
 module.exports = {
+  isSkip,
   num,
   byQuestion,
   distribution,
