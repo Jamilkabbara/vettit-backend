@@ -14,13 +14,16 @@ const { aggregate } = require('../ai/insights');
  * (both screened-in and screened-out) so the distribution is honest.
  * Non-screening questions only count qualified respondents.
  */
-async function loadMissionForExport(missionId, userId) {
-  const { data: mission } = await supabase
-    .from('missions')
-    .select('*')
-    .eq('id', missionId)
-    .eq('user_id', userId)
-    .single();
+async function loadMissionForExport(missionId, userId, opts = {}) {
+  // Ownership is enforced HERE, server-side. Regular callers pass their own
+  // userId and get owner-only rows. An ADMIN caller (gated upstream on the
+  // server-side admin allowlist — never trusted from the client) passes
+  // { isAdmin: true } to read ANY user's mission for the admin results view.
+  // RLS is untouched: this loader uses the service-key client, and the admin
+  // grant is a deliberate server-side capability, not a loosened row policy.
+  let q = supabase.from('missions').select('*').eq('id', missionId);
+  if (!opts.isAdmin) q = q.eq('user_id', userId);
+  const { data: mission } = await q.single();
 
   if (!mission) return null;
   if (mission.status !== 'completed') {
