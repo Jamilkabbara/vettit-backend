@@ -40,8 +40,18 @@
     </div>
   </section>
 
-  {{!-- ─── BODY (mission-type specific) ────────────────────────────── --}}
-  {{> body}}
+  {{!-- ─── BODY (mission-type specific) ────────────────────────────────────────
+       Wrapped in .page-frame so the thead/tfoot supply a page inset that REPEATS
+       on every printed page (Chromium re-draws table headers/footers per page).
+       Without this, a section that overflows a page resumed flush against the
+       physical top edge. See .page-frame in _base.css. --}}
+  <table class="page-frame">
+    <thead><tr><td></td></tr></thead>
+    <tfoot><tr><td></td></tr></tfoot>
+    <tbody><tr><td>
+      {{> body}}
+    </td></tr></tbody>
+  </table>
 
 </body>
 </html>

@@ -57,13 +57,44 @@ html, body {
   /* §A4 — sections FLOW continuously now (no forced one-section-per-page +
      no 297mm min-height), so short sections share a page and nothing sits on
      a 60%-empty page. Inner logical units keep their own page-break-inside
-     guards. The cover keeps its full-page break via .cover below. */
+     guards. The cover keeps its full-page break via .cover below.
+
+     The cover keeps this padding for its edge insets. Body sections live inside
+     .page-frame (see _base.hbs) and override this to padding:0 — the frame's
+     thead/tfoot/cell supply the page insets so they REPEAT on overflow pages
+     (padding on a flowing box only insets its first page slice, which is why
+     overflow pages used to start flush against the top edge). */
   width: 100%;
   padding: 11mm 16mm 4mm 16mm;
   background: var(--bg);
   page-break-inside: auto;
   position: relative;
 }
+
+/* ─── Body page frame — repeating page insets across overflow pages ───────────
+   The cover paints full-bleed dark to the physical edges via @page margin:0 +
+   its own .page padding. Body content flows continuously and a tall section
+   (e.g. THE FULL SURVEY) overflows across several printed pages. A <table>'s
+   thead/tfoot are re-drawn by Chromium at the top/bottom of EVERY printed page,
+   so they give a repeating top (11mm) / bottom (4mm) inset that padding cannot;
+   the cell's 0 16mm padding gives the left/right inset (which already repeated).
+   Full-bleed dark is preserved because the flowing .page sections still paint
+   var(--bg), and @page margin stays 0 (no white paper band is ever exposed). */
+.page-frame {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--bg);
+}
+.page-frame > thead > tr > td { height: 11mm; padding: 0; }
+.page-frame > tfoot > tr > td { height: 4mm;  padding: 0; }
+.page-frame > tbody > tr > td { padding: 0 16mm; vertical-align: top; }
+
+/* Body sections: the frame owns the page insets, so the section itself has none.
+   margin-top restores the inter-section gap the old top/bottom padding gave when
+   two sections share a page; it is trimmed at page breaks, so no wasted top space
+   and no double inset against the thead spacer on overflow pages. */
+.page-frame .page { padding: 0; }
+.page-frame .page + .page { margin-top: 15mm; }
 
 /* ─── Cover page ──────────────────────────────────────────────────────────── */
 .cover {

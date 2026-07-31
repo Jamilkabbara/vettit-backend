@@ -55,18 +55,53 @@ function addDarkBackground(slide) {
   });
 }
 
-function addSectionHeader(slide, eyebrow, title) {
+// ── Header title fit ─────────────────────────────────────────────────────────
+// A long question title relied on <a:normAutofit/> to shrink into its fixed
+// 0.70" / 24pt box. But normAutofit (written with no precomputed fontScale) is
+// IGNORED by LibreOffice, Google Slides, Keynote, and every preview/thumbnail
+// renderer — they draw the full 24pt, so the wrapped question overflowed the box
+// and collided with the eyebrow above AND the divider/chart below. Fix: pick a
+// font size deterministically so the wrapped title stays within a few lines, and
+// size the header band to the REAL text height (see the survey loop) so the
+// divider + chart always sit below it. valign:'top' keeps any residual overflow
+// pointing down, never up into the eyebrow.
+const TITLE_W = 12.3;                          // header text-box width (inches)
+function titleLineHeight(fs) { return 1.2 * fs / 72; }   // inches
+function estTitleLines(text, fs, w = TITLE_W) {
+  const len = String(text || '').trim().length || 1;
+  // Deliberately CONSERVATIVE advance (Inter bold real avg ≈ 0.54em): over-
+  // estimating glyph width => fewer chars/line => the estimate is an UPPER bound
+  // on the real wrap. That guarantees the reserved header band (sized from this
+  // count) always contains the actual text, so the divider/chart never collide.
+  const charW = 0.64 * fs / 72;
+  const cpl = Math.max(1, Math.floor(w / charW));
+  return Math.max(1, Math.ceil(len / cpl));
+}
+// Largest size in [min,max] whose wrapped title fits maxLines; else min.
+function fitTitleFontSize(text, { max = 24, min = 15, maxLines = 3 } = {}) {
+  for (let fs = max; fs > min; fs -= 1) {
+    if (estTitleLines(text, fs) <= maxLines) return fs;
+  }
+  return min;
+}
+
+function addSectionHeader(slide, eyebrow, title, opts = {}) {
   slide.addText(eyebrow, {
     x: 0.5, y: 0.35, w: 12.3, h: 0.3,
     fontSize: 10, bold: true, color: hex(BRAND.lime), fontFace: FONT, charSpacing: 2,
   });
-  slide.addText(title, {
-    x: 0.5, y: 0.65, w: 12.3, h: 0.7,
-    fontSize: 24, bold: true, color: 'FFFFFF', fontFace: FONT,
+  const titleOpts = {
+    x: 0.5, y: opts.titleY ?? 0.65, w: 12.3, h: opts.titleH ?? 0.7,
+    fontSize: opts.titleFontSize ?? 24, bold: true, color: 'FFFFFF', fontFace: FONT,
     shrinkText: true, autoFit: true,
-  });
+  };
+  // Survey headers pass valign:'top' so a multi-line question can only grow
+  // downward (into its reserved band), never up into the eyebrow. Section slides
+  // omit it, keeping their previous vertical alignment byte-for-byte.
+  if (opts.titleValign) titleOpts.valign = opts.titleValign;
+  slide.addText(title, titleOpts);
   slide.addShape('rect', {
-    x: 0.5, y: 1.40, w: 12.3, h: 0.03,
+    x: 0.5, y: opts.dividerY ?? 1.40, w: 12.3, h: 0.03,
     fill: { color: hex(BRAND.lime) }, line: { color: hex(BRAND.lime) },
   });
 }
@@ -402,11 +437,26 @@ function buildPPTX(pack, res) {
     const typeTag = (q.renderer_label || '').toUpperCase();
     const screenerTag = (q.isScreening && q.renderer !== 'screener') ? ' · SCREENER' : '';
     const tag = `${String(qi + 5).padStart(2, '0')} · Q${q.number} · ${typeTag}${screenerTag}`;
-    addSectionHeader(slide, tag, q.text);
+    // Dynamic header band so a long question never collides with the eyebrow or
+    // the chart. Font shrinks only as far as needed; short questions keep 24pt and
+    // land on the SAME divider (1.40) / body (1.65) as before — Math.max clamps
+    // hold the short-question layout byte-stable and only push down for long ones.
+    const titleY = 0.65;
+    const titleFontSize = fitTitleFontSize(q.text);
+    const titleLines = estTitleLines(q.text, titleFontSize);
+    const titleH = titleLines * titleLineHeight(titleFontSize) + 0.06;
+    const dividerY = Math.max(1.40, titleY + titleH + 0.12);
+    const bodyY = Math.max(1.65, dividerY + 0.22);
+    addSectionHeader(slide, tag, q.text, {
+      titleFontSize, titleY, titleH, dividerY, titleValign: 'top',
+    });
     const insight = (q.insight && String(q.insight).trim()) ? String(q.insight).trim() : '';
-    renderSurveyBody(slide, q, insight
-      ? { x: 0.5, y: 1.65, w: 12.3, h: 4.05 }
-      : { x: 0.5, y: 1.65, w: 12.3, h: 5.2 });
+    // Chart fills from bodyY down to the WHATS-THIS-MEANS box (5.70) or slide end
+    // (6.85); a taller header shrinks the chart, floored so it stays usable.
+    const bodyBottom = insight ? 5.70 : 6.85;
+    renderSurveyBody(slide, q, {
+      x: 0.5, y: bodyY, w: 12.3, h: Math.max(2.6, bodyBottom - bodyY),
+    });
     if (insight) {
       slide.addText('WHAT THIS MEANS', {
         x: 0.5, y: 5.82, w: 12.3, h: 0.28, fontSize: 10, bold: true, color: hex(BRAND.lime), fontFace: FONT, charSpacing: 2,
