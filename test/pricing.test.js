@@ -238,15 +238,17 @@ describe('promo code discounts', () => {
     expect(discount).toBe(0);
   });
 
-  it('flat discount larger than total → clamped to the $1 floor, never $0 (PR A min-order clamp)', () => {
+  it('flat discount larger than total → total is $0, discount capped at subtotal (flag off, unchanged)', () => {
+    // PRICING_V2 is OFF in this suite, so V1 behaviour is byte-identical to
+    // production: a flat discount caps at the subtotal and may reach $0 (the
+    // checkout route then rejects it under the $0.50 minimum). The min-order
+    // clamp only engages when PRICING_V2 is active (see pricing_v2.test.js).
     const { total, discount } = calculateMissionPrice({
       ...base,
       promoCode: { code: 'BIG', type: 'flat', value: 500, active: true },
     });
-    // Min-order clamp: a flat promo can no longer zero out the charge. $35
-    // subtotal, $1 floor → max discount $34, total $1.
-    expect(total).toBe(1);
-    expect(discount).toBe(34.00);
+    expect(total).toBe(0);
+    expect(discount).toBe(35.00);
   });
 
   it('totalCents is 0 for free promo (integer)', () => {

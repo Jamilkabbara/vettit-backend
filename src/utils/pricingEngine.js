@@ -384,14 +384,22 @@ function calculateMissionPrice({
     } else if (promoCode.type === 'percentage') {
       discount = round2(subtotal * (promoCode.value / 100));
     } else if (promoCode.type === 'flat' || promoCode.type === 'fixed') {
-      // Min-order clamp (money path): a flat promo can never drive the charge
-      // to $0 or below. Cap the discount so the total stays >= the floor
-      // ($1.00, above Stripe's $0.50 min). FRIEND10 ($10) on a $9 order yields
-      // a $1 charge, not $0. Percentage/free promos are owner-controlled and may
-      // still reach $0 intentionally.
-      const minCharge = MIN_CHARGE_CENTS_AFTER_FLAT_DISCOUNT / 100;
-      const maxFlatDiscount = Math.max(0, subtotal - minCharge);
-      discount = round2(Math.min(promoCode.value, maxFlatDiscount));
+      if (PRICING_V2_ACTIVE) {
+        // Min-order clamp — PRICING_V2 money path ONLY, so deploying with the
+        // flag off is byte-identical to today. A flat promo can never drive the
+        // charge to $0 or below: cap the discount so the total stays >= the
+        // floor ($1.00, above Stripe's $0.50 min). FRIEND10 ($10) on a $9 order
+        // yields a $1 charge, not $0. Percentage/free promos are owner-controlled
+        // and may still reach $0 intentionally.
+        const minCharge = MIN_CHARGE_CENTS_AFTER_FLAT_DISCOUNT / 100;
+        const maxFlatDiscount = Math.max(0, subtotal - minCharge);
+        discount = round2(Math.min(promoCode.value, maxFlatDiscount));
+      } else {
+        // V1 (flag off): UNCHANGED. Flat discount caps at the subtotal and may
+        // reach $0 — the checkout route then rejects it under the $0.50 minimum,
+        // exactly as in production today. The clamp above rides the V2 cutover.
+        discount = round2(Math.min(promoCode.value, subtotal));
+      }
     }
   }
 

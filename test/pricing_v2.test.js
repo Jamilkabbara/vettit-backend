@@ -39,15 +39,18 @@ describe('PRICING_V2 OFF (default) — V1 charge is unchanged', () => {
     expect(t.tiers.find((x) => x.id === 'sniff_test').priceCents).toBe(900);
   });
 
-  test('min-order clamp: flat $10 promo on a $9 order charges $1, never $0', () => {
+  test('flag off: flat $10 promo on a $9 order is UNCHANGED from today (nets $0, checkout then rejects)', () => {
+    // The min-order clamp is gated behind PRICING_V2 so flag-off is byte-
+    // identical to production. With the flag off a flat discount still caps at
+    // the subtotal and may reach $0; the create-checkout route rejects a sub-
+    // $0.50 charge. The $1 clamp is asserted in the PRICING_V2 ON block below.
     const p = calculateMissionPrice({
       respondentCount: 5, goalType: 'validate',
       promoCode: { code: 'FRIEND10', type: 'flat', value: 10, active: true },
     });
     expect(p.subtotal).toBeCloseTo(9, 2);
-    expect(p.total).toBeCloseTo(1, 2);     // clamped to the $1 floor, not $0
-    expect(p.totalCents).toBe(100);
-    expect(p.total).toBeGreaterThan(0);
+    expect(p.total).toBeCloseTo(0, 2);     // unchanged V1 behaviour, not clamped
+    expect(p.totalCents).toBe(0);
   });
 
   test('clamp leaves a normal flat promo untouched (flat $5 on $35 = $30)', () => {
