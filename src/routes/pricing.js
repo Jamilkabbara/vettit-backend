@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { optionalAuthenticate } = require('../middleware/auth');
 const supabase = require('../db/supabase');
-const { calculateMissionPrice, extractCountriesFromMission, getActiveTierTable } = require('../utils/pricingEngine');
+const { calculateMissionPrice, extractCountriesFromMission, getActiveTierTable, PRICING_V2_ACTIVE } = require('../utils/pricingEngine');
 const logger = require('../utils/logger');
 
 /**
@@ -102,10 +102,13 @@ router.post('/quote', optionalAuthenticate, async (req, res, next) => {
       countries,
       promoCode:       promo,
       // Pass the mission's goal_type/media_type so the quote uses the same
-      // ladder the charge does (DB-backed quotes; free-form quotes default to
-      // validate). Under PRICING_V2 all goals share one ladder anyway.
-      goalType:        missionRow.goal_type,
-      mediaType:       missionRow.media_type,
+      // ladder the charge does. GATED behind PRICING_V2 so the flag-off deploy
+      // is a strict no-op: with the flag off, /quote behaves byte-identically to
+      // production today (no goal_type passed -> default ladder). Under V2 all
+      // goals share one canonical ladder anyway, so this only affects the gated
+      // brand_lift/creative_attention goals, aligning their quote with the
+      // charge for when they eventually un-gate.
+      ...(PRICING_V2_ACTIVE ? { goalType: missionRow.goal_type, mediaType: missionRow.media_type } : {}),
     });
 
     // Enterprise / custom-tier (PRICING_V2): no self-serve price — return a
