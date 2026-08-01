@@ -101,6 +101,19 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
       }
     }
 
+    // Free / 100%-off promos ($0) never touch Stripe. The pricing engine
+    // intentionally does not zero a `free`-type code (it only discounts
+    // percentage/flat), and a $0 Session would fail the <$0.50 minimum below
+    // anyway — so a `free` code sent here would otherwise checkout at FULL
+    // price. The dedicated /api/payments/free-launch path (which re-validates
+    // the code server-side, enforces the Coming-Soon gate, marks the mission
+    // paid, and runs it) is the correct $0 route. Signal the client to complete
+    // via that path. Only `type === 'free'` diverts; percentage/flat/no-promo
+    // fall through to the normal Stripe session below, entirely unchanged.
+    if (promo && promo.type === 'free') {
+      return res.json({ free: true, missionId, promoCode: promo.code });
+    }
+
     // Pass 23 Bug 23.61 — fail-closed pricing validation. Reject
     // mismatched {goal_type, tier, media_type} BEFORE computing price
     // so a Creative Attention mission can't accidentally checkout at
