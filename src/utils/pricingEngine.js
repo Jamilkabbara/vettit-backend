@@ -117,6 +117,67 @@ const CREATIVE_ATTENTION_TIERS = [
   { id: 'deep_dive_xl', name: 'Deep Dive XL', anchorCount: 250, maxCount: Infinity, ratePerResp: 1.20, packagePrice: 299, minRespondents: CA_MIN_RESPONDENTS },
 ];
 
+// ── PRICING V2 — single canonical ladder (flag-gated) ───────────────────────
+//
+// One sample-size-anchored ladder for EVERY goal type (no goal-specific
+// ladders). Goal type is a free choice within a tier, not a separate price.
+// Prices are stored as AMOUNT-IN-CENTS (the single source of truth for both
+// display via GET /api/pricing/tiers and the Stripe charge via
+// calculateMissionPrice). The brand_lift / creative_attention >=100 sample
+// requirement survives as a methodology RECOMMENDATION, not a price.
+//
+// Cutover is gated by PRICING_V2 (default OFF). When OFF, calculateMissionPrice
+// and the tiers endpoint behave EXACTLY as the V1 ladders below — deploying this
+// file changes nothing Stripe charges until the owner flips the flag.
+const PRICING_V2_ACTIVE = process.env.PRICING_V2 === 'true' || process.env.PRICING_V2 === '1';
+
+const CANONICAL_TIERS_V2 = [
+  { id: 'sniff',      name: 'Sniff',      respondents: 5,    maxCount: 5,        priceCents: 900,   custom: false },
+  { id: 'validate',   name: 'Validate',   respondents: 25,   maxCount: 25,       priceCents: 3900,  custom: false },
+  { id: 'confidence', name: 'Confidence', respondents: 100,  maxCount: 100,      priceCents: 14900, custom: false },
+  { id: 'scale',      name: 'Scale',      respondents: 500,  maxCount: 500,      priceCents: 49900, custom: false },
+  { id: 'enterprise', name: 'Enterprise', respondents: 1500, maxCount: Infinity, priceCents: null,  custom: true  },
+];
+
+// A flat/fixed promo must never drive a charge to $0 or below (FRIEND10 = $10
+// off a $9 order). Cap the flat discount so the total stays at or above this
+// floor (comfortably above Stripe's $0.50 minimum charge). Percentage/free
+// promos are owner-controlled and may still reach $0 intentionally.
+const MIN_CHARGE_CENTS_AFTER_FLAT_DISCOUNT = 100; // $1.00
+
+/** V2: resolve the canonical tier for a respondent count (bracket = first tier whose maxCount >= count). */
+function resolveCanonicalTierV2(count) {
+  const c = Math.max(0, Number(count) || 0);
+  return CANONICAL_TIERS_V2.find((t) => c <= t.maxCount) || CANONICAL_TIERS_V2[CANONICAL_TIERS_V2.length - 1];
+}
+
+/**
+ * The flag-aware tier table for the display surfaces (GET /api/pricing/tiers).
+ * Shape is reusable: each entry carries id, name, respondents, priceCents,
+ * priceUsd, fromLabel (e.g. "$9"), and custom — enough to drive a pricing
+ * section AND per-card "from" prices without a second pricing path.
+ * Returns { version, flagActive, startingFromCents, tiers }.
+ */
+function getActiveTierTable() {
+  if (PRICING_V2_ACTIVE) {
+    const tiers = CANONICAL_TIERS_V2.map((t) => ({
+      id: t.id, name: t.name, respondents: t.respondents,
+      priceCents: t.priceCents, priceUsd: t.priceCents == null ? null : t.priceCents / 100,
+      fromLabel: t.priceCents == null ? 'Custom' : `$${t.priceCents / 100}`,
+      custom: t.custom,
+    }));
+    const cheapest = tiers.find((t) => t.priceCents != null);
+    return { version: 'v2', flagActive: true, startingFromCents: cheapest ? cheapest.priceCents : null, tiers };
+  }
+  // V1: project the live VOLUME_TIERS into the same shape (rate×anchor = packagePrice).
+  const tiers = VOLUME_TIERS.map((t) => ({
+    id: t.id, name: t.name, respondents: t.anchorCount,
+    priceCents: Math.round(t.packagePrice * 100), priceUsd: t.packagePrice,
+    fromLabel: `$${t.packagePrice}`, custom: false,
+  }));
+  return { version: 'v1', flagActive: false, startingFromCents: tiers[0].priceCents, tiers };
+}
+
 /**
  * Resolve the active tier ladder for a goal_type. Unrecognised goal types
  * fall back to the default volume ladder (so a new goal added to the UI
@@ -249,15 +310,31 @@ function calculateMissionPrice({
   const countryTier = resolveHighestTier(countries);
   const tier        = resolveTier({ goalType, respondentCount, mediaType });
   const isCreative  = goalType === 'creative_attention';
-  const ratePerResp = isCreative ? null : (tier?.ratePerResp || VOLUME_TIERS[0].ratePerResp);
-  // Creative Attention: flat package price, count irrelevant.
-  // Other goals: rate × count. Tier null (brand_lift below minRespondents)
-  // falls back to the cheapest in-ladder tier rate × count for safety;
-  // route layer should reject the invalid combo BEFORE calling here.
-  const base = isCreative
-    ? (tier?.packagePrice || CREATIVE_ATTENTION_TIERS[0].packagePrice)
-    : respondentCount * ratePerResp;
-  const volumeTier = tier || (isCreative ? CREATIVE_ATTENTION_TIERS[0] : VOLUME_TIERS[0]);
+  // PRICING V2 (flag on): ONE canonical package ladder for every goal type.
+  // base = the bracket's flat package price (count picks the bracket). Surcharges
+  // below (questions/targeting/screening) still apply on top. Enterprise (beyond
+  // the Scale tier's 500) is a custom quote — flagged so the route blocks
+  // self-serve checkout. ratePerResp is null in V2 (flat pricing, not per-resp)
+  // so callers/breakdowns never multiply a stale V1 rate against a flat total.
+  // V1 (flag off): byte-identical to before (rate×count, or CA flat package).
+  let base, volumeTier, ratePerResp, customQuote = false;
+  if (PRICING_V2_ACTIVE) {
+    const v2 = resolveCanonicalTierV2(respondentCount);
+    customQuote = v2.custom;
+    base = v2.custom ? 0 : v2.priceCents / 100;
+    ratePerResp = null;
+    volumeTier = { id: v2.id, name: v2.name, anchorCount: v2.respondents, packagePrice: v2.custom ? null : v2.priceCents / 100 };
+  } else {
+    // Creative Attention: flat package price, count irrelevant.
+    // Other goals: rate × count. Tier null (brand_lift below minRespondents)
+    // falls back to the cheapest in-ladder tier rate × count for safety;
+    // route layer should reject the invalid combo BEFORE calling here.
+    ratePerResp = isCreative ? null : (tier?.ratePerResp || VOLUME_TIERS[0].ratePerResp);
+    base = isCreative
+      ? (tier?.packagePrice || CREATIVE_ATTENTION_TIERS[0].packagePrice)
+      : respondentCount * ratePerResp;
+    volumeTier = tier || (isCreative ? CREATIVE_ATTENTION_TIERS[0] : VOLUME_TIERS[0]);
+  }
 
   // 2. Extra questions
   const extraQ         = Math.max(0, questionCount - FREE_QUESTIONS);
@@ -307,7 +384,22 @@ function calculateMissionPrice({
     } else if (promoCode.type === 'percentage') {
       discount = round2(subtotal * (promoCode.value / 100));
     } else if (promoCode.type === 'flat' || promoCode.type === 'fixed') {
-      discount = round2(Math.min(promoCode.value, subtotal));
+      if (PRICING_V2_ACTIVE) {
+        // Min-order clamp — PRICING_V2 money path ONLY, so deploying with the
+        // flag off is byte-identical to today. A flat promo can never drive the
+        // charge to $0 or below: cap the discount so the total stays >= the
+        // floor ($1.00, above Stripe's $0.50 min). FRIEND10 ($10) on a $9 order
+        // yields a $1 charge, not $0. Percentage/free promos are owner-controlled
+        // and may still reach $0 intentionally.
+        const minCharge = MIN_CHARGE_CENTS_AFTER_FLAT_DISCOUNT / 100;
+        const maxFlatDiscount = Math.max(0, subtotal - minCharge);
+        discount = round2(Math.min(promoCode.value, maxFlatDiscount));
+      } else {
+        // V1 (flag off): UNCHANGED. Flat discount caps at the subtotal and may
+        // reach $0 — the checkout route then rejects it under the $0.50 minimum,
+        // exactly as in production today. The clamp above rides the V2 cutover.
+        discount = round2(Math.min(promoCode.value, subtotal));
+      }
     }
   }
 
@@ -327,6 +419,7 @@ function calculateMissionPrice({
     tier:         countryTier,                  // legacy alias = country tier
     countryTier,                                // new explicit name
     volumeTier:   { id: volumeTier.id, name: volumeTier.name, anchorCount: volumeTier.anchorCount, packagePrice: volumeTier.packagePrice },
+    customQuote,  // V2: true when the count lands in the Enterprise (custom) tier — route blocks self-serve checkout
     ratePerResp,
     countries,
     respondentCount,
@@ -360,6 +453,27 @@ function round2(val) {
  *   - Other goal_types fall back to the default ladder (lenient).
  */
 function validateMissionPricing({ goalType, respondentCount, mediaType }) {
+  // PRICING V2 (flag on): one canonical ladder for every goal type. The only
+  // hard price gate is the Enterprise/custom tier (500+ respondents) — block
+  // self-serve checkout so a large mission never charges the $0 base. The
+  // brand_lift/creative_attention sample minimums survive only as setup
+  // recommendations, not price gates. (creative_attention still needs a media
+  // type for its analysis pipeline.)
+  if (PRICING_V2_ACTIVE) {
+    if (goalType === 'creative_attention') {
+      const validMedia = new Set(['image', 'video', 'bundle', 'series']);
+      if (!mediaType || !validMedia.has(mediaType)) {
+        return { valid: false, error: 'creative_attention missions require media_type in {image, video, bundle, series}' };
+      }
+    }
+    const c = Number(respondentCount) || 0;
+    if (c < 1) return { valid: false, error: 'respondentCount must be >= 1' };
+    const tier = resolveCanonicalTierV2(c);
+    if (tier.custom) {
+      return { valid: false, error: 'Studies beyond 500 respondents require a custom quote, please contact sales.' };
+    }
+    return { valid: true, tier };
+  }
   if (goalType === 'creative_attention') {
     const validMedia = new Set(['image', 'video', 'bundle', 'series']);
     if (!mediaType || !validMedia.has(mediaType)) {
@@ -460,6 +574,12 @@ module.exports = {
   BRAND_LIFT_TIERS,
   CREATIVE_ATTENTION_TIERS,
   CA_MIN_RESPONDENTS,
+  // Pricing V2 (flag-gated single canonical ladder)
+  PRICING_V2_ACTIVE,
+  CANONICAL_TIERS_V2,
+  MIN_CHARGE_CENTS_AFTER_FLAT_DISCOUNT,
+  resolveCanonicalTierV2,
+  getActiveTierTable,
   // Default-ladder helper kept for backwards compat
   getVolumeTier,
   // Country-tier (legacy, no longer affects price; retained for analytics)

@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { optionalAuthenticate } = require('../middleware/auth');
 const supabase = require('../db/supabase');
-const { calculateMissionPrice, extractCountriesFromMission } = require('../utils/pricingEngine');
+const { calculateMissionPrice, extractCountriesFromMission, getActiveTierTable, PRICING_V2_ACTIVE } = require('../utils/pricingEngine');
 const logger = require('../utils/logger');
 
 /**
@@ -49,7 +49,7 @@ router.post('/quote', optionalAuthenticate, async (req, res, next) => {
       // DB-backed quote — recompute from the authoritative row
       const query = supabase
         .from('missions')
-        .select('respondent_count, targeting, target_audience, questions, user_id')
+        .select('respondent_count, targeting, target_audience, questions, user_id, goal_type, media_type')
         .eq('id', missionId);
 
       // If the caller is authenticated, scope to their row (prevents
@@ -101,14 +101,32 @@ router.post('/quote', optionalAuthenticate, async (req, res, next) => {
       questionCount:   qCount,
       countries,
       promoCode:       promo,
+      // Pass the mission's goal_type/media_type so the quote uses the same
+      // ladder the charge does. GATED behind PRICING_V2 so the flag-off deploy
+      // is a strict no-op: with the flag off, /quote behaves byte-identically to
+      // production today (no goal_type passed -> default ladder). Under V2 all
+      // goals share one canonical ladder anyway, so this only affects the gated
+      // brand_lift/creative_attention goals, aligning their quote with the
+      // charge for when they eventually un-gate.
+      ...(PRICING_V2_ACTIVE ? { goalType: missionRow.goal_type, mediaType: missionRow.media_type } : {}),
     });
 
-    // Build the human-readable breakdown the UI renders line-by-line.
+    // Enterprise / custom-tier (PRICING_V2): no self-serve price — return a
+    // custom-quote response, never a $0 or per-respondent breakdown.
+    if (details.customQuote) {
+      return res.json({
+        total: null, actualRate: null, breakdown: [], details, customQuote: true,
+        error: 'This study size requires a custom quote, please contact sales.',
+      });
+    }
+
+    // Build the human-readable breakdown the UI renders line-by-line. V2 is flat
+    // tier pricing (ratePerResp null), so label the base by tier, not "× $rate".
+    const baseLabel = details.ratePerResp != null
+      ? `${respCount} respondents × $${details.ratePerResp.toFixed(2)}`
+      : `${(details.volumeTier && details.volumeTier.name) || 'Base'} tier (${respCount} respondents)`;
     const breakdown = [
-      {
-        label: `${respCount} respondents × $${details.ratePerResp.toFixed(2)}`,
-        amount: details.base,
-      },
+      { label: baseLabel, amount: details.base },
     ];
     if (details.targetingSurcharge > 0) {
       breakdown.push({
@@ -139,6 +157,24 @@ router.post('/quote', optionalAuthenticate, async (req, res, next) => {
     logger.error('pricing/quote failed', { err: err.message });
     next(err);
   }
+});
+
+/**
+ * GET /api/pricing/tiers
+ *
+ * THE single, flag-aware source of truth for every price DISPLAY surface
+ * (pricing section, per-card "from" prices, setup tier picker, Terms table).
+ * Returns the active tier ladder — V1 today, the canonical V2 ladder after the
+ * owner flips PRICING_V2 — so display can never drift from what Stripe charges
+ * (both read this same module). Public (no auth): prices are not sensitive and
+ * the landing page renders them pre-login. Cache lightly at the edge.
+ *
+ * Response: { version, flagActive, startingFromCents, tiers: [
+ *   { id, name, respondents, priceCents, priceUsd, fromLabel, custom } ] }
+ */
+router.get('/tiers', (req, res) => {
+  res.set('Cache-Control', 'public, max-age=300');
+  res.json(getActiveTierTable());
 });
 
 module.exports = router;

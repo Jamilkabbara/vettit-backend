@@ -151,6 +151,17 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
       mediaType:       mission.media_type,
     });
 
+    // PR A — fail-closed guard. An Enterprise/custom-tier mission has no
+    // self-serve price (base $0 under PRICING_V2). validateMissionPricing above
+    // already rejects it, but this never lets a $0-base charge (or a surcharge-
+    // only charge on a $0 base) reach Stripe even if that gate ever changes.
+    if (pricing.customQuote) {
+      return res.status(400).json({
+        error: 'This study size requires a custom quote, please contact sales.',
+        reason: 'enterprise_custom_quote',
+      });
+    }
+
     if (pricing.totalCents < 50) {
       return res.status(400).json({ error: 'Minimum payment is $0.50' });
     }
