@@ -202,7 +202,7 @@ JSON structure required:
     "reasoning": "Why these professional filters (or why none needed for B2C)"
   },
   "suggestedRespondentCount": 50,
-  "respondentCountReasoning": "Pass 21 Bug 16: default to 50 (entry tier) unless the brief explicitly requires statistical comparison or multi-segment roll-ups; explain why this sample size fits the targeting specificity"
+  "respondentCountReasoning": "default to 50 (entry tier) unless the brief explicitly requires statistical comparison or multi-segment roll-ups; explain why this sample size fits the targeting specificity"
 }`;
 
 // ── FUNCTIONS ───────────────────────────────────────────────────────────────

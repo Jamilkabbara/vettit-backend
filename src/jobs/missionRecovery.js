@@ -281,7 +281,7 @@ async function runJob2() {
         .from('missions')
         .update({
           status: 'expired',
-          failure_reason: 'legacy pre-payment-intent orphan (Pass 42 H2 auto-expire)',
+          failure_reason: 'legacy pre-payment-intent orphan (auto-expired)',
         })
         .eq('status', 'pending_payment')
         .lt('created_at', expireCutoff)
@@ -358,7 +358,7 @@ async function reconcileOrphanPendingPayment(m) {
     await alertAdmin('orphan_pending_payment_legacy_unsafe_to_auto_reset', m.id, {
       user_id:           m.user_id,
       title:             m.title,
-      reason:            'no_latest_payment_intent_id (predates Pass 22 Bug 22.9)',
+      reason:            'no_latest_payment_intent_id (legacy orphan)',
       stuck_since:       m.created_at,
       stuck_after_hours: JOB2_STUCK_AFTER_HOURS,
       action_required:   'Manual Stripe Dashboard reconciliation: search PIs by metadata.missionId; if any succeeded, recover the row; otherwise admin can flip to draft.',

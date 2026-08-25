@@ -166,7 +166,7 @@ router.get('/dashboard', async (req, res, next) => {
         severity: 'info',
         code: 'paid_amount_estimated',
         title: 'Revenue includes estimated paid amounts',
-        description: `${estimatedPaidCount} missions have paid_amount_cents backfilled from total_price_usd (Pass 29 A1). Stripe-confirmed amounts are preferred for downstream reporting.`,
+        description: `${estimatedPaidCount} missions have paid_amount_cents backfilled from total_price_usd. Stripe-confirmed amounts are preferred for downstream reporting.`,
         affected_count: estimatedPaidCount,
         suggested_action: 'No action required. To replace estimates with Stripe-confirmed amounts, look up each mission\'s latest_payment_intent_id and read amount_received from the Stripe API.',
       });
