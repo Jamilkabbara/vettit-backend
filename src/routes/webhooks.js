@@ -231,9 +231,27 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
           // already marked it paid and spawned runMission; firing again would
           // burn AI budget on prep work before runMission's claim guard
           // catches the duplicate. Skip.
-          logger.warn('webhook:payment_intent.succeeded — mission already past pending_payment, skipping', {
+          logger.warn('webhook:payment_intent.succeeded — mission already past pending_payment, skipping status flip', {
             missionId, pi_id: pi.id, status: stale.missionStatus,
           });
+          // P0-6 — the status flip + runMission already happened via another
+          // event or the recovery cron, but paid_amount_cents may still be null
+          // (checkout.session.completed defers the amount here, and the cron
+          // path used to omit it). Backfill the confirmed amount + PI id
+          // idempotently — ONLY when currently null — so a race never leaves
+          // revenue estimated. Never overwrites a Stripe-confirmed value.
+          if (Number.isFinite(pi.amount_received)) {
+            const { error: bfErr } = await supabase
+              .from('missions')
+              .update({
+                paid_amount_cents: pi.amount_received,
+                latest_payment_intent_id: pi.id,
+                paid_amount_estimated: false,
+              })
+              .eq('id', missionId)
+              .is('paid_amount_cents', null);
+            if (bfErr) logger.warn('webhook:payment_intent.succeeded — paid_amount_cents backfill failed', { missionId, err: bfErr.message });
+          }
         } else {
           // payment_status + updated_at columns don't exist in public.missions
           // — sanitizer strips them. `status: 'paid'` is the canonical signal.
