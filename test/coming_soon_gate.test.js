@@ -65,8 +65,8 @@ app.use('/api/payments', require('../src/routes/payments'));
 app.use('/api/admin', require('../src/routes/admin'));
 app.use((err, _req, res, _next) => res.status(500).json({ error: err.message }));
 
-const GATED = ['market_entry', 'creative_attention'];
-const LIVE_TYPES = ['validate', 'compare', 'marketing', 'satisfaction', 'pricing', 'roadmap', 'research', 'competitor', 'naming_messaging', 'churn_research', 'brand_lift', 'audience_profiling'];
+const GATED = ['creative_attention'];
+const LIVE_TYPES = ['validate', 'compare', 'marketing', 'satisfaction', 'pricing', 'roadmap', 'research', 'competitor', 'naming_messaging', 'churn_research', 'brand_lift', 'audience_profiling', 'market_entry'];
 const draftRow = (goal_type) => ({ id: 'm1', user_id: 'u1', goal_type, status: 'draft', respondent_count: 300, media_type: null, targeting: {}, questions: [] });
 const freePromo = { code: 'FREELAUNCH', active: true, type: 'free', expires_at: null, max_uses: null, uses_count: 0 };
 const tick = () => new Promise((r) => setImmediate(r));
@@ -74,13 +74,13 @@ const tick = () => new Promise((r) => setImmediate(r));
 beforeEach(() => { mockCreateCheckoutSession.mockClear(); mockRunMission.mockClear(); mockSynthesize.mockClear(); mockMissionRow = null; mockPromo = null; });
 
 describe('single source of truth', () => {
-  test('exactly the 2 deferred types are gated', () => {
-    expect([...COMING_SOON_GOAL_TYPES].sort()).toEqual(['creative_attention', 'market_entry']);
+  test('exactly the 1 deferred type is gated', () => {
+    expect([...COMING_SOON_GOAL_TYPES].sort()).toEqual(['creative_attention']);
   });
-  test('none of the 12 live types are gated', () => LIVE_TYPES.forEach((t) => expect(isComingSoon(t)).toBe(false)));
+  test('none of the 13 live types are gated', () => LIVE_TYPES.forEach((t) => expect(isComingSoon(t)).toBe(false)));
   test('isComingSoon tolerates null / whitespace', () => {
     expect(isComingSoon(null)).toBe(false);
-    expect(isComingSoon(' market_entry ')).toBe(true);
+    expect(isComingSoon(' creative_attention ')).toBe(true);
   });
 });
 
