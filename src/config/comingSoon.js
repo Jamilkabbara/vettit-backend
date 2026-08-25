@@ -18,7 +18,6 @@
  * each guarded by its sync test.
  */
 const COMING_SOON_GOAL_TYPES = Object.freeze([
-  'market_entry',
   'creative_attention',
 ]);
 
