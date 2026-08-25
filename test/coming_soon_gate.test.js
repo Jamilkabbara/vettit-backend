@@ -65,8 +65,13 @@ app.use('/api/payments', require('../src/routes/payments'));
 app.use('/api/admin', require('../src/routes/admin'));
 app.use((err, _req, res, _next) => res.status(500).json({ error: err.message }));
 
-const GATED = ['creative_attention'];
-const LIVE_TYPES = ['validate', 'compare', 'marketing', 'satisfaction', 'pricing', 'roadmap', 'research', 'competitor', 'naming_messaging', 'churn_research', 'brand_lift', 'audience_profiling', 'market_entry'];
+// Every research type is now LIVE - the gate is empty. GATED stays as the
+// driver for the six gated-door suites below so re-gating a type later
+// reactivates them by adding one string here; while empty, each suite keeps a
+// single skipped placeholder test (jest's test.each throws on empty arrays).
+const GATED = [];
+const EACH_GATED = GATED.length ? test.each(GATED) : test.skip.each(['(no gated types)']);
+const LIVE_TYPES = ['validate', 'compare', 'marketing', 'satisfaction', 'pricing', 'roadmap', 'research', 'competitor', 'naming_messaging', 'churn_research', 'brand_lift', 'audience_profiling', 'market_entry', 'creative_attention'];
 const draftRow = (goal_type) => ({ id: 'm1', user_id: 'u1', goal_type, status: 'draft', respondent_count: 300, media_type: null, targeting: {}, questions: [] });
 const freePromo = { code: 'FREELAUNCH', active: true, type: 'free', expires_at: null, max_uses: null, uses_count: 0 };
 const tick = () => new Promise((r) => setImmediate(r));
@@ -74,18 +79,20 @@ const tick = () => new Promise((r) => setImmediate(r));
 beforeEach(() => { mockCreateCheckoutSession.mockClear(); mockRunMission.mockClear(); mockSynthesize.mockClear(); mockMissionRow = null; mockPromo = null; });
 
 describe('single source of truth', () => {
-  test('exactly the 1 deferred type is gated', () => {
-    expect([...COMING_SOON_GOAL_TYPES].sort()).toEqual(['creative_attention']);
+  test('no deferred types remain - the gate is empty', () => {
+    expect([...COMING_SOON_GOAL_TYPES]).toEqual([]);
   });
-  test('none of the 13 live types are gated', () => LIVE_TYPES.forEach((t) => expect(isComingSoon(t)).toBe(false)));
+  test('none of the 14 live types are gated', () => LIVE_TYPES.forEach((t) => expect(isComingSoon(t)).toBe(false)));
   test('isComingSoon tolerates null / whitespace', () => {
     expect(isComingSoon(null)).toBe(false);
-    expect(isComingSoon(' creative_attention ')).toBe(true);
+    // Gate is empty: a padded live type must trim cleanly to NOT-gated.
+    expect(isComingSoon(' creative_attention ')).toBe(false);
+    expect(isComingSoon('   ')).toBe(false);
   });
 });
 
 describe('create — POST /api/missions', () => {
-  test.each(GATED)('gated %s → 403 not_available', async (goalType) => {
+  EACH_GATED('gated %s → 403 not_available', async (goalType) => {
     const res = await request(app).post('/api/missions').send({ goalType, brief: 'x', respondentCount: 300 });
     expect(res.status).toBe(403);
     expect(res.body.error).toBe('not_available');
@@ -98,7 +105,7 @@ describe('create — POST /api/missions', () => {
 });
 
 describe('draft — POST /api/missions/draft', () => {
-  test.each(GATED)('gated %s → 403 (no gated row persisted)', async (goalType) => {
+  EACH_GATED('gated %s → 403 (no gated row persisted)', async (goalType) => {
     const res = await request(app).post('/api/missions/draft').send({ goalType, brief: 'x', respondentCount: 300 });
     expect(res.status).toBe(403);
     expect(res.body.error).toBe('not_available');
@@ -110,7 +117,7 @@ describe('draft — POST /api/missions/draft', () => {
 });
 
 describe('checkout — POST /api/payments/create-checkout-session (ZERO charge for gated)', () => {
-  test.each(GATED)('gated %s → 403, Stripe NEVER called', async (goalType) => {
+  EACH_GATED('gated %s → 403, Stripe NEVER called', async (goalType) => {
     mockMissionRow = draftRow(goalType);
     const res = await request(app).post('/api/payments/create-checkout-session').send({ missionId: 'm1' });
     expect(res.status).toBe(403);
@@ -126,7 +133,7 @@ describe('checkout — POST /api/payments/create-checkout-session (ZERO charge f
 });
 
 describe('free-launch — POST /api/payments/free-launch (ZERO run for gated)', () => {
-  test.each(GATED)('gated %s → 403, runMission NEVER called', async (goalType) => {
+  EACH_GATED('gated %s → 403, runMission NEVER called', async (goalType) => {
     mockPromo = freePromo; mockMissionRow = draftRow(goalType);
     const res = await request(app).post('/api/payments/free-launch').send({ missionId: 'm1', promoCode: 'FREELAUNCH' });
     expect(res.status).toBe(403);
@@ -142,7 +149,7 @@ describe('free-launch — POST /api/payments/free-launch (ZERO run for gated)', 
 });
 
 describe('admin mark-paid — POST /api/admin/missions/:id/mark-paid (ZERO run for gated)', () => {
-  test.each(GATED)('gated %s → 403, runMission NEVER called', async (goalType) => {
+  EACH_GATED('gated %s → 403, runMission NEVER called', async (goalType) => {
     mockMissionRow = draftRow(goalType);
     const res = await request(app).post('/api/admin/missions/m1/mark-paid').send({ reason: 'test' });
     expect(res.status).toBe(403);
@@ -158,7 +165,7 @@ describe('admin mark-paid — POST /api/admin/missions/:id/mark-paid (ZERO run f
 });
 
 describe('admin reanalyze — POST /api/admin/missions/:id/reanalyze (6th door — NO synthesis for gated)', () => {
-  test.each(GATED)('gated %s → 403, synthesizeInsights NEVER called', async (goalType) => {
+  EACH_GATED('gated %s → 403, synthesizeInsights NEVER called', async (goalType) => {
     mockMissionRow = draftRow(goalType);
     const res = await request(app).post('/api/admin/missions/m1/reanalyze').send({});
     expect(res.status).toBe(403);

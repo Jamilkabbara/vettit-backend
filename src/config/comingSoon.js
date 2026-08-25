@@ -18,7 +18,6 @@
  * each guarded by its sync test.
  */
 const COMING_SOON_GOAL_TYPES = Object.freeze([
-  'creative_attention',
 ]);
 
 /** True when a goal_type is gated (not yet live). Tolerant of null/whitespace. */
