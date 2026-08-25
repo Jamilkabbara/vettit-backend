@@ -132,6 +132,11 @@ const VETTED_CATEGORY_LABELS = {
   churn_research:    'Churn Study',
   brand_lift:        'Brand Lift',
   creative_attention:'Creative Testing',
+  // Un-gate readiness (audience_profiling): without a label here a live
+  // audience_profiling mission is silently dropped from the social-proof
+  // ticker (the loop `continue`s when category is undefined). market_entry
+  // is intentionally still absent — it un-gates on its own track.
+  audience_profiling:'Audience Profiling',
 };
 const VETTED_COUNTRY_NAMES = {
   AE: 'UAE', SA: 'Saudi Arabia', US: 'the US', GB: 'the UK', UK: 'the UK',
@@ -999,3 +1004,5 @@ router.get('/:id/progress', authenticate, async (req, res, next) => {
 });
 
 module.exports = router;
+// Exposed for the social-proof-ticker label coverage test (un-gate readiness).
+module.exports.VETTED_CATEGORY_LABELS = VETTED_CATEGORY_LABELS;
