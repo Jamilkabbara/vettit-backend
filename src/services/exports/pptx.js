@@ -303,18 +303,24 @@ function buildPPTX(pack, res) {
   const summary = pptx.addSlide();
   addDarkBackground(summary);
   addSectionHeader(summary, '01 · VETT SYNTHESIS', 'What the research says');
+  // §2.4 — directional banner when the sample can't support an authoritative read.
+  const hasGateBand = Boolean(model.gate && model.gate.posture === 'directional' && model.gate.note);
+  // The banner used to sit at 6.55 with h 0.75, i.e. bottom 7.30 — 0.15" INTO the
+  // slide footer (y 7.15 to 7.45), colliding with it on every directional deck.
+  // It now ends at 7.00, and the synthesis box above shrinks ONLY when the banner
+  // is present so the two never touch. Without a banner the synthesis keeps its
+  // original 4.7 height, so those slides are unchanged.
   summary.addText(model.synthesis || model.execSummary || 'Synthesis not available for this mission.', {
-    x: 0.5, y: 1.65, w: 12.3, h: 4.7,
+    x: 0.5, y: 1.65, w: 12.3, h: hasGateBand ? 4.45 : 4.7,
     fontSize: 16, color: hex(BRAND.text1), fontFace: FONT_SERIF, paraSpaceAfter: 8, valign: 'top', autoFit: true,
   });
-  // §2.4 — directional banner when the sample can't support an authoritative read.
-  if (model.gate && model.gate.posture === 'directional' && model.gate.note) {
+  if (hasGateBand) {
     summary.addText(
       [
         { text: 'DIRECTIONAL   ', options: { bold: true, color: hex(BRAND.amber) } },
         { text: `${model.gate.note}${model.gate.n ? ` · n=${model.gate.n}` : ''}`, options: { color: hex(BRAND.text2) } },
       ],
-      { x: 0.5, y: 6.55, w: 12.3, h: 0.75, fontSize: 11, fontFace: FONT, valign: 'top', line: { color: hex(BRAND.amber), width: 0.75 }, fill: { color: hex(BRAND.bg2) }, margin: 6 },
+      { x: 0.5, y: 6.28, w: 12.3, h: 0.72, fontSize: 11, fontFace: FONT, valign: 'top', line: { color: hex(BRAND.amber), width: 0.75 }, fill: { color: hex(BRAND.bg2) }, margin: 6 },
     );
   }
 
@@ -458,11 +464,17 @@ function buildPPTX(pack, res) {
       x: 0.5, y: bodyY, w: 12.3, h: Math.max(2.6, bodyBottom - bodyY),
     });
     if (insight) {
+      // The narration box must END ABOVE the slide footer. The footer
+      // ("VETT · vettit.ai", addDarkBackground) occupies y 7.15 to 7.45, but the
+      // insight box used to run 6.12 -> 7.32, i.e. it punched 0.17" INTO the
+      // footer and the narration text collided with it on every slide that
+      // carries an insight (107 slides across 12 of 13 decks in the export
+      // sweep). Bottom is now 7.05, leaving a 0.10" gap before the footer.
       slide.addText('WHAT THIS MEANS', {
-        x: 0.5, y: 5.82, w: 12.3, h: 0.28, fontSize: 10, bold: true, color: hex(BRAND.lime), fontFace: FONT, charSpacing: 2,
+        x: 0.5, y: 5.78, w: 12.3, h: 0.26, fontSize: 10, bold: true, color: hex(BRAND.lime), fontFace: FONT, charSpacing: 2,
       });
       slide.addText(insight, {
-        x: 0.5, y: 6.12, w: 12.3, h: 1.2, fontSize: 12, color: hex(BRAND.text1), fontFace: FONT, valign: 'top', shrinkText: true,
+        x: 0.5, y: 6.06, w: 12.3, h: 0.99, fontSize: 12, color: hex(BRAND.text1), fontFace: FONT, valign: 'top', shrinkText: true,
       });
     }
   });
