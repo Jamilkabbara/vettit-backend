@@ -32,6 +32,10 @@ const PptxGenJS = require('pptxgenjs');
 const { BRAND } = require('./shared');
 const { buildCanonicalReport } = require('../report/buildReport');
 const { buildRenderModel } = require('../report/reportRenderModel');
+// PR 3 — shared hotspot normalizer. attention_hotspots is EITHER an array of
+// legacy strings or an array of {label,x,y,w,h,weight} spatial objects; the
+// deck must render both without crashing. Same helper the PDF uses.
+const { normalizeHotspots } = require('../../utils/creativeHotspots');
 
 // §5 — brand typography. pptxgenjs can't embed font binaries, so these are
 // face NAMES: a viewer with the brand fonts installed renders them, otherwise
@@ -108,7 +112,10 @@ function addSectionHeader(slide, eyebrow, title, opts = {}) {
 
 // Manually-drawn horizontal bar chart. items: [{ label, value(0-100), count? }]
 function drawBars(slide, items, opts) {
-  const { x, y, w, h, title, subtitle, showCount } = opts;
+  // metaSuffix defaults to '%', so every existing caller is byte-identical.
+  // A 0-100 INDEX (emotion score, hotspot pull) passes '' so the deck does not
+  // mislabel an index as a percentage.
+  const { x, y, w, h, title, subtitle, showCount, metaSuffix = '%' } = opts;
   let cursorY = y;
 
   if (title) {
@@ -155,7 +162,7 @@ function drawBars(slide, items, opts) {
         fill: { color: hex(BRAND.lime) }, line: { type: 'none' },
       });
     }
-    const meta = showCount && it.count != null ? `${it.count} · ${p}%` : `${p}%`;
+    const meta = showCount && it.count != null ? `${it.count} · ${p}%` : `${p}${metaSuffix}`;
     slide.addText(meta, {
       x: trackX + trackW + 0.05, y: rowY, w: metaW, h: rowH,
       fontSize: 10, color: hex(BRAND.text2), fontFace: FONT, valign: 'middle', align: 'left',
@@ -177,6 +184,139 @@ function statCard(slide, x, y, w, h, label, value, trendColor = BRAND.lime) {
     x: x + 0.15, y: y + 0.6, w: w - 0.3, h: h - 0.7,
     fontSize: 24, bold: true, color: hex(trendColor), fontFace: FONT,
     shrinkText: true, autoFit: true,
+  });
+}
+
+/* ─── PR 3 — Creative Attention native-shape visuals ──────────────────────────
+ * pptxgenjs's addChart() renders EMPTY in Keynote and some Google Slides
+ * builds (see the file header), so every chart below is drawn from native
+ * rects + text the way drawBars() already does. Everything here is called
+ * only from the creative_attention branch, so no other deck changes.
+ */
+
+// Stacked 100% bar: active / passive / non-attention.
+function drawAttentionSplit(slide, opts) {
+  const { x, y, w, h, parts } = opts;
+  const total = parts.reduce((a, p) => a + (Number(p.pct) || 0), 0);
+  if (total <= 0) return;
+  let cursorX = x;
+  parts.forEach((p, i) => {
+    // Normalized so the stacked bar always spans the full track even when the
+    // model's three percentages sum to 98 or 101; the LABELS keep its numbers.
+    const segW = (i === parts.length - 1)
+      ? Math.max(0, x + w - cursorX)
+      : w * ((Number(p.pct) || 0) / total);
+    if (segW > 0.001) {
+      slide.addShape('rect', {
+        x: cursorX, y, w: segW, h,
+        fill: { color: hex(p.color) }, line: { type: 'none' },
+      });
+    }
+    cursorX += segW;
+  });
+  // Legend row underneath.
+  const runs = [];
+  parts.forEach((p, i) => {
+    if (i > 0) runs.push({ text: '     ', options: { color: hex(BRAND.text3) } });
+    runs.push({ text: '\u25CF ', options: { color: hex(p.color), fontSize: 12 } });
+    runs.push({ text: `${p.label} `, options: { color: hex(BRAND.text2), fontSize: 11 } });
+    runs.push({ text: `${Math.round(Number(p.pct) || 0)}%`, options: { color: hex(p.color), fontSize: 11, bold: true } });
+  });
+  slide.addText(runs, { x, y: y + h + 0.08, w, h: 0.3, fontFace: FONT, valign: 'top' });
+}
+
+// Attention decay drawn as a native column sparkline: one rect per second,
+// height = active attention at that second. Reads as the decay profile and
+// survives every renderer because it is just shapes.
+function drawDecayCurve(slide, opts) {
+  const { x, y, w, h, points } = opts;
+  const pts = (points || [])
+    .map((p) => ({ second: Number(p && p.second), active: Number(p && p.active_pct) }))
+    .filter((p) => Number.isFinite(p.second) && Number.isFinite(p.active))
+    .map((p) => ({ second: p.second, active: Math.min(100, Math.max(0, p.active)) }))
+    .sort((a, b) => a.second - b.second);
+  if (!pts.length) return null;
+
+  const axisW = 0.42;                 // gutter for the 0/50/100% labels
+  const plotX = x + axisW;
+  const plotW = w - axisW;
+  const plotH = h - 0.3;              // reserve the bottom strip for x labels
+  const baseY = y + plotH;
+
+  // Horizontal gridlines + y labels at 0 / 50 / 100%.
+  [0, 50, 100].forEach((v) => {
+    const gy = baseY - (v / 100) * plotH;
+    slide.addShape('rect', {
+      x: plotX, y: gy, w: plotW, h: 0.008,
+      fill: { color: hex(v === 0 ? BRAND.text3 : BRAND.border) }, line: { type: 'none' },
+    });
+    slide.addText(`${v}%`, {
+      x, y: gy - 0.12, w: axisW - 0.06, h: 0.24,
+      fontSize: 9, color: hex(BRAND.text3), fontFace: FONT, align: 'right', valign: 'middle',
+    });
+  });
+
+  const gap = pts.length > 1 ? Math.min(0.06, plotW / (pts.length * 6)) : 0;
+  const colW = pts.length > 1
+    ? (plotW - gap * (pts.length - 1)) / pts.length
+    : Math.min(0.9, plotW);
+  pts.forEach((p, i) => {
+    const colH = Math.max(0.02, (p.active / 100) * plotH);
+    const colX = pts.length > 1
+      ? plotX + i * (colW + gap)
+      : plotX + (plotW - colW) / 2;
+    slide.addShape('rect', {
+      x: colX, y: baseY - colH, w: colW, h: colH,
+      fill: { color: hex(BRAND.lime) }, line: { type: 'none' },
+    });
+  });
+
+  // Label the first / middle / last second only, so a 30-frame video cannot
+  // stack overlapping x labels.
+  const idxs = pts.length >= 5
+    ? [0, Math.floor((pts.length - 1) / 2), pts.length - 1]
+    : [0, pts.length - 1];
+  [...new Set(idxs)].forEach((i) => {
+    const colX = pts.length > 1 ? plotX + i * (colW + gap) : plotX + (plotW - colW) / 2;
+    // The first tick is left-aligned FROM the plot origin (never into the
+    // y-axis gutter, which would collide with the "0%" label) and the last is
+    // right-aligned to the plot edge.
+    const isFirst = i === 0;
+    const isLast = i === pts.length - 1;
+    const boxW = 0.7;
+    const tickX = isFirst ? plotX
+      : (isLast ? Math.min(plotX + plotW - boxW, x + w - boxW) : colX + colW / 2 - boxW / 2);
+    slide.addText(`${pts[i].second}s`, {
+      x: tickX, y: baseY + 0.06, w: boxW, h: 0.22,
+      fontSize: 9, color: hex(BRAND.text3), fontFace: FONT,
+      align: isFirst ? 'left' : (isLast ? 'right' : 'center'), valign: 'top',
+    });
+  });
+  return pts;
+}
+
+// Schematic hotspot map: a 16:9 frame with one translucent-look box per
+// localised hotspot, positioned from its 0-1 fractional coordinates.
+function drawHotspotMap(slide, opts) {
+  const { x, y, w, h, hotspots } = opts;
+  slide.addShape('rect', {
+    x, y, w, h,
+    fill: { color: hex(BRAND.bg2) }, line: { color: hex(BRAND.border), width: 0.75 },
+  });
+  hotspots.forEach((s) => {
+    const bx = x + s.x * w;
+    const by = y + s.y * h;
+    const bw = Math.max(0.05, Math.min(w - (bx - x), s.w * w));
+    const bh = Math.max(0.05, Math.min(h - (by - y), s.h * h));
+    slide.addShape('rect', {
+      x: bx, y: by, w: bw, h: bh,
+      fill: { color: hex(BRAND.lime), transparency: 82 },
+      line: { color: hex(BRAND.lime), width: 1 },
+    });
+    slide.addText(String(s.rank), {
+      x: bx + 0.02, y: by + 0.02, w: 0.3, h: 0.22,
+      fontSize: 10, bold: true, color: hex(BRAND.lime), fontFace: FONT, valign: 'top',
+    });
   });
 }
 
@@ -435,6 +575,60 @@ function buildPPTX(pack, res) {
     const ce = caData.creative_effectiveness || {};
     const caSum = caData.summary || {};
     const frames = Array.isArray(caData.frame_analyses) ? caData.frame_analyses : [];
+    const attn = caData.attention && typeof caData.attention === 'object' ? caData.attention : null;
+
+    // Slide: ATTENTION — stat cards + active/passive/non split + decay curve.
+    // Every element is a native shape (no addChart), and the lowest element
+    // (the x-axis labels at y 6.62 + 0.22) ends at 6.84, clear of the 7.15 footer.
+    if (attn) {
+      const slide = pptx.addSlide();
+      addDarkBackground(slide);
+      addSectionHeader(slide, '· ATTENTION', 'Who actually watches, and for how long');
+
+      const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+      const cards = [
+        ['Active attention', num(attn.predicted_active_attention_seconds) != null ? `${num(attn.predicted_active_attention_seconds)}s` : null],
+        ['Passive attention', num(attn.predicted_passive_attention_seconds) != null ? `${num(attn.predicted_passive_attention_seconds)}s` : null],
+        ['Brand asset score', num(attn.distinctive_brand_asset_score) != null ? `${num(attn.distinctive_brand_asset_score)}/100` : null],
+        ['Brand read in', num(attn.dba_read_seconds) != null ? `${num(attn.dba_read_seconds)}s` : null],
+      ].filter(([, v]) => v != null);
+      if (cards.length) {
+        const gapX = 0.25;
+        const cardW = (12.3 - gapX * (cards.length - 1)) / cards.length;
+        cards.forEach(([label, value], i) => {
+          statCard(slide, 0.5 + i * (cardW + gapX), 1.65, cardW, 1.5, label, value);
+        });
+      }
+
+      const splitParts = [
+        { label: 'Active', pct: num(attn.active_attention_pct) || 0, color: BRAND.lime },
+        { label: 'Passive', pct: num(attn.passive_attention_pct) || 0, color: BRAND.purple },
+        { label: 'Non-attention', pct: num(attn.non_attention_pct) || 0, color: BRAND.text3 },
+      ];
+      const hasSplit = splitParts.some((p) => p.pct > 0);
+      if (hasSplit) {
+        slide.addText('AUDIENCE SPLIT', {
+          x: 0.5, y: 3.30, w: 12.3, h: 0.24,
+          fontSize: 10, bold: true, color: hex(BRAND.text3), fontFace: FONT, charSpacing: 2,
+        });
+        drawAttentionSplit(slide, { x: 0.5, y: 3.62, w: 12.3, h: 0.3, parts: splitParts });
+      }
+
+      const curve = Array.isArray(attn.attention_decay_curve) ? attn.attention_decay_curve : [];
+      if (curve.length) {
+        slide.addText(curve.length > 1 ? 'ACTIVE ATTENTION DECAY' : 'ACTIVE ATTENTION AT FIRST CONTACT', {
+          x: 0.5, y: 4.35, w: 12.3, h: 0.24,
+          fontSize: 10, bold: true, color: hex(BRAND.text3), fontFace: FONT, charSpacing: 2,
+        });
+        drawDecayCurve(slide, { x: 0.5, y: 4.80, w: 12.3, h: 1.85, points: curve });
+        if (curve.length === 1) {
+          slide.addText('Static creative: a single first-contact reading. Video creatives plot a per-second decay profile here.', {
+            x: 0.5, y: 6.70, w: 8.5, h: 0.3,
+            fontSize: 10, italic: true, color: hex(BRAND.text3), fontFace: FONT, valign: 'top',
+          });
+        }
+      }
+    }
 
     // Slide: effectiveness breakdown (component / score / weight).
     if (ce.components && typeof ce.components === 'object') {
@@ -512,12 +706,55 @@ function buildPPTX(pack, res) {
           items.push({ text: '', options: { breakLine: true } });
           items.push({ text: String(f.brief_description), options: { fontSize: 11, color: hex(BRAND.text1), paraSpaceAfter: 4 } });
         }
-        if (Array.isArray(f.attention_hotspots) && f.attention_hotspots.length) {
+        // PR 3 — hotspots arrive as legacy STRINGS or as spatial objects.
+        // normalizeHotspots collapses both; a localised hit also prints its
+        // relative pull so the deck says more than the old string list did.
+        const spots = normalizeHotspots(f.attention_hotspots);
+        if (spots.length) {
           items.push({ text: '', options: { breakLine: true } });
-          items.push({ text: `Hotspots: ${f.attention_hotspots.join(' · ')}`, options: { fontSize: 10.5, color: hex(BRAND.text2), paraSpaceAfter: 8 } });
+          const label = spots.map((sp) => (sp.spatial && sp.weight != null ? `${sp.label} (${sp.weight})` : sp.label)).join(' · ');
+          items.push({ text: `Hotspots: ${label}`, options: { fontSize: 10.5, color: hex(BRAND.text2), paraSpaceAfter: 8 } });
         }
       });
       slide.addText(items, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: FONT, valign: 'top', shrinkText: true });
+    }
+
+    // Slide: ATTENTION HOTSPOT MAP — only for missions whose vision pass
+    // returned SPATIAL hotspots ({label,x,y,w,h,weight}). Legacy missions
+    // store hotspots as strings; they have no geometry, so this slide is
+    // skipped entirely and the frame-read slide's text list carries them.
+    {
+      const mapFrames = frames
+        .map((f, i) => ({
+          index: i + 1,
+          timestamp: f && f.timestamp,
+          spots: normalizeHotspots(f && f.attention_hotspots)
+            .map((sp, si) => ({ ...sp, rank: si + 1 }))
+            .filter((sp) => sp.spatial)
+            .slice(0, 6),
+        }))
+        .filter((f) => f.spots.length);
+
+      // One slide per frame with geometry, capped so a 30-frame video does
+      // not add 30 slides to the deck.
+      mapFrames.slice(0, 3).forEach((mf) => {
+        const slide = pptx.addSlide();
+        addDarkBackground(slide);
+        addSectionHeader(slide, '· ATTENTION HOTSPOT MAP',
+          mapFrames.length > 1
+            ? `Where the eye lands, frame ${mf.index}${mf.timestamp != null ? ` (${mf.timestamp}s)` : ''}`
+            : 'Where the eye lands inside the frame');
+        // 16:9 schematic frame, 7.2 x 4.05, top-left 0.5 / 1.75 → ends 5.80.
+        drawHotspotMap(slide, { x: 0.5, y: 1.75, w: 7.2, h: 4.05, hotspots: mf.spots });
+        slide.addText('Drawn from frame-relative coordinates, not from the creative file: this is the geometry of attention, not the artwork.', {
+          x: 0.5, y: 5.9, w: 7.2, h: 0.5,
+          fontSize: 9.5, italic: true, color: hex(BRAND.text3), fontFace: FONT, valign: 'top',
+        });
+        drawBars(slide, mf.spots.map((sp) => ({ label: `${sp.rank}. ${sp.label}`, value: sp.weight ?? 0 })), {
+          x: 8.0, y: 1.75, w: 4.8, h: Math.min(4.9, 0.62 * mf.spots.length + 0.4),
+          title: 'Relative pull (0-100)', metaSuffix: '',
+        });
+      });
     }
 
     // Slide: full 24-emotion profile, frame-averaged, two columns.
@@ -539,19 +776,16 @@ function buildPPTX(pack, res) {
         const slide = pptx.addSlide();
         addDarkBackground(slide);
         addSectionHeader(slide, '· FULL EMOTION PROFILE', `${emotions.length} emotions scored 0-100${frames.length > 1 ? ', averaged across frames' : ''}`);
+        // PR 3 — the profile is now BARS (same drawBars helper the survey
+        // slides use), two balanced columns, so the shape of the emotional
+        // read is visible instead of being a column of numbers. Column height
+        // 5.2 from y 1.65 bottoms out at 6.85, clear of the 7.15 footer.
         const half = Math.ceil(emotions.length / 2);
-        const col = (list, x) => {
-          const items = [];
-          list.forEach((e) => {
-            items.push({ text: `${e.score}`.padStart(3, ' ') + `  ${e.name}`, options: {
-              fontSize: 12, color: e.score > 50 ? hex(BRAND.lime) : hex(BRAND.text2),
-              bold: e.score > 50, paraSpaceAfter: 5,
-            } });
-          });
-          slide.addText(items, { x, y: 1.65, w: 5.9, h: 5.3, fontFace: FONT, valign: 'top' });
-        };
-        col(emotions.slice(0, half), 0.5);
-        col(emotions.slice(half), 6.6);
+        const toItems = (list) => list.map((e) => ({ label: e.name, value: e.score }));
+        drawBars(slide, toItems(emotions.slice(0, half)), { x: 0.5, y: 1.65, w: 5.9, h: 5.2, metaSuffix: '' });
+        if (emotions.length > half) {
+          drawBars(slide, toItems(emotions.slice(half)), { x: 6.9, y: 1.65, w: 5.9, h: 5.2, metaSuffix: '' });
+        }
       }
     }
   }

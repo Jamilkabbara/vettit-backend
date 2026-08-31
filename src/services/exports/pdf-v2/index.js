@@ -29,6 +29,10 @@ const { getReportMetadata } = require('../reportMetadata');
 const { buildCanonicalReport } = require('../../report/buildReport');
 const { buildRenderModel } = require('../../report/reportRenderModel');
 const { sanitizeDashesDeep, sanitizeDashesString } = require('../../../utils/textSanitize');
+// PR 3 — shared hotspot normalizer. attention_hotspots is EITHER an array of
+// legacy strings (every mission run before the spatial schema shipped) or an
+// array of {label,x,y,w,h,weight} objects. One helper, three surfaces.
+const { normalizeHotspots } = require('../../../utils/creativeHotspots');
 
 /* ─── Template + CSS loading (once per process) ─────────────────────────── */
 
@@ -129,6 +133,8 @@ function buildViewModel(pack) {
 
   const meta = getReportMetadata(mission);
 
+  const caSanitized = sanitizeDashesDeep(mission?.creative_analysis || null);
+
   return {
     // Cover (shared by every body template via _base.hbs)
     mission: {
@@ -153,11 +159,14 @@ function buildViewModel(pack) {
     // Creative-attention body (separate goal type, out of Pass-48 scope).
     // D7 — deep-scrub the raw LLM creative_analysis so the CA-specific PDF
     // sections inherit the no-dash rule (the canonical `model` already is).
-    ca: sanitizeDashesDeep(mission?.creative_analysis || null),
+    ca: caSanitized,
     // PR 2 enrichment — precomputed rows the CA template can't derive in
     // Handlebars: effectiveness sub-scores joined with their weights, and the
     // full 24-emotion profile (frame-averaged) chunked into 3-pair table rows.
-    ...buildCaViewExtras(mission?.creative_analysis || null),
+    // PR 3 adds the chart geometry (decay curve, attention split, emotion
+    // bars) and the normalized hotspot boxes. Both read the DASH-SANITIZED
+    // analysis so the CA extras inherit the no-dash rule the same way `ca` does.
+    ...buildCaViewExtras(caSanitized),
     media_url: mission?.media_url || null,
     brand_name: sanitizeDashesString(mission?.brand_name) || null,
 
@@ -168,9 +177,15 @@ function buildViewModel(pack) {
 
 /* ─── PR 2 — CA view-model extras (effectiveness rows + emotion grid) ───── */
 
+const CA_EMPTY_EXTRAS = {
+  caComponents: null, caEmotions: [], caEmotionRows: [], caMultiFrame: false,
+  caEmotionBarCols: [], caSplit: null, caDecay: null, caFrames: [],
+  caHotspotMaps: [], caHotspotMapsTotal: 0, caHotspotMapsCapped: false,
+};
+
 function buildCaViewExtras(ca) {
   if (!ca || typeof ca !== 'object') {
-    return { caComponents: null, caEmotions: [], caEmotionRows: [], caMultiFrame: false };
+    return { ...CA_EMPTY_EXTRAS };
   }
   // Effectiveness components joined with weights, heaviest weight first.
   const comp = (ca.creative_effectiveness && ca.creative_effectiveness.components) || null;
@@ -209,7 +224,156 @@ function buildCaViewExtras(ca) {
   const caEmotionRows = [];
   for (let i = 0; i < caEmotions.length; i += 3) caEmotionRows.push(caEmotions.slice(i, i + 3));
 
-  return { caComponents, caEmotions, caEmotionRows, caMultiFrame: frames.length > 1 };
+  // ── PR 3 — emotion BARS (the table alone hid the shape of the profile) ──
+  // Two balanced columns of 12 so all 24 emotions stay on one printed page.
+  const halfway = Math.ceil(caEmotions.length / 2);
+  const caEmotionBarCols = caEmotions.length
+    ? [caEmotions.slice(0, halfway), caEmotions.slice(halfway)].filter((c) => c.length)
+    : [];
+
+  return {
+    caComponents, caEmotions, caEmotionRows, caMultiFrame: frames.length > 1,
+    caEmotionBarCols,
+    caSplit: buildCaSplit(ca.attention),
+    caDecay: buildCaDecay(ca.attention),
+    ...buildCaFrames(frames),
+  };
+}
+
+/* ─── PR 3 — attention split (active / passive / non-attention) ─────────── */
+
+const CA_SPLIT_PARTS = [
+  { key: 'active_attention_pct',  label: 'Active attention',  color: 'var(--lime)',   note: 'eyes on, focused' },
+  { key: 'passive_attention_pct', label: 'Passive attention', color: 'var(--purple)', note: 'aware, not watching' },
+  { key: 'non_attention_pct',     label: 'Non-attention',     color: 'var(--text3)',  note: 'scrolled past' },
+];
+
+function buildCaSplit(attention) {
+  if (!attention || typeof attention !== 'object') return null;
+  const parts = CA_SPLIT_PARTS.map((p) => {
+    const n = Number(attention[p.key]);
+    return { ...p, pct: Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0 };
+  });
+  const total = parts.reduce((a, b) => a + b.pct, 0);
+  if (total <= 0) return null;
+  // Widths are normalized so the stacked bar always spans the full track even
+  // when the model's three percentages sum to 98 or 101; the LABELS keep the
+  // model's own numbers.
+  return {
+    parts: parts.map((p) => ({ ...p, width: Math.round((p.pct / total) * 1000) / 10 })),
+    total,
+    sumsTo100: total === 100,
+  };
+}
+
+/* ─── PR 3 — attention decay curve as inline SVG ─────────────────────────── */
+// The PDF engine is Chromium, so an inline SVG is a first-class citizen: it
+// prints as vector (crisp at any zoom) and needs no chart library. Geometry is
+// precomputed here because Handlebars cannot do arithmetic.
+
+const DECAY_VB_W = 640;
+const DECAY_VB_H = 190;
+const DECAY_X0 = 46;          // left gutter for the y-axis labels
+const DECAY_X1 = 626;
+const DECAY_Y_TOP = 14;       // y for 100%
+const DECAY_Y_BASE = 152;     // y for 0%
+
+function buildCaDecay(attention) {
+  const raw = attention && Array.isArray(attention.attention_decay_curve)
+    ? attention.attention_decay_curve : [];
+  const pts = raw
+    .map((p) => ({ second: Number(p && p.second), active: Number(p && p.active_pct) }))
+    .filter((p) => Number.isFinite(p.second) && Number.isFinite(p.active))
+    .map((p) => ({ second: p.second, active: Math.min(100, Math.max(0, p.active)) }))
+    .sort((a, b) => a.second - b.second);
+  if (!pts.length) return null;
+
+  const maxSecond = Math.max(...pts.map((p) => p.second));
+  const span = maxSecond > 0 ? maxSecond : 1;
+  const xFor = (sec) => (pts.length === 1
+    ? DECAY_X0 + (DECAY_X1 - DECAY_X0) / 2
+    : DECAY_X0 + ((sec / span) * (DECAY_X1 - DECAY_X0)));
+  const yFor = (v) => DECAY_Y_BASE - (v / 100) * (DECAY_Y_BASE - DECAY_Y_TOP);
+  const r1 = (n) => Math.round(n * 10) / 10;
+
+  const dots = pts.map((p, i) => ({
+    cx: r1(xFor(p.second)), cy: r1(yFor(p.active)),
+    second: p.second, active: Math.round(p.active),
+    first: i === 0, last: i === pts.length - 1,
+  }));
+
+  // Label only the first, middle and last tick so x-axis labels can never
+  // collide on a 30-frame video curve.
+  const tickIdx = new Set([0, pts.length - 1]);
+  if (pts.length >= 5) tickIdx.add(Math.floor((pts.length - 1) / 2));
+  const xTicks = [...tickIdx].sort((a, b) => a - b).map((i) => ({
+    x: dots[i].cx, y: DECAY_Y_BASE + 20, label: `${pts[i].second}s`,
+    anchor: i === 0 ? 'start' : (i === pts.length - 1 ? 'end' : 'middle'),
+  }));
+
+  const gridLines = [0, 25, 50, 75, 100].map((v) => ({
+    y: r1(yFor(v)), labelX: DECAY_X0 - 8, labelY: r1(yFor(v)) + 4,
+    label: `${v}%`, major: v === 0 || v === 100,
+  }));
+
+  const polyline = dots.map((d) => `${d.cx},${d.cy}`).join(' ');
+  const area = `${DECAY_X0},${DECAY_Y_BASE} ${polyline} ${r1(dots[dots.length - 1].cx)},${DECAY_Y_BASE}`;
+
+  const first = pts[0].active;
+  const last = pts[pts.length - 1].active;
+  // A single-reading (static image) curve is drawn as ONE column instead of a
+  // lonely dot, so the static case still reads as a chart.
+  const staticCol = pts.length === 1
+    ? { x: r1(dots[0].cx - 30), y: dots[0].cy, w: 60, h: r1(DECAY_Y_BASE - dots[0].cy) }
+    : null;
+  return {
+    dots, xTicks, gridLines, polyline, area, staticCol,
+    isStatic: pts.length === 1,
+    vbW: DECAY_VB_W, vbH: DECAY_VB_H,
+    x0: DECAY_X0, x1: DECAY_X1, yBase: DECAY_Y_BASE,
+    firstPct: Math.round(first),
+    lastPct: Math.round(last),
+    dropPct: Math.round(first - last),
+    maxSecond,
+  };
+}
+
+/* ─── PR 3 — per-frame hotspots (BOTH schema shapes) ─────────────────────── */
+// Legacy missions store attention_hotspots as STRINGS; missions run after the
+// spatial-schema ship store {label,x,y,w,h,weight}. normalizeHotspots collapses
+// both to one shape, and `hasSpatial` decides whether this frame can be drawn
+// as a hotspot MAP or must render as the text list.
+
+const CA_HOTSPOT_MAP_CAP = 6;     // boxes drawn per map
+const CA_HOTSPOT_FRAME_CAP = 6;   // frames given a map before the section caps
+
+function buildCaFrames(frames) {
+  const caFrames = frames.map((f, i) => {
+    const hotspots = normalizeHotspots(f && f.attention_hotspots)
+      .map((h, hi) => ({ ...h, rank: hi + 1 }));
+    const spatial = hotspots.filter((h) => h.spatial).slice(0, CA_HOTSPOT_MAP_CAP);
+    return {
+      index: i + 1,
+      timestamp: f && f.timestamp,
+      engagement_score: f && f.engagement_score,
+      brief_description: f && f.brief_description,
+      message_clarity: f && f.message_clarity,
+      audience_resonance: f && f.audience_resonance,
+      hotspots,
+      hotspotLabels: hotspots.map((h) => h.label),
+      hasSpatial: spatial.length > 0,
+      spatialHotspots: spatial,
+    };
+  });
+  // A 30-frame video would otherwise print 30 maps; the PDF shows the first
+  // few and the frame-by-frame section still lists every frame's hotspots.
+  const mapped = caFrames.filter((f) => f.hasSpatial);
+  return {
+    caFrames,
+    caHotspotMaps: mapped.slice(0, CA_HOTSPOT_FRAME_CAP),
+    caHotspotMapsTotal: mapped.length,
+    caHotspotMapsCapped: mapped.length > CA_HOTSPOT_FRAME_CAP,
+  };
 }
 
 /* ─── Mission-type → body-template selection ────────────────────────────── */
