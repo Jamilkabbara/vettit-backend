@@ -16,6 +16,7 @@
  */
 
 const supabase = require('../../db/supabase');
+const fetchAllResponses = require('../../db/fetchAllResponses');
 const { callClaude, streamClaude, MODEL_ROUTING } = require('./anthropic');
 const { sanitizeDashesString } = require('../../utils/textSanitize');
 const { aggregate } = require('./insights');
@@ -155,10 +156,11 @@ async function buildResultsContext(missionId, userId) {
     .eq('id', missionId).eq('user_id', userId).single();
   if (!mission) return null;
 
-  const { data: responses } = await supabase
-    .from('mission_responses')
-    .select('persona_id, persona_profile, question_id, answer, screened_out')
-    .eq('mission_id', missionId);
+  const { data: responses } = await fetchAllResponses(supabase, {
+    missionId,
+    columns: 'persona_id, persona_profile, question_id, answer, screened_out',
+    label: 'chat:buildResultsContext',
+  });
 
   // Pass 48 — ground the copilot on the SAME CanonicalReport the web page
   // and exports render, so the chat can never cite a number that differs

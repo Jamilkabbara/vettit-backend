@@ -14,16 +14,18 @@
 const logger = require('../../utils/logger');
 const { buildCanonicalReport } = require('../report/buildReport');
 const { clusterOpenEndThemes } = require('../ai/openEndThemes');
+const fetchAllResponses = require('../../db/fetchAllResponses');
 
 /** Process one mission: cluster each text question's verbatims, persist. */
 async function backfillOne(supabase, mission) {
   if (mission.insights && mission.insights.open_end_themes
       && Object.keys(mission.insights.open_end_themes).length) return false; // idempotent
 
-  const { data: responses, error } = await supabase
-    .from('mission_responses')
-    .select('question_id, answer, persona_profile, screened_out')
-    .eq('mission_id', mission.id);
+  const { data: responses, error } = await fetchAllResponses(supabase, {
+    missionId: mission.id,
+    columns: 'question_id, answer, persona_profile, screened_out',
+    label: 'backfill:open_end_themes',
+  });
   if (error || !responses || !responses.length) return false;
 
   const clean = responses.filter(

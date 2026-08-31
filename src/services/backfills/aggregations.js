@@ -22,13 +22,15 @@
 
 const logger = require('../../utils/logger');
 const { aggregate } = require('../ai/insights');
+const fetchAllResponses = require('../../db/fetchAllResponses');
 
 async function backfillOne(supabase, mission) {
-  let { data: responses, error } = await supabase
-    .from('mission_responses')
-    .select('question_id, answer, persona_id')
-    .eq('mission_id', mission.id)
-    .eq('screened_out', false);
+  let { data: responses, error } = await fetchAllResponses(supabase, {
+    missionId: mission.id,
+    columns: 'question_id, answer, persona_id',
+    eq: { screened_out: false },
+    label: 'backfill:aggregations',
+  });
   if (error) {
     logger.warn('aggregations backfill: responses fetch failed', {
       missionId: mission.id, err: error.message,
@@ -37,10 +39,11 @@ async function backfillOne(supabase, mission) {
   }
   if (!responses || responses.length === 0) {
     // Fallback: legacy rows where always-deliver flagged everything.
-    const all = await supabase
-      .from('mission_responses')
-      .select('question_id, answer, persona_id')
-      .eq('mission_id', mission.id);
+    const all = await fetchAllResponses(supabase, {
+      missionId: mission.id,
+      columns: 'question_id, answer, persona_id',
+      label: 'backfill:aggregations:legacy-fallback',
+    });
     if (all.error || !all.data || all.data.length === 0) {
       logger.info('aggregations backfill: no responses at all; skipping', {
         missionId: mission.id,

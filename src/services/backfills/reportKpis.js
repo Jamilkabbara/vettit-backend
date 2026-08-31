@@ -17,6 +17,7 @@
 const logger = require('../../utils/logger');
 const { buildCanonicalReport } = require('../report/buildReport');
 const { deterministicKpis, deterministicRecommendations } = require('../ai/reportSummaries');
+const fetchAllResponses = require('../../db/fetchAllResponses');
 
 /** Pure compute: grounded KPIs + recommendations from a mission + responses. */
 function computeReportKpis(mission, responses) {
@@ -39,10 +40,11 @@ async function backfillOne(supabase, mission) {
   const existingRecs = Array.isArray(mission.insights?.recommendations)
     ? mission.insights.recommendations.filter((r) => typeof r === 'string' && r.trim()) : [];
 
-  const { data: responses, error } = await supabase
-    .from('mission_responses')
-    .select('question_id, answer, persona_profile, screened_out')
-    .eq('mission_id', mission.id);
+  const { data: responses, error } = await fetchAllResponses(supabase, {
+    missionId: mission.id,
+    columns: 'question_id, answer, persona_profile, screened_out',
+    label: 'backfill:report_kpis',
+  });
   if (error) {
     logger.warn('[backfill:report-kpis] fetch responses failed', { missionId: mission.id, err: error.message });
     return false;

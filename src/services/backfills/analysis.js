@@ -15,13 +15,15 @@
 
 const logger = require('../../utils/logger');
 const { computeAnalysis } = require('../analysis');
+const fetchAllResponses = require('../../db/fetchAllResponses');
 
 async function backfillOne(supabase, mission) {
-  let { data: rows, error } = await supabase
-    .from('mission_responses')
-    .select('persona_id, persona_profile, question_id, answer, exposure_status')
-    .eq('mission_id', mission.id)
-    .eq('screened_out', false);
+  let { data: rows, error } = await fetchAllResponses(supabase, {
+    missionId: mission.id,
+    columns: 'persona_id, persona_profile, question_id, answer, exposure_status',
+    eq: { screened_out: false },
+    label: 'backfill:analysis',
+  });
   if (error) {
     logger.warn('analysis backfill: responses fetch failed', {
       missionId: mission.id, err: error.message,
@@ -29,10 +31,11 @@ async function backfillOne(supabase, mission) {
     return false;
   }
   if (!rows || rows.length === 0) {
-    const all = await supabase
-      .from('mission_responses')
-      .select('persona_id, persona_profile, question_id, answer, exposure_status')
-      .eq('mission_id', mission.id);
+    const all = await fetchAllResponses(supabase, {
+      missionId: mission.id,
+      columns: 'persona_id, persona_profile, question_id, answer, exposure_status',
+      label: 'backfill:analysis:legacy-fallback',
+    });
     if (all.error || !all.data || all.data.length === 0) {
       logger.info('analysis backfill: no responses at all; skipping', {
         missionId: mission.id,

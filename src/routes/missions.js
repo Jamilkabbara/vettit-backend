@@ -3,6 +3,7 @@ const { randomUUID } = require('crypto');
 const router = express.Router();
 const { authenticate, optionalAuthenticate } = require('../middleware/auth');
 const supabase = require('../db/supabase');
+const fetchAllResponses = require('../db/fetchAllResponses');
 const { calculateMissionPrice, extractCountriesFromMission } = require('../utils/pricingEngine');
 const { runMission } = require('../jobs/runMission');
 const { sanitizeMissionPatch, updateMission } = require('../db/missionSchema');
@@ -912,11 +913,12 @@ router.get('/:id/chart_data', authenticate, async (req, res, next) => {
     // into the chart shapes, so "Response Distributions", "The full survey", and
     // every export read ONE source of truth — the fork is gone. _source reflects
     // that. (Previously two code paths recomputed distributions independently.)
-    const { data: responses, error: respErr } = await supabase
-      .from('mission_responses')
-      .select('question_id, answer, persona_profile')
-      .eq('mission_id', missionId)
-      .eq('screened_out', false);
+    const { data: responses, error: respErr } = await fetchAllResponses(supabase, {
+      missionId,
+      columns: 'question_id, answer, persona_profile',
+      eq: { screened_out: false },
+      label: 'missions:chart_data',
+    });
     if (respErr) {
       logger.error('chart_data: fetch responses failed', { missionId, err: respErr.message });
       return res.status(500).json({ error: 'fetch_responses_failed' });
