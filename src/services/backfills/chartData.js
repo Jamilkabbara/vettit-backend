@@ -13,6 +13,7 @@
 
 const logger = require('../../utils/logger');
 const { buildCanonicalReport } = require('../report/buildReport');
+const fetchAllResponses = require('../../db/fetchAllResponses');
 
 /**
  * Pass 50 B3 — chart_data per-question distributions are now a PROJECTION of
@@ -151,11 +152,12 @@ function computeChartData(mission, responses) {
  * Returns true if chart_data was written, false if skipped.
  */
 async function backfillOne(supabase, mission) {
-  const { data: responses, error } = await supabase
-    .from('mission_responses')
-    .select('question_id, answer, persona_profile')
-    .eq('mission_id', mission.id)
-    .eq('screened_out', false);
+  const { data: responses, error } = await fetchAllResponses(supabase, {
+    missionId: mission.id,
+    columns: 'question_id, answer, persona_profile',
+    eq: { screened_out: false },
+    label: 'backfill:chart_data',
+  });
   if (error) {
     logger.warn('[backfill:chart_data] fetch responses failed', { missionId: mission.id, err: error.message });
     return false;

@@ -45,6 +45,10 @@ function makeSupabase({ spendSequence = [] } = {}) {
       const self = {
         select: () => self,
         eq: () => self,
+        // Pass 51 — the prior-rows read now pages through fetchAllResponses,
+        // so the stub self must also answer .order() and .range().
+        order: () => self,
+        range: () => self,
         single: async () => {
           const spend = spendSequence[Math.min(spendIdx, spendSequence.length - 1)] ?? 0;
           spendIdx += 1;

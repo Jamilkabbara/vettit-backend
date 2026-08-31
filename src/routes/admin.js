@@ -3,6 +3,7 @@ const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const { adminOnly } = require('../middleware/adminOnly');
 const supabase = require('../db/supabase'); // service-role client for all admin queries (RPC + tables)
+const fetchAllResponses = require('../db/fetchAllResponses');
 const { isComingSoon, notAvailableError } = require('../config/comingSoon');
 const logger = require('../utils/logger');
 // Pass 42 F2 — Stripe promo sync. Lazy fail at call time so a
@@ -834,10 +835,11 @@ router.post('/missions/:id/reanalyze', async (req, res, next) => {
     }
 
     // 2. Load all responses (persona simulation already done)
-    const { data: responseRows, error: rErr } = await supabase
-      .from('mission_responses')
-      .select('persona_id, persona_profile, question_id, answer, screened_out')
-      .eq('mission_id', id);
+    const { data: responseRows, error: rErr } = await fetchAllResponses(supabase, {
+      missionId: id,
+      columns: 'persona_id, persona_profile, question_id, answer, screened_out',
+      label: 'admin:reanalyze',
+    });
     if (rErr) throw rErr;
     if (!responseRows || responseRows.length === 0) {
       return res.status(400).json({ error: 'No responses found for mission — cannot reanalyze' });
@@ -978,10 +980,11 @@ router.post('/missions/bulk-reanalyze', async (req, res, next) => {
           .from('missions').select('*').eq('id', missionId).single();
         if (!mission) throw new Error('mission not found');
 
-        const { data: responseRows } = await supabase
-          .from('mission_responses')
-          .select('persona_id, persona_profile, question_id, answer, screened_out')
-          .eq('mission_id', missionId);
+        const { data: responseRows } = await fetchAllResponses(supabase, {
+          missionId,
+          columns: 'persona_id, persona_profile, question_id, answer, screened_out',
+          label: 'admin:reanalyze-all',
+        });
         if (!responseRows || responseRows.length === 0) {
           throw new Error('no responses to reanalyze');
         }

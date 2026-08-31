@@ -122,6 +122,10 @@ function makeSupabaseMock(spendRef) {
         select: () => chain,
         update: () => chain,
         eq: () => chain,
+        // Pass 51 — the prior-rows read now pages through fetchAllResponses,
+        // so the stub chain must also answer .order() and .range().
+        order: () => chain,
+        range: () => chain,
         single: async () => ({
           data: { ai_spend_usd_actual: spendRef.value },
           error: null,

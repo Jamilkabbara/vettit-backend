@@ -9,13 +9,15 @@
 
 const logger = require('../../utils/logger');
 const { computeAnalysis } = require('../analysis');
+const fetchAllResponses = require('../../db/fetchAllResponses');
 
 /** Recompute + persist analysis for one mission. Returns true if written. */
 async function backfillOne(supabase, mission) {
-  const { data: responses, error } = await supabase
-    .from('mission_responses')
-    .select('question_id, answer, persona_id, persona_profile, screened_out')
-    .eq('mission_id', mission.id);
+  const { data: responses, error } = await fetchAllResponses(supabase, {
+    missionId: mission.id,
+    columns: 'question_id, answer, persona_id, persona_profile, screened_out',
+    label: 'backfill:centerpiece',
+  });
   if (error || !responses || responses.length === 0) return false;
 
   // Mirror runMission: carry exposure_status on each row (brand_lift lift math);

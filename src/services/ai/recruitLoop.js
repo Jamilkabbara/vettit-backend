@@ -40,6 +40,7 @@ const { generatePersonas } = require('./personas');
 const { simulateResponses, passesScreening } = require('./simulate');
 const { updateMission } = require('../../db/missionSchema');
 const { normalizeAnswerForStorage } = require('../../utils/answerValue');
+const fetchAllResponses = require('../../db/fetchAllResponses');
 
 /**
  * Returns true if the env flag is set and the mission has the
@@ -103,11 +104,12 @@ async function runRecruitmentLoop(mission, supabase) {
   let recruitedCount = 0;
   let qualifiedCount = 0;
 
-  const { data: priorRows, error: priorErr } = await supabase
-    .from('mission_responses')
-    .select('persona_id, persona_profile, question_id, answer, exposure_status')
-    .eq('mission_id', missionId)
-    .eq('screened_out', false);
+  const { data: priorRows, error: priorErr } = await fetchAllResponses(supabase, {
+    missionId,
+    columns: 'persona_id, persona_profile, question_id, answer, exposure_status',
+    eq: { screened_out: false },
+    label: 'recruitLoop:resume',
+  });
   if (priorErr) {
     logger.warn('Recruitment loop: prior-rows read failed (starting fresh)', {
       missionId, err: priorErr.message,

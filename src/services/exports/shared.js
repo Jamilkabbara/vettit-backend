@@ -4,6 +4,7 @@
  */
 
 const supabase = require('../../db/supabase');
+const fetchAllResponses = require('../../db/fetchAllResponses');
 const { aggregate } = require('../ai/insights');
 
 /**
@@ -30,10 +31,11 @@ async function loadMissionForExport(missionId, userId, opts = {}) {
     return { error: 'Results not ready yet — mission is not complete' };
   }
 
-  const { data: responses } = await supabase
-    .from('mission_responses')
-    .select('persona_id, persona_profile, question_id, answer, screened_out')
-    .eq('mission_id', missionId);
+  const { data: responses } = await fetchAllResponses(supabase, {
+    missionId,
+    columns: 'persona_id, persona_profile, question_id, answer, screened_out',
+    label: 'exports/shared:loadMissionResults',
+  });
 
   const allResponses = responses || [];
 
