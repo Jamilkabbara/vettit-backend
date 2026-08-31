@@ -320,10 +320,21 @@ async function runMission(missionId, opts = {}) {
       while (screenedOutPersonaIds.size > 0 && retryRound < MAX_VIOLATION_RETRY_ROUNDS) {
         retryRound += 1;
         const replacementCount = screenedOutPersonaIds.size;
+        // Pass 49 — startOffset is a HINT the model can ignore (ids are
+        // model-assigned; see personas.js). Pass the ids we already hold so
+        // generatePersonas can drop a collision and top up, rather than
+        // handing simulate two different people under one persona_id.
+        const heldPersonaIds = new Set(
+          personas.map((p) => p && (p.persona_id || p.id)).filter(Boolean).map(String),
+        );
         const replacementPersonas = await generatePersonas(
           mission,
           replacementCount,
-          { stricter: true, startOffset: personas.length + retryRound * 1000 },
+          {
+            stricter: true,
+            startOffset: personas.length + retryRound * 1000,
+            excludeIds: heldPersonaIds,
+          },
         );
         const replacementResponses = await simulateAllResponses(
           replacementPersonas,
