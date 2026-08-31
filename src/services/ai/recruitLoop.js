@@ -41,6 +41,9 @@ const { simulateResponses, passesScreening } = require('./simulate');
 const { updateMission } = require('../../db/missionSchema');
 const { normalizeAnswerForStorage } = require('../../utils/answerValue');
 const fetchAllResponses = require('../../db/fetchAllResponses');
+// Pass 48 — idempotent persistence. A resumed (or concurrently re-entered)
+// run must never re-insert a (persona_id, question_id) it already stored.
+const { persistResponseRows, responseKey } = require('./persistResponses');
 
 /**
  * Returns true if the env flag is set and the mission has the
@@ -115,9 +118,23 @@ async function runRecruitmentLoop(mission, supabase) {
       missionId, err: priorErr.message,
     });
   }
+  // Pass 48 — the natural keys already stored for this mission. Seeded
+  // from the very rows we read above (no extra query) and mutated by
+  // persistResponseRows as each persona is written, so the per-persona
+  // insert below can skip anything a previous attempt already persisted.
+  // The DB unique index is the authority under concurrency; this set is
+  // the cheap sequential-resume guard.
+  const persistedKeys = new Set();
+  // Persona ids are LLM-assigned sequentially ("P001", "P002", … — see
+  // personas.js "Starting persona ID index"), so a resumed run can
+  // regenerate an id it already holds. Counting that persona twice would
+  // let the loop "hit target" with fewer distinct respondents than the
+  // customer paid for, so it is treated as a wasted generation.
+  const knownPersonaIds = new Set();
   if (Array.isArray(priorRows) && priorRows.length > 0) {
     const personasById = new Map();
     for (const r of priorRows) {
+      persistedKeys.add(responseKey(missionId, r.persona_id, r.question_id));
       if (r.persona_id && !personasById.has(r.persona_id)) {
         personasById.set(r.persona_id, r.persona_profile || { id: r.persona_id, persona_id: r.persona_id });
       }
@@ -130,6 +147,7 @@ async function runRecruitmentLoop(mission, supabase) {
       });
     }
     qualifiedPersonas.push(...personasById.values());
+    for (const pid of personasById.keys()) knownPersonaIds.add(pid);
     qualifiedCount = personasById.size;
     recruitedCount = Math.max(Number(mission.recruited_persona_count) || 0, qualifiedCount);
   }
@@ -257,6 +275,21 @@ async function runRecruitmentLoop(mission, supabase) {
     }
     recruitedCount += 1;
 
+    // ── Pass 48 — duplicate-persona guard ──────────────────────────────
+    // The generator was asked for ids starting at recruitedCount, but on
+    // a resume (or a concurrent second run of the same mission) it can
+    // still hand back an id we already hold. Simulating and counting it
+    // would (a) add a second, DIVERGENT set of answers for one persona
+    // and (b) inflate qualifiedCount so the loop terminates below the
+    // real distinct-respondent target. Discard before paying for the
+    // survey; the max-personas guard bounds the retry.
+    if (persona.id && knownPersonaIds.has(persona.id)) {
+      logger.warn('Recruitment loop: generated a persona_id already persisted; discarding', {
+        missionId, personaId: persona.id, recruitedCount, qualifiedCount,
+      });
+      continue;
+    }
+
     // ── Pass 46 Phase 2 — brand_lift exposure tagging IN-LOOP ──────────
     // simulate.js branches on persona._exposure_status to inject the
     // exposed-uplift / control-baseline instructions. The old loop path
@@ -333,6 +366,7 @@ async function runRecruitmentLoop(mission, supabase) {
 
     // ── Qualified! Capture responses + bump counts ─────────────────────
     qualifiedPersonas.push(persona);
+    if (persona.id) knownPersonaIds.add(persona.id);
     const personaResponses = [];
     for (const r of keptResponses) {
       const entry = {
@@ -367,10 +401,23 @@ async function runRecruitmentLoop(mission, supabase) {
       screened_out:    false,
       exposure_status: persona._exposure_status || 'not_applicable',
     }));
-    const { error: insErr } = await supabase.from('mission_responses').insert(insertRows);
-    if (insErr) {
+    //
+    // Pass 48 — routed through persistResponseRows so a resumed or
+    // concurrently re-entered run cannot append a second copy of a
+    // persona it already stored. `persistedKeys` was seeded from the
+    // prior-rows read above and is mutated here as rows are written.
+    const persistResult = await persistResponseRows(supabase, missionId, insertRows, {
+      knownKeys: persistedKeys,
+      caller: 'recruitLoop: incremental',
+    });
+    if (persistResult.skipped > 0) {
+      logger.warn('Recruitment loop: persona rows already persisted — skipped re-insert', {
+        missionId, personaId: persona.id, skipped: persistResult.skipped,
+      });
+    }
+    if (persistResult.error) {
       logger.warn('Recruitment loop: incremental persist failed (will retry at completion)', {
-        missionId, personaId: persona.id, err: insErr.message,
+        missionId, personaId: persona.id, err: persistResult.error.message,
       });
       unpersistedResponses.push(...personaResponses);
     }

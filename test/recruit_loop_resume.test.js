@@ -62,6 +62,13 @@ function makeSupabase({ spendSequence = [], priorResponseRows = [] } = {}) {
           if (inserts[table]) inserts[table].push(...(Array.isArray(rows) ? rows : [rows]));
           return { error: null };
         },
+        // Pass 48 — persistResponseRows writes via upsert (ON CONFLICT DO
+        // NOTHING); record it exactly like insert so the existing
+        // assertions on inserts.mission_responses keep working.
+        upsert: async (rows) => {
+          if (inserts[table]) inserts[table].push(...(Array.isArray(rows) ? rows : [rows]));
+          return { error: null };
+        },
         then: (resolve) => resolve({
           data: table === 'mission_responses' ? priorResponseRows : null,
           error: null,

@@ -62,6 +62,19 @@ const JOB1_INTERVAL_MS_DEFAULT = 10 * 60 * 1000; // 10 min
 // 6h is a true catastrophic-hang backstop, not the primary recovery.
 const JOB1_STUCK_AFTER_HOURS = 6;
 
+// Pass 48 — Job 3 must not re-enter a mission that is STILL RUNNING.
+// The sweep fires 20s after boot and selects every mission in
+// status='processing' with no age gate at all. On a rolling Railway
+// deploy the new pod boots while a mission started seconds earlier on
+// the draining pod is mid-flight, so Job 3 re-entered it with
+// {resume:true} — which by design bypasses runMission's idempotency
+// claim. Two full generate+simulate runs then raced, each inserting a
+// complete copy of the dataset with DIFFERENT personas and answers
+// (production: 3 missions, 785 duplicate rows). A genuinely stranded
+// mission stays stranded, so waiting this long before resuming costs
+// nothing; Job 1 does not auto-fail until 6h.
+const JOB3_MIN_STRANDED_AGE_MIN = Number(process.env.JOB3_MIN_STRANDED_AGE_MINUTES || 15);
+
 const JOB2_NAME = 'mission_recovery_orphan_pending_payment';
 // Pass 46 Phase 2 — audit P0-1: with no Stripe webhook configured this
 // cron was the ONLY real-payment trigger, at 30min cadence + 6h age
@@ -466,10 +479,35 @@ async function runJob3BootResume() {
         logger.info('[cron] job3 boot resume: no stranded processing missions');
         return;
       }
-      logger.warn('[cron] job3 boot resume: re-entering stranded missions', {
-        count: stranded.length, ids: stranded.map((m) => m.id),
+      // Pass 48 — age gate. A mission that started moments ago is almost
+      // certainly still executing (possibly on the pod we are replacing);
+      // resuming it produces a concurrent second run whose responses land
+      // as duplicates. Only re-enter missions old enough that no live run
+      // could plausibly still own them.
+      const cutoffMs = Date.now() - JOB3_MIN_STRANDED_AGE_MIN * 60 * 1000;
+      const tooYoung = [];
+      const resumable = stranded.filter((m) => {
+        // No started_at on a 'processing' row means the claim never
+        // stamped it — treat as genuinely stranded.
+        if (!m.started_at) return true;
+        const startedMs = new Date(m.started_at).getTime();
+        if (!Number.isFinite(startedMs)) return true;
+        if (startedMs > cutoffMs) { tooYoung.push(m.id); return false; }
+        return true;
       });
-      for (const m of stranded) {
+      if (tooYoung.length > 0) {
+        logger.info('[cron] job3 boot resume: skipping recently-started missions (likely still running)', {
+          skipped: tooYoung.length, ids: tooYoung, minAgeMin: JOB3_MIN_STRANDED_AGE_MIN,
+        });
+      }
+      if (resumable.length === 0) {
+        logger.info('[cron] job3 boot resume: no missions past the min-age gate');
+        return;
+      }
+      logger.warn('[cron] job3 boot resume: re-entering stranded missions', {
+        count: resumable.length, ids: resumable.map((m) => m.id),
+      });
+      for (const m of resumable) {
         setImmediate(() => {
           runMission(m.id, { resume: true }).catch((err) => {
             logger.error('[cron] job3 resume runMission failed', {
@@ -551,5 +589,7 @@ module.exports = {
   // exported for tests / one-off admin tooling
   runJob1,
   runJob2,
+  runJob3BootResume,
   reconcileOrphanPendingPayment,
+  JOB3_MIN_STRANDED_AGE_MIN,
 };
