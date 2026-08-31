@@ -154,12 +154,62 @@ function buildViewModel(pack) {
     // D7 — deep-scrub the raw LLM creative_analysis so the CA-specific PDF
     // sections inherit the no-dash rule (the canonical `model` already is).
     ca: sanitizeDashesDeep(mission?.creative_analysis || null),
+    // PR 2 enrichment — precomputed rows the CA template can't derive in
+    // Handlebars: effectiveness sub-scores joined with their weights, and the
+    // full 24-emotion profile (frame-averaged) chunked into 3-pair table rows.
+    ...buildCaViewExtras(mission?.creative_analysis || null),
     media_url: mission?.media_url || null,
     brand_name: sanitizeDashesString(mission?.brand_name) || null,
 
     fontFaceCss:        getFontFaceCss(),
     baseCss:            loadBaseCss(),
   };
+}
+
+/* ─── PR 2 — CA view-model extras (effectiveness rows + emotion grid) ───── */
+
+function buildCaViewExtras(ca) {
+  if (!ca || typeof ca !== 'object') {
+    return { caComponents: null, caEmotions: [], caEmotionRows: [], caMultiFrame: false };
+  }
+  // Effectiveness components joined with weights, heaviest weight first.
+  const comp = (ca.creative_effectiveness && ca.creative_effectiveness.components) || null;
+  const weights = (ca.creative_effectiveness && ca.creative_effectiveness.weights) || {};
+  const caComponents = comp
+    ? Object.entries(comp)
+      .map(([key, score]) => ({
+        label: String(key).replace(/_/g, ' '),
+        score: Math.round(Number(score) || 0),
+        weight: weights[key] != null ? `${Math.round(Number(weights[key]) * 100)}%` : '',
+        _w: Number(weights[key]) || 0,
+      }))
+      .sort((a, b) => b._w - a._w)
+    : null;
+
+  // Full emotion profile: average each emotion across frames, sort desc.
+  const frames = Array.isArray(ca.frame_analyses) ? ca.frame_analyses : [];
+  const sums = new Map();
+  for (const f of frames) {
+    const emo = (f && f.emotions) || {};
+    for (const [name, v] of Object.entries(emo)) {
+      const n = Number(v);
+      if (!Number.isFinite(n)) continue;
+      const cur = sums.get(name) || { total: 0, count: 0 };
+      cur.total += n; cur.count += 1;
+      sums.set(name, cur);
+    }
+  }
+  const caEmotions = [...sums.entries()]
+    .map(([name, { total, count }]) => {
+      const score = Math.round(total / Math.max(1, count));
+      return { name: name.replace(/_/g, ' '), score, hot: score > 50 };
+    })
+    .sort((a, b) => b.score - a.score);
+  // 3 name/score pairs per printed row keeps 24 emotions to 8 rows.
+  const caEmotionRows = [];
+  for (let i = 0; i < caEmotions.length; i += 3) caEmotionRows.push(caEmotions.slice(i, i + 3));
+
+  return { caComponents, caEmotions, caEmotionRows, caMultiFrame: frames.length > 1 };
 }
 
 /* ─── Mission-type → body-template selection ────────────────────────────── */

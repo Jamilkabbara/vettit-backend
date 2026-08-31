@@ -69,6 +69,21 @@
     </tbody>
   </table>
   {{/if}}
+
+  {{#if ca.attention.attention_decay_curve.length}}
+  <div class="section-eyebrow trailing-block">· Attention decay</div>
+  <div class="section-divider"></div>
+  <table style="width:100%; border-collapse:collapse; font-size:10.5pt;">
+    <tbody>
+      {{#each ca.attention.attention_decay_curve}}
+      <tr style="border-bottom: 0.5pt solid var(--border);">
+        <td style="padding:5pt 8pt 5pt 0; color: var(--text2);">At {{this.second}}s</td>
+        <td style="padding:5pt 0; text-align:right; color: var(--lime); font-weight:700; font-variant-numeric: tabular-nums;">{{this.active_pct}}% active</td>
+      </tr>
+      {{/each}}
+    </tbody>
+  </table>
+  {{/if}}
 </section>
 
 {{!-- ─── CENTERPIECE — channel fit (where this creative earns attention) ─ --}}
@@ -97,6 +112,61 @@
 </section>
 {{/if}}
 
+{{!-- ─── EFFECTIVENESS BREAKDOWN — sub-scores + weights ─────────── --}}
+{{#if ca.creative_effectiveness.components}}
+<section class="page">
+  <div class="section-eyebrow">· Effectiveness Breakdown</div>
+  <div class="section-divider"></div>
+  <p class="lede" style="margin-bottom:10pt;">How the {{ca.creative_effectiveness.score}}/100 effectiveness score is composed: each sub-score, and the weight it carries.</p>
+  <table style="width:100%; border-collapse:collapse; font-size:10.5pt;">
+    <thead>
+      <tr style="border-bottom: 1pt solid var(--border);">
+        <th style="text-align:left; padding:6pt 0; color: var(--text3);">Component</th>
+        <th style="text-align:right; padding:6pt 0; color: var(--text3);">Score (0-100)</th>
+        <th style="text-align:right; padding:6pt 0; color: var(--text3);">Weight</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{#each caComponents}}
+      <tr style="border-bottom: 0.5pt solid var(--border);">
+        <td style="padding:5pt 8pt 5pt 0; color: var(--text1); text-transform:capitalize;">{{this.label}}</td>
+        <td style="padding:5pt 0; text-align:right; color: var(--lime); font-weight:700; font-variant-numeric: tabular-nums;">{{this.score}}</td>
+        <td style="padding:5pt 0; text-align:right; color: var(--text2); font-variant-numeric: tabular-nums;">{{this.weight}}</td>
+      </tr>
+      {{/each}}
+    </tbody>
+  </table>
+</section>
+{{/if}}
+
+{{!-- ─── VS CATEGORY BENCHMARK ─────────────────────────────────── --}}
+{{#if ca.summary.vs_benchmark}}
+<section class="page">
+  <div class="section-eyebrow">· Vs Category Benchmark</div>
+  <div class="section-divider"></div>
+  <p class="lede">{{ca.summary.vs_benchmark}}</p>
+</section>
+{{/if}}
+
+{{!-- ─── BEST PLATFORM FIT — per-platform rationale ─────────────── --}}
+{{#if ca.summary.best_platform_fit.length}}
+<section class="page">
+  <div class="section-eyebrow">· Best Platform Fit</div>
+  <div class="section-divider"></div>
+  {{#each ca.summary.best_platform_fit}}
+  <div class="followup">
+    <div class="bar-row">
+      <div></div>
+      <div class="bar-row-label">{{this.platform}}</div>
+      <div class="bar-track"><div class="bar-fill" style="width: {{this.fit_score}}%"></div></div>
+      <div class="bar-row-meta">{{this.fit_score}}/100</div>
+    </div>
+    {{#if this.rationale}}<p class="followup-rationale">{{this.rationale}}</p>{{/if}}
+  </div>
+  {{/each}}
+</section>
+{{/if}}
+
 {{!-- ─── EMOTIONAL PROFILE — peak emotions + what they mean ─────── --}}
 {{#if ca.summary.emotion_peaks.length}}
 <section class="page">
@@ -113,6 +183,27 @@
     {{#if this.interpretation}}<p class="followup-rationale">{{this.interpretation}}</p>{{/if}}
   </div>
   {{/each}}
+</section>
+{{/if}}
+
+{{!-- ─── FULL EMOTION PROFILE — all 24 scored emotions ──────────── --}}
+{{#if caEmotions.length}}
+<section class="page">
+  <div class="section-eyebrow">· Full Emotion Profile (24 emotions, 0-100)</div>
+  <div class="section-divider"></div>
+  <table style="width:100%; border-collapse:collapse; font-size:9.5pt;">
+    <tbody>
+      {{#each caEmotionRows}}
+      <tr style="border-bottom: 0.5pt solid var(--border);">
+        {{#each this}}
+        <td style="padding:4pt 8pt 4pt 0; color: var(--text2); text-transform:capitalize;">{{this.name}}</td>
+        <td style="padding:4pt 16pt 4pt 0; text-align:right; color: {{#if this.hot}}var(--lime){{else}}var(--text3){{/if}}; font-weight:{{#if this.hot}}700{{else}}400{{/if}}; font-variant-numeric: tabular-nums;">{{this.score}}</td>
+        {{/each}}
+      </tr>
+      {{/each}}
+    </tbody>
+  </table>
+  <p class="followup-rationale" style="margin-top:8pt;">Averaged across {{ca.frame_analyses.length}} analyzed frame{{#if caMultiFrame}}s{{/if}}. Scores above 50 indicate a clear primary read.</p>
 </section>
 {{/if}}
 
@@ -155,6 +246,9 @@
     {{#if this.brief_description}}<p class="followup-rationale">{{this.brief_description}}</p>{{/if}}
     {{#if this.audience_resonance}}<p class="followup-rationale" style="color: var(--text3);">Audience resonance: {{this.audience_resonance}}</p>{{/if}}
     {{#if this.message_clarity}}<p class="followup-rationale" style="color: var(--text3);">Message clarity: {{this.message_clarity}}</p>{{/if}}
+    {{#if this.attention_hotspots.length}}
+    <p class="followup-rationale" style="color: var(--text3);">Attention hotspots: {{#each this.attention_hotspots}}{{#unless @first}} · {{/unless}}{{this}}{{/each}}</p>
+    {{/if}}
   </div>
   {{/each}}
 </section>
