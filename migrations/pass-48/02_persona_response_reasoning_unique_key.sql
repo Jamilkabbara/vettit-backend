@@ -1,0 +1,67 @@
+-- Pass 48 — persona_response_reasoning natural-key uniqueness.
+--
+-- ############################################################
+-- ##  NOT APPLIED. ORDERING DEPENDENCY — READ BEFORE RUNNING ##
+-- ############################################################
+--
+-- This migration WILL FAIL on live data until the duplicates are
+-- removed. Production currently holds 15 duplicate rows in 1 mission
+-- (survey run 2026-08-31, read-only, 1865 rows across 42 missions):
+--
+--   af36a36d-401d-48e6-b94b-257e215613e2    37 rows / 22 distinct keys
+--     multiplicity: 12 keys x1, 5 keys x2, 5 keys x3
+--     10 duplicated keys, 10/10 with DIVERGENT reasoning_text,
+--     8/10 with divergent response_value
+--
+-- REQUIRED ORDER:
+--   1. node scripts/dedupe-persona-response-reasoning.js            (dry run)
+--   2. node scripts/dedupe-persona-response-reasoning.js --execute  (owner only)
+--   3. apply THIS file
+--
+-- Running this file before step 2 raises
+--   ERROR 23505: could not create unique index
+--                "prr_mission_persona_question_key"
+--   DETAIL: Key (mission_id, persona_id, question_id)=(...) is duplicated.
+-- and changes nothing (index creation is transactional).
+--
+-- INDEPENDENT OF 01. This file and
+-- 01_mission_responses_unique_key.sql touch different tables and have
+-- no ordering relationship to each other — each only requires its OWN
+-- dedupe script to have run first. They may be applied in either order,
+-- or one without the other.
+--
+-- WHY THE CONSTRAINT
+-- ------------------
+-- (mission_id, persona_id, question_id) is the natural key here exactly
+-- as it is for mission_responses: at most one "why" trace per persona
+-- per question. runMission's completion block builds `reasoningRows`
+-- from the very same in-memory `responses` array that feeds
+-- mission_responses and pushed it through a second UNCONDITIONAL
+-- chunked insert, so every mechanism that duplicated mission_responses
+-- duplicated this table in lockstep. af36a36d shows the signature
+-- plainly: 37 rows / 22 distinct keys in BOTH tables.
+--
+-- AT MOST ONE, NOT EXACTLY ONE
+-- ----------------------------
+-- A missing row is legitimate and stays legitimate. Reasoning is
+-- persisted only for missions with <= 50 personas (Pass 22 Bug 22.14
+-- cap) and only for responses where the simulator emitted a non-empty
+-- reasoning string. A unique index constrains duplicates only and never
+-- requires a row to exist, so sparse coverage is unaffected. This is
+-- also why the blast radius is 1 mission rather than 3: the other two
+-- duplicated missions (bdae4d45, 23389bb1) have zero reasoning rows.
+--
+-- WHY IT MATTERS AT READ TIME
+-- ---------------------------
+-- GET /api/results/:missionId/reasoning (src/routes/results.js) filters
+-- by response_value to power the "why did this persona answer X?" modal
+-- and orders created_at DESCENDING. With duplicates present that modal
+-- shows the SAME persona several times giving contradictory reasons,
+-- and the descending order surfaces the LATEST run first — the run that
+-- bypassed the idempotency claim and should never have existed.
+
+CREATE UNIQUE INDEX IF NOT EXISTS prr_mission_persona_question_key
+  ON public.persona_response_reasoning (mission_id, persona_id, question_id);
+
+COMMENT ON INDEX public.prr_mission_persona_question_key IS
+  'Pass 48 — natural key of persona_response_reasoning (at most one "why" trace per persona per question). Written from the same responses array as mission_responses by the same runMission completion block, so the same re-entered-run duplication applied here (15 duplicate rows on af36a36d before the pass-48 dedupe). Sparse by design: reasoning is only stored for missions <=50 personas and only when the simulator emitted a reasoning string.';
