@@ -28,6 +28,7 @@ const { generatePersonas } = require('../services/ai/personas');
 const { simulateAllResponses } = require('../services/ai/simulate');
 const { normalizeAnswerForStorage } = require('../utils/answerValue');
 const { synthesizeInsights, aggregate } = require('../services/ai/insights');
+const { buildSimMeta } = require('../services/ai/simMeta');
 const { generateTargetingBrief } = require('../services/ai/targetingBrief');
 const { analyzeCreative }       = require('../services/ai/creativeAttention');
 const { updateMission } = require('../db/missionSchema');
@@ -469,6 +470,14 @@ async function runMission(missionId, opts = {}) {
     let insights = null;
     try {
       insights = await synthesizeInsights(mission, responses, analysis);
+      // Simulation-honesty PR - audit stamp: which models answered, at what
+      // temperature, under which sim version (see simMeta.js). Lives inside
+      // the insights JSONB so no migration is needed and it persists with
+      // the mission for later comparability checks (e.g. brand-lift missions
+      // before/after the emergent-lift switch are not level-comparable).
+      if (insights && typeof insights === 'object') {
+        insights._sim_meta = buildSimMeta();
+      }
     } catch (analysisErr) {
       logger.error('Mission run: synthesizeInsights failed (non-fatal)', {
         missionId, err: analysisErr.message,
