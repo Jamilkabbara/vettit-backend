@@ -3,6 +3,7 @@ const router = express.Router();
 const { optionalAuthenticate, authenticate } = require('../middleware/auth');
 const ai = require('../services/claudeAI');
 const { callClaude, extractJSON } = require('../services/ai/anthropic');
+const { CATEGORY_PROMPT_BLOCK, normalizeCategory } = require('../services/ai/missionCategory');
 const logger = require('../utils/logger');
 
 // POST /api/ai/generate-survey
@@ -49,7 +50,16 @@ router.post('/generate-survey', optionalAuthenticate, async (req, res, next) => 
 //
 // Contract:
 //   Request:  { goal: string|null, brief: string }
-//   Response: { questions: Array<{ id, question, chips: [{id,label}], defaultChipId? }> }
+//   Response: { questions: Array<{...}>, category: string|null }
+//
+// Benchmark category: this SAME call also returns a normalised market
+// category drawn from a closed taxonomy (services/ai/missionCategory.js).
+// It rides on the existing adaptive-clarify request — no second Claude
+// call, no extra round trip, ~10 extra output tokens. `category` is one
+// of MISSION_CATEGORIES' keys whenever the call succeeded (unknown or
+// missing model output is coerced to `other`), and null ONLY when the
+// call itself failed — so "never classified" stays distinguishable from
+// "genuinely other" and callers never persist a category they didn't earn.
 //
 // Frontend aborts after 800 ms, so we use Haiku (fast + cheap) and cap
 // max_tokens tightly. Invalid JSON → 400; empty array is legitimate
@@ -63,7 +73,9 @@ Rules:
 - Each question is under 10 words, plain English, no jargon.
 - Each question has 3-4 chip-style answer options, each under 5 words.
 - Prefer concrete dimensions: target market/geography, product stage, pricing sensitivity, audience type, timeframe.
-- Reject gibberish: if the brief has no discernible subject, return an error object instead of questions.`;
+- Reject gibberish: if the brief has no discernible subject, return an error object instead of questions.
+
+${CATEGORY_PROMPT_BLOCK}`;
 
 router.post('/clarify', optionalAuthenticate, async (req, res, next) => {
   try {
@@ -90,10 +102,12 @@ Return this exact JSON shape:
       ],
       "defaultChipId": "global"
     }
-  ]
+  ],
+  "category": "food_beverage"
 }
 
-If the brief already answers everything, return { "questions": [] }.
+"category" is REQUIRED on every response, including when "questions" is empty.
+If the brief already answers everything, return { "questions": [], "category": "<key>" }.
 If the brief is gibberish/non-English/one-word, return { "error": "gibberish" } instead.`;
 
     const response = await callClaude({
@@ -101,7 +115,9 @@ If the brief is gibberish/non-English/one-word, return { "error": "gibberish" } 
       userId: req.user?.id,
       systemPrompt: CLARIFY_SYSTEM_PROMPT,
       messages: [{ role: 'user', content: userPrompt }],
-      maxTokens: 600,
+      // 600 → 640 to cover the single extra "category" key. The
+      // classification rides on this existing call; it is not a new one.
+      maxTokens: 640,
     });
 
     let parsed;
@@ -109,7 +125,9 @@ If the brief is gibberish/non-English/one-word, return { "error": "gibberish" } 
       parsed = extractJSON(response.text);
     } catch (err) {
       logger.warn('clarify: parse failed, returning empty questions', { err: err.message });
-      return res.json({ questions: [] });
+      // null (not 'other'): nothing was classified, so callers must not
+      // persist a category they did not earn. Backfill picks these up.
+      return res.json({ questions: [], category: null });
     }
 
     if (parsed.error) {
@@ -138,12 +156,17 @@ If the brief is gibberish/non-English/one-word, return { "error": "gibberish" } 
       })
       .filter(Boolean);
 
-    res.json({ questions });
+    // Unknown / missing / non-string → 'other' (never null here): the model
+    // had its chance on a call that succeeded, and a shared bucket is
+    // benchmarkable where a bespoke string is not.
+    const category = normalizeCategory(parsed.category);
+
+    res.json({ questions, category });
   } catch (err) {
     logger.warn('clarify: upstream failure, returning empty', { err: err.message });
     // Frontend treats empty as "fall back to static cards" — never surface
     // the AI failure to the user mid-setup.
-    res.json({ questions: [] });
+    res.json({ questions: [], category: null });
   }
 });
 
