@@ -29,6 +29,36 @@ const APPLY = process.argv.includes('--apply');
 const DELETE_TEST_MISSIONS = process.argv.includes('--delete-test-missions');
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'kabbarajamil@gmail.com';
 
+// ── [UN-GATE TEST] mission selection (ported from purge-audit-pass-missions.js) ──
+// Single source of truth for the mission marker: BOTH the dry-run listing and
+// the --apply delete route through selectTestMissions() so the filter can never
+// drift between "what it says it will do" and "what it does".
+// In Postgres ILIKE only % and _ are wildcards — the brackets are literal — so
+// '[UN-GATE TEST]%' is a prefix-anchored match.
+const MISSION_MARKER = '[UN-GATE TEST]%';
+
+// Safety ceiling. Un-gate verification runs number in the single digits; if the
+// match set ever exceeds this, something is wrong with the marker — abort
+// rather than risk a mass delete of real missions.
+const MAX_EXPECTED_MISSIONS = 25;
+
+async function selectTestMissions(db) {
+  const { data, error } = await db.from('missions').select('id,title,status')
+    .ilike('title', MISSION_MARKER)
+    .order('created_at', { ascending: false });
+  if (error) throw new Error(`missions select failed: ${error.message}`);
+  const rows = data || [];
+  // Defense in depth: every selected row must literally start with the marker.
+  const bad = rows.filter((m) => !String(m.title || '').startsWith('[UN-GATE TEST]'));
+  if (bad.length) {
+    throw new Error(`ABORT: ${bad.length} selected mission(s) do not start with "[UN-GATE TEST]" — marker mismatch, refusing to proceed.`);
+  }
+  if (rows.length > MAX_EXPECTED_MISSIONS) {
+    throw new Error(`ABORT: matched ${rows.length} missions, above the ${MAX_EXPECTED_MISSIONS} safety ceiling. Re-verify the marker before proceeding.`);
+  }
+  return rows;
+}
+
 (async () => {
   const url = process.env.SUPABASE_URL;
   const service = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -58,13 +88,18 @@ const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'kabbarajamil@gmail.com';
   }
 
   // ── REPORT / OPTIONAL: [UN-GATE TEST] missions ───────────────────────────
-  const { data: missions } = await db.from('missions').select('id,title,status')
-    .ilike('title', '[UN-GATE TEST]%');
-  console.log(`\n[UN-GATE TEST] missions (${(missions || []).length}) — un-gate verification data:`);
-  for (const m of (missions || [])) {
+  // Dry-run and --apply share the SAME selection (selectTestMissions) — no drift.
+  const missions = await selectTestMissions(db);
+  console.log(`\n[UN-GATE TEST] missions (${missions.length}) — un-gate verification data:`);
+  for (const m of missions) {
     if (DELETE_TEST_MISSIONS && APPLY) {
-      // Delete children first to avoid FK errors, then the mission.
-      await db.from('mission_responses').delete().eq('mission_id', m.id);
+      // FK map for missions.id (verified against prod, see purge-audit-pass-missions.js):
+      //   ai_calls / chat_sessions -> ON DELETE NO ACTION (BLOCK the delete — clear first)
+      //   mission_responses        -> ON DELETE CASCADE   (auto)
+      const { error: eAi } = await db.from('ai_calls').delete().eq('mission_id', m.id);
+      if (eAi) { console.log(`  ERROR ai_calls delete ${m.id.slice(0, 8)}: ${eAi.message} — skipping mission`); continue; }
+      const { error: eChat } = await db.from('chat_sessions').delete().eq('mission_id', m.id);
+      if (eChat) { console.log(`  ERROR chat_sessions delete ${m.id.slice(0, 8)}: ${eChat.message} — skipping mission`); continue; }
       const { error } = await db.from('missions').delete().eq('id', m.id);
       console.log(`  ${error ? 'ERROR (FK? handle by hand) ' + error.message : 'DELETED'}  ${m.id.slice(0, 8)} "${m.title}"`);
     } else {
