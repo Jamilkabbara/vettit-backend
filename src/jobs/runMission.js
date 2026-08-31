@@ -38,7 +38,7 @@ const { updateMission } = require('../db/missionSchema');
 // that respects the 70% margin ceiling.
 const { runRecruitmentLoop, shouldUseRecruitLoop } = require('../services/ai/recruitLoop');
 // Pass 48 — idempotent mission_responses persistence (duplicate-run guard).
-const { persistResponseRows } = require('../services/ai/persistResponses');
+const { persistResponseRows, persistReasoningRows } = require('../services/ai/persistResponses');
 // Pass 46 Phase 2 — empty-survey guard (audit P0-5).
 const { ensureMissionQuestions } = require('../services/ai/ensureQuestions');
 // Pass 46 Phase 3 — deterministic methodology analysis.
@@ -54,7 +54,8 @@ function truncateTitle(title, max = 60) {
   return t.length > max ? `${t.slice(0, max - 3)}...` : t;
 }
 
-const RESPONSE_INSERT_CHUNK = 200;
+// Chunk size for the bulk inserts now lives in persistResponses.js
+// (INSERT_CHUNK); both write paths route through that helper.
 
 /**
  * Pass 23 Bug 23.25 v2 — defensive constraint-violation retry.
@@ -458,11 +459,29 @@ async function runMission(missionId, opts = {}) {
             : (r.answer == null ? null : String(r.answer)),
           reasoning_text: r.reasoning.trim().slice(0, 1000),
         }));
-      for (let i = 0; i < reasoningRows.length; i += RESPONSE_INSERT_CHUNK) {
-        const { error: rErr } = await supabase
-          .from('persona_response_reasoning')
-          .insert(reasoningRows.slice(i, i + RESPONSE_INSERT_CHUNK));
-        if (rErr) logger.warn('Mission run: reasoning insert chunk failed', { missionId, err: rErr });
+      // Pass 48 — same natural key, same duplication. This table was written
+      // from the same `responses` array by the same completion block through a
+      // second unconditional insert, so a re-entered run duplicated it too
+      // (survey: 15 duplicate rows on af36a36d). Route it through the same
+      // idempotent helper. Non-fatal by design: reasoning is a "why" trace,
+      // not the paid deliverable, so a failure here warns and never blocks
+      // completion the way an unsaved mission_responses does.
+      const reasoningResult = await persistReasoningRows(supabase, missionId, reasoningRows, {
+        caller: 'runMission: reasoning insert',
+      });
+      if (reasoningResult.skipped > 0) {
+        logger.warn('Mission run: skipped already-persisted reasoning rows (duplicate run detected)', {
+          missionId,
+          attempted: reasoningResult.attempted,
+          skipped: reasoningResult.skipped,
+          inserted: reasoningResult.sent,
+          resume,
+        });
+      }
+      if (reasoningResult.error) {
+        logger.warn('Mission run: reasoning insert failed (non-fatal)', {
+          missionId, err: reasoningResult.error.message || reasoningResult.error,
+        });
       }
     }
 
