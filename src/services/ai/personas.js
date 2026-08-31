@@ -15,6 +15,7 @@
  */
 
 const { callClaude, extractJSON } = require('./anthropic');
+const { DEFAULT_SIM_TEMPERATURE } = require('./simMeta');
 const { WRITING_STYLE } = require('./writingStyle');
 const logger = require('../../utils/logger');
 
@@ -195,6 +196,7 @@ Generate exactly ${batchCount} personas. Vary ALL attributes realistically. IDs 
   // failure before giving up — same treatment as the synthesis fix (#74).
   const callAndParse = async () => {
     const response = await callClaude({
+      temperature: DEFAULT_SIM_TEMPERATURE,
       callType: 'persona_gen',
       missionId: mission.id,
       userId: mission.user_id,

@@ -101,6 +101,14 @@ async function callClaude({
   systemPrompt = '',
   maxTokens    = 2000,
   enablePromptCache = false,
+  // Simulation-honesty PR - explicit sampling temperature. When omitted the
+  // Anthropic API default applies (exactly the previous behavior). Callers on
+  // the simulation path pass DEFAULT_SIM_TEMPERATURE so the value is
+  // documented, stamped into mission metadata, and tunable in one place.
+  // NOTE: the Anthropic Messages API has no seed parameter - bit-exact
+  // re-simulation is not achievable; reproducibility = stored responses +
+  // deterministic analysis + this stamped metadata.
+  temperature = undefined,
 }) {
   const model = MODEL_ROUTING[callType];
   if (!model) throw new Error(`Unknown AI callType: ${callType}`);
@@ -116,6 +124,7 @@ async function callClaude({
     const response = await client.messages.create({
       model,
       max_tokens: maxTokens,
+      ...(temperature !== undefined ? { temperature } : {}),
       system: systemParam,
       messages,
     });

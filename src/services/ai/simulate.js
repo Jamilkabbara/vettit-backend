@@ -5,6 +5,7 @@
  */
 
 const { callClaude, extractJSON } = require('./anthropic');
+const { DEFAULT_SIM_TEMPERATURE } = require('./simMeta');
 const { WRITING_STYLE } = require('./writingStyle');
 const logger = require('../../utils/logger');
 
@@ -53,11 +54,13 @@ async function simulateResponses(persona, questions, mission) {
   // Pass 27 — Brand Lift incrementality. When the persona is tagged
   // _exposure_status=exposed, instruct the model that this persona was
   // exposed to the brand's campaign on the selected channels and shift
-  // aided recall / awareness / message association answers upward in a
-  // realistic range. control personas answer at category baseline.
-  // Lift sizes (calibrated to industry norms): aided recall +20-40pp,
-  // brand awareness +5-15pp, consideration +3-10pp, intent +2-8pp,
-  // NPS +1-4 points. Never push every metric to 100%.
+  // aided recall / awareness / message association answers upward. control
+  // personas answer at category baseline. Simulation-honesty PR: the prompt
+  // previously DICTATED numeric lift ranges (+20-40pp recall etc.), so the
+  // measured lift partially recovered prompt-injected numbers. The ranges are
+  // removed - lift is now an emergent model property; only qualitative
+  // realism guardrails remain (see SIM_VERSION in simMeta.js for the
+  // comparability break with earlier missions).
   const isBrandLift = mission.goal_type === 'brand_lift';
   const exposure = persona._exposure_status;
   // §2.2 — inject the ACTUAL selected channels (MBC, Shahid, TOD, …) so the
@@ -72,7 +75,7 @@ async function simulateResponses(persona, questions, mission) {
     ? ` specifically on these channels: ${channelNames.join(', ')}. If any question asks which channels/platforms you saw the ad on, answer ONLY with channels from that list`
     : '';
   const exposureBlock = isBrandLift && exposure === 'exposed'
-    ? `\n\nIncrementality flag: this persona was EXPOSED to the brand's campaign${channelClause}. When answering aided ad recall, brand awareness, consideration, intent, NPS, and message association, reflect that exposure with realistic uplift over baseline (aided recall +20-40pp, brand awareness +5-15pp, consideration +3-10pp, intent +2-8pp, NPS +1-4 points). Don't exaggerate — many exposed people still don't recall, and lift never pushes every metric to 100%.`
+    ? `\n\nIncrementality flag: this persona was EXPOSED to the brand's campaign${channelClause}. When answering aided ad recall, brand awareness, consideration, intent, NPS, and message association, reflect that exposure with realistic uplift over baseline. Don't exaggerate — many exposed people still don't recall, and lift never pushes every metric to 100%.`
     : isBrandLift && exposure === 'control'
     ? `\n\nIncrementality flag: this persona is in the CONTROL group. They were NOT exposed to the brand's campaign. They answer at category baseline — they may still recognize the brand if it has prior equity, but they do NOT show campaign-specific message association.`
     : '';
@@ -132,6 +135,7 @@ Return ONLY this JSON (answer shape matches each question's type):
 
   const answersById = new Map();
   const response = await callClaude({
+    temperature: DEFAULT_SIM_TEMPERATURE,
     callType:  'response_sim',
     missionId: mission.id,
     userId:    mission.user_id,
@@ -154,6 +158,7 @@ Return ONLY this JSON (answer shape matches each question's type):
     });
     try {
       const retry = await callClaude({
+        temperature: DEFAULT_SIM_TEMPERATURE,
         callType:  'response_sim',
         missionId: mission.id,
         userId:    mission.user_id,
