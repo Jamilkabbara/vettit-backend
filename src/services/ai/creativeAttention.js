@@ -22,6 +22,10 @@ const { callClaude, extractJSON } = require('./anthropic');
 // hygiene as the survey insights.
 const { sanitizeAIOutputDeep } = require('./insights');
 const { WRITING_STYLE } = require('./writingStyle');
+// Single source of truth for the two attention_hotspots shapes (legacy
+// strings vs the spatial {label,x,y,w,h,weight} objects). Shared with the
+// PDF and PPTX exporters so writer and readers can never drift.
+const { toStoredHotspots } = require('../../utils/creativeHotspots');
 const logger    = require('../../utils/logger');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -166,14 +170,22 @@ Analyze this frame and return ONLY JSON:
     "calm": 0, "confusion": 0, "boredom": 0, "disappointment": 0,
     "contempt": 0, "embarrassment": 0, "guilt": 0, "irritation": 0
   },
-  "attention_hotspots": ["where eyes naturally focus, be specific"],
+  "attention_hotspots": [
+    {"label": "what the eye lands on, be specific", "x": 0.00, "y": 0.00, "w": 0.00, "h": 0.00, "weight": 0}
+  ],
   "message_clarity": 0,
   "audience_resonance": 0,
   "engagement_score": 0,
   "brief_description": "One sentence of what is happening in this frame"
 }
 
-All numeric scores: 0 to 100 integers. Score every emotion (most will be 0-20; only score >50 when the emotion is a clear primary read). Scores must reflect what is actually visible. Do not guess.`;
+All numeric scores: 0 to 100 integers. Score every emotion (most will be 0-20; only score >50 when the emotion is a clear primary read). Scores must reflect what is actually visible. Do not guess.
+
+attention_hotspots: return 2 to 5 entries ordered by pull, strongest first. Each is a RECTANGLE over the region the eye lands on:
+  x, y  = top-left corner of the rectangle, as a FRACTION of frame width / height (0.0 = left/top edge, 1.0 = right/bottom edge)
+  w, h  = width / height of the rectangle, also as FRACTIONS of the frame (so x + w <= 1.0 and y + h <= 1.0)
+  weight = 0-100 relative attention pull of that region against the others in this frame
+Use fractions, never pixels, and never a percentage above 1.0. Box the region tightly around the thing itself, not the whole quadrant. If you genuinely cannot localise a hotspot, return it as a plain string instead of an object.`;
 
   const start = Date.now();
 
@@ -223,7 +235,15 @@ All numeric scores: 0 to 100 integers. Score every emotion (most will be 0-20; o
   try {
     const text    = response.content[0]?.text || '';
     const cleaned = text.replace(/```json\n?|```/g, '').trim();
-    return sanitizeAIOutputDeep(JSON.parse(cleaned));
+    const parsed  = sanitizeAIOutputDeep(JSON.parse(cleaned));
+    // Spatial-hotspot schema: clamp geometry into the frame and drop
+    // half-filled objects back to plain strings BEFORE the row is written,
+    // so creative_analysis JSONB only ever holds one of the two shapes the
+    // readers (PDF / PPTX / web) are built to handle.
+    if (parsed && typeof parsed === 'object') {
+      parsed.attention_hotspots = toStoredHotspots(parsed.attention_hotspots);
+    }
+    return parsed;
   } catch (parseErr) {
     logger.warn('[CreativeAttention] frame parse error', { ts: frame.timestamp, err: parseErr.message });
     return null;

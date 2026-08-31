@@ -20,7 +20,83 @@
        frame_analyses[] { timestamp, engagement_score, brief_description,
                           message_clarity, audience_resonance, emotions{},
                           attention_hotspots[] }
+
+     PR 3 adds the CHART view model, precomputed in pdf-v2/index.js because
+     Handlebars cannot do arithmetic:
+       caSplit           { parts[{label,pct,width,color,note}], total }
+       caDecay           { polyline, area, dots[], gridLines[], xTicks[],
+                           staticCol, isStatic, firstPct, lastPct, dropPct }
+       caEmotionBarCols  two balanced columns of {name,score,hot}
+       caFrames          frames with NORMALIZED hotspots (see below)
+       caHotspotMaps     the subset of caFrames carrying spatial geometry
+
+     attention_hotspots has TWO shapes and both must render:
+       legacy  ["a string describing where the eye lands", ...]
+       spatial [{ label, x, y, w, h, weight }]  x/y/w/h are 0-1 fractions of
+               the frame, so the hotspot map can be drawn at any size.
+     utils/creativeHotspots.js collapses both; `hasSpatial` decides whether a
+     frame gets the MAP or the text list. Every mission run before the spatial
+     schema shipped (including proof mission 0cb85100) is the legacy shape.
 --}}
+
+{{!-- PR 3 — CA-only chart styles. Scoped to .ca- classes and carried in the
+     body template (not _base.css) so no other methodology's PDF can shift. --}}
+<style>
+  .ca-split-track {
+    display: flex; width: 100%; height: 20pt; border-radius: 10pt;
+    overflow: hidden; background: var(--bg3); margin: 4pt 0 10pt 0;
+  }
+  .ca-split-seg { height: 100%; }
+  .ca-legend { display: flex; gap: 22pt; flex-wrap: wrap; margin-bottom: 4pt; }
+  .ca-legend-item { display: flex; align-items: baseline; gap: 6pt; font-size: 9.5pt; }
+  .ca-dot { width: 7pt; height: 7pt; border-radius: 4pt; display: inline-block; }
+  .ca-legend-pct { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .ca-legend-note { color: var(--text3); font-size: 8.5pt; }
+  .ca-statrow { display: flex; gap: 10pt; margin: 10pt 0 4pt 0; }
+  .ca-stat {
+    flex: 1; background: var(--bg2); border: 0.5pt solid var(--border);
+    border-radius: 8pt; padding: 8pt 10pt;
+  }
+  .ca-stat-k {
+    font-size: 7.5pt; color: var(--text3); text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .ca-stat-v {
+    font-size: 17pt; font-weight: 800; color: var(--lime);
+    font-variant-numeric: tabular-nums; line-height: 1.25;
+  }
+  .ca-chart { width: 100%; margin: 6pt 0 2pt 0; page-break-inside: avoid; }
+  .ca-cols { display: flex; gap: 26pt; page-break-inside: avoid; }
+  .ca-col { flex: 1; }
+  .ca-bar { display: grid; grid-template-columns: 74pt 1fr 26pt; gap: 7pt;
+            align-items: center; margin-bottom: 6pt; page-break-inside: avoid; }
+  .ca-bar-label { font-size: 9pt; color: var(--text2); text-transform: capitalize;
+                  line-height: 1.2; }
+  .ca-bar-label.is-hot { color: var(--text1); font-weight: 700; }
+  .ca-bar-track { height: 7pt; background: var(--bg3); border-radius: 4pt; overflow: hidden; }
+  .ca-bar-fill { height: 100%; border-radius: 4pt; background: var(--lime-soft); }
+  .ca-bar-fill.is-hot { background: var(--lime); }
+  .ca-bar-val { font-size: 8.5pt; color: var(--text3); text-align: right;
+                font-variant-numeric: tabular-nums; }
+  .ca-map {
+    position: relative; width: 100%; height: 150pt; background: var(--bg2);
+    border: 0.5pt solid var(--border); border-radius: 8pt; overflow: hidden;
+    margin: 6pt 0 8pt 0; page-break-inside: avoid;
+  }
+  .ca-map-box {
+    position: absolute; border: 0.75pt solid var(--lime);
+    background: rgba(190, 242, 100, 0.16); border-radius: 3pt;
+  }
+  .ca-map-rank {
+    position: absolute; top: 1pt; left: 2pt; font-size: 7.5pt; font-weight: 800;
+    color: var(--lime); line-height: 1;
+  }
+  .ca-hot-row { display: grid; grid-template-columns: 12pt 1fr 110pt 30pt; gap: 7pt;
+                align-items: center; margin-bottom: 5pt; page-break-inside: avoid; }
+  .ca-hot-rank { font-size: 8.5pt; font-weight: 800; color: var(--lime); }
+  .ca-hot-label { font-size: 9pt; color: var(--text2); line-height: 1.3; }
+  .ca-caveat { color: var(--text3); font-size: 8.5pt; line-height: 1.4; margin-top: 6pt; }
+</style>
 
 {{!-- ─── THE FINDING + CREATIVE-EFFECTIVENESS HERO ─────────────── --}}
 {{#if report.finding}}
@@ -70,21 +146,92 @@
   </table>
   {{/if}}
 
-  {{#if ca.attention.attention_decay_curve.length}}
+</section>
+
+{{!-- ─── ATTENTION — split visual + decay curve (PR 3) ──────────── --}}
+{{#if caSplit}}
+<section class="page">
+  <div class="section-eyebrow">· Attention</div>
+  <div class="section-divider"></div>
+  <p class="lede" style="margin-bottom:2pt;">How the impression splits across the audience: who actively watches, who registers it peripherally, and who never attends at all.</p>
+
+  <div class="ca-split-track">
+    {{#each caSplit.parts}}<div class="ca-split-seg" style="width: {{this.width}}%; background: {{this.color}};"></div>{{/each}}
+  </div>
+  <div class="ca-legend">
+    {{#each caSplit.parts}}
+    <div class="ca-legend-item">
+      <span class="ca-dot" style="background: {{this.color}};"></span>
+      <span style="color: var(--text2);">{{this.label}}</span>
+      <span class="ca-legend-pct" style="color: {{this.color}};">{{this.pct}}%</span>
+      <span class="ca-legend-note">{{this.note}}</span>
+    </div>
+    {{/each}}
+  </div>
+
+  {{#if ca.attention}}
+  <div class="ca-statrow">
+    {{#if ca.attention.predicted_active_attention_seconds}}
+    <div class="ca-stat">
+      <div class="ca-stat-k">Active attention</div>
+      <div class="ca-stat-v">{{ca.attention.predicted_active_attention_seconds}}s</div>
+    </div>
+    {{/if}}
+    {{#if ca.attention.predicted_passive_attention_seconds}}
+    <div class="ca-stat">
+      <div class="ca-stat-k">Passive attention</div>
+      <div class="ca-stat-v">{{ca.attention.predicted_passive_attention_seconds}}s</div>
+    </div>
+    {{/if}}
+    {{#if ca.attention.distinctive_brand_asset_score}}
+    <div class="ca-stat">
+      <div class="ca-stat-k">Brand asset score</div>
+      <div class="ca-stat-v">{{ca.attention.distinctive_brand_asset_score}}/100</div>
+    </div>
+    {{/if}}
+    {{#if ca.attention.dba_read_seconds}}
+    <div class="ca-stat">
+      <div class="ca-stat-k">Brand read in</div>
+      <div class="ca-stat-v">{{ca.attention.dba_read_seconds}}s</div>
+    </div>
+    {{/if}}
+  </div>
+  {{/if}}
+
+  {{#if caDecay}}
   <div class="section-eyebrow trailing-block">· Attention decay</div>
   <div class="section-divider"></div>
-  <table style="width:100%; border-collapse:collapse; font-size:10.5pt;">
-    <tbody>
-      {{#each ca.attention.attention_decay_curve}}
-      <tr style="border-bottom: 0.5pt solid var(--border);">
-        <td style="padding:5pt 8pt 5pt 0; color: var(--text2);">At {{this.second}}s</td>
-        <td style="padding:5pt 0; text-align:right; color: var(--lime); font-weight:700; font-variant-numeric: tabular-nums;">{{this.active_pct}}% active</td>
-      </tr>
-      {{/each}}
-    </tbody>
-  </table>
+  <svg class="ca-chart" viewBox="0 0 {{caDecay.vbW}} {{caDecay.vbH}}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
+    {{#each caDecay.gridLines}}
+    <line x1="{{../caDecay.x0}}" y1="{{this.y}}" x2="{{../caDecay.x1}}" y2="{{this.y}}"
+          stroke="#1f2937" stroke-width="{{#if this.major}}1{{else}}0.6{{/if}}" />
+    <text x="{{this.labelX}}" y="{{this.labelY}}" text-anchor="end"
+          font-size="11" fill="#6b7280">{{this.label}}</text>
+    {{/each}}
+    {{#unless caDecay.isStatic}}
+    <polygon points="{{caDecay.area}}" fill="rgba(190,242,100,0.14)" />
+    <polyline points="{{caDecay.polyline}}" fill="none" stroke="#BEF264" stroke-width="2.5"
+              stroke-linejoin="round" stroke-linecap="round" />
+    {{/unless}}
+    {{#if caDecay.staticCol}}
+    <rect x="{{caDecay.staticCol.x}}" y="{{caDecay.staticCol.y}}" width="{{caDecay.staticCol.w}}" height="{{caDecay.staticCol.h}}" fill="#BEF264" rx="2" />
+    {{/if}}
+    {{#each caDecay.dots}}
+    {{#unless ../caDecay.isStatic}}<circle cx="{{this.cx}}" cy="{{this.cy}}" r="3" fill="#BEF264" />{{/unless}}
+    {{/each}}
+    {{#each caDecay.xTicks}}
+    <text x="{{this.x}}" y="{{this.y}}" text-anchor="{{this.anchor}}"
+          font-size="11" fill="#6b7280">{{this.label}}</text>
+    {{/each}}
+  </svg>
+  {{#if caDecay.isStatic}}
+  <p class="ca-caveat">Static creative: one first-contact reading at 0s, {{caDecay.firstPct}}% active attention. Video creatives plot a per-second curve in this slot.</p>
+  {{else}}
+  <p class="ca-caveat">Active attention opens at {{caDecay.firstPct}}% and ends at {{caDecay.lastPct}}% by {{caDecay.maxSecond}}s, a {{caDecay.dropPct}} point decay across the creative.</p>
+  {{/if}}
   {{/if}}
 </section>
+{{/if}}
 
 {{!-- ─── CENTERPIECE — channel fit (where this creative earns attention) ─ --}}
 {{#if hasCenterpiece}}
@@ -186,24 +333,26 @@
 </section>
 {{/if}}
 
-{{!-- ─── FULL EMOTION PROFILE — all 24 scored emotions ──────────── --}}
-{{#if caEmotions.length}}
+{{!-- ─── FULL EMOTION PROFILE — all 24 scored emotions, as bars ─── --}}
+{{#if caEmotionBarCols.length}}
 <section class="page">
-  <div class="section-eyebrow">· Full Emotion Profile (24 emotions, 0-100)</div>
+  <div class="section-eyebrow">· Full Emotion Profile ({{caEmotions.length}} emotions, 0-100)</div>
   <div class="section-divider"></div>
-  <table style="width:100%; border-collapse:collapse; font-size:9.5pt;">
-    <tbody>
-      {{#each caEmotionRows}}
-      <tr style="border-bottom: 0.5pt solid var(--border);">
-        {{#each this}}
-        <td style="padding:4pt 8pt 4pt 0; color: var(--text2); text-transform:capitalize;">{{this.name}}</td>
-        <td style="padding:4pt 16pt 4pt 0; text-align:right; color: {{#if this.hot}}var(--lime){{else}}var(--text3){{/if}}; font-weight:{{#if this.hot}}700{{else}}400{{/if}}; font-variant-numeric: tabular-nums;">{{this.score}}</td>
-        {{/each}}
-      </tr>
+  <p class="lede" style="margin-bottom:8pt;">Every scored emotion, ranked. Bar length is the score, so the shape of the emotional profile reads at a glance rather than having to be reconstructed from a column of numbers.</p>
+  <div class="ca-cols">
+    {{#each caEmotionBarCols}}
+    <div class="ca-col">
+      {{#each this}}
+      <div class="ca-bar">
+        <div class="ca-bar-label{{#if this.hot}} is-hot{{/if}}">{{this.name}}</div>
+        <div class="ca-bar-track"><div class="ca-bar-fill{{#if this.hot}} is-hot{{/if}}" style="width: {{this.score}}%"></div></div>
+        <div class="ca-bar-val">{{this.score}}</div>
+      </div>
       {{/each}}
-    </tbody>
-  </table>
-  <p class="followup-rationale" style="margin-top:8pt;">Averaged across {{ca.frame_analyses.length}} analyzed frame{{#if caMultiFrame}}s{{/if}}. Scores above 50 indicate a clear primary read.</p>
+    </div>
+    {{/each}}
+  </div>
+  <p class="followup-rationale" style="margin-top:8pt;">Averaged across {{ca.frame_analyses.length}} analyzed frame{{#if caMultiFrame}}s{{/if}}. Scores above 50 indicate a clear primary read and are drawn in full lime.</p>
 </section>
 {{/if}}
 
@@ -235,19 +384,60 @@
 </section>
 {{/if}}
 
+{{!-- ─── ATTENTION HOTSPOT MAPS (PR 3 — spatial schema only) ───── --}}
+{{#if caHotspotMaps.length}}
+<section class="page">
+  <div class="section-eyebrow">· Attention Hotspot Map</div>
+  <div class="section-divider"></div>
+  <p class="lede" style="margin-bottom:4pt;">Where the eye lands inside the frame. Each box is the region the vision pass localised, positioned by its frame-relative coordinates; the ranked list underneath carries the relative pull of each region.</p>
+  {{#each caHotspotMaps}}
+  <div class="followup">
+    <h3 class="followup-title">Frame {{this.index}}{{#if this.timestamp}}, {{this.timestamp}}s{{/if}}</h3>
+    <div class="ca-map">
+      {{#each this.spatialHotspots}}
+      <div class="ca-map-box" style="left: {{this.leftPct}}%; top: {{this.topPct}}%; width: {{this.widthPct}}%; height: {{this.heightPct}}%;">
+        <span class="ca-map-rank">{{this.rank}}</span>
+      </div>
+      {{/each}}
+    </div>
+    {{#each this.spatialHotspots}}
+    <div class="ca-hot-row">
+      <div class="ca-hot-rank">{{this.rank}}</div>
+      <div class="ca-hot-label">{{this.label}}</div>
+      <div class="ca-bar-track"><div class="ca-bar-fill is-hot" style="width: {{this.weight}}%"></div></div>
+      <div class="ca-bar-val">{{this.weight}}</div>
+    </div>
+    {{/each}}
+  </div>
+  {{/each}}
+  <p class="ca-caveat">The map is drawn from frame-relative coordinates, not from the creative file, so it shows the geometry of attention rather than the artwork itself.{{#if caHotspotMapsCapped}} Showing the first {{caHotspotMaps.length}} of {{caHotspotMapsTotal}} localised frames; every frame's hotspots are listed in the frame-by-frame breakdown.{{/if}}</p>
+</section>
+{{/if}}
+
 {{!-- ─── FRAME-BY-FRAME BREAKDOWN (CA-specific depth) ──────────── --}}
-{{#if ca.frame_analyses.length}}
+{{#if caFrames.length}}
 <section class="page">
   <div class="section-eyebrow">· Frame-by-Frame Breakdown</div>
   <div class="section-divider"></div>
-  {{#each ca.frame_analyses}}
+  {{#each caFrames}}
   <div class="followup">
-    <h3 class="followup-title">Frame {{add @index 1}}{{#if this.timestamp}}, {{this.timestamp}}s{{/if}}{{#if this.engagement_score}} · Engagement {{this.engagement_score}}/100{{/if}}</h3>
+    <h3 class="followup-title">Frame {{this.index}}{{#if this.timestamp}}, {{this.timestamp}}s{{/if}}{{#if this.engagement_score}} · Engagement {{this.engagement_score}}/100{{/if}}</h3>
     {{#if this.brief_description}}<p class="followup-rationale">{{this.brief_description}}</p>{{/if}}
     {{#if this.audience_resonance}}<p class="followup-rationale" style="color: var(--text3);">Audience resonance: {{this.audience_resonance}}</p>{{/if}}
     {{#if this.message_clarity}}<p class="followup-rationale" style="color: var(--text3);">Message clarity: {{this.message_clarity}}</p>{{/if}}
-    {{#if this.attention_hotspots.length}}
-    <p class="followup-rationale" style="color: var(--text3);">Attention hotspots: {{#each this.attention_hotspots}}{{#unless @first}} · {{/unless}}{{this}}{{/each}}</p>
+    {{#if this.hotspots.length}}
+    {{#if this.hasSpatial}}
+    {{#each this.spatialHotspots}}
+    <div class="ca-hot-row">
+      <div class="ca-hot-rank">{{this.rank}}</div>
+      <div class="ca-hot-label">{{this.label}}</div>
+      <div class="ca-bar-track"><div class="ca-bar-fill is-hot" style="width: {{this.weight}}%"></div></div>
+      <div class="ca-bar-val">{{this.weight}}</div>
+    </div>
+    {{/each}}
+    {{else}}
+    <p class="followup-rationale" style="color: var(--text3);">Attention hotspots: {{#each this.hotspotLabels}}{{#unless @first}} · {{/unless}}{{this}}{{/each}}</p>
+    {{/if}}
     {{/if}}
   </div>
   {{/each}}
