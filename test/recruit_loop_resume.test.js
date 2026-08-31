@@ -69,8 +69,6 @@ function makeSupabase({ spendSequence = [], priorResponseRows = [] } = {}) {
           if (inserts[table]) inserts[table].push(...(Array.isArray(rows) ? rows : [rows]));
           return { error: null };
         },
-        order: () => chain,
-        range: async () => ({ data: [], error: null }),
         then: (resolve) => resolve({
           data: table === 'mission_responses' ? priorResponseRows : null,
           error: null,

@@ -61,8 +61,6 @@ function makeSupabase({ spendSequence = [] } = {}) {
         // Pass 48 — persistResponseRows writes via upsert (ON CONFLICT
         // DO NOTHING) with a plain-insert fallback.
         upsert: async () => ({ error: null }),
-        order: () => self,
-        range: async () => ({ data: [], error: null }),
         update: () => self,
       };
       return self;

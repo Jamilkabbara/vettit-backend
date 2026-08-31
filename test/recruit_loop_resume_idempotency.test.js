@@ -39,11 +39,11 @@ const QUESTIONS = [
 ];
 
 /**
- * Table-aware stub. The prior-rows read awaits the chain directly
- * (thenable); the missions spend re-read uses .single(); writes arrive as
- * upsert (ON CONFLICT DO NOTHING) and are recorded per table. .order() /
- * .range() exist because persistResponseRows pages its key read when it
- * is NOT handed a knownKeys set.
+ * Table-aware stub. The prior-rows read pages through
+ * src/db/fetchAllResponses (Pass 51), so the chain must answer .order()
+ * and .range() and stay awaitable — the thenable serves the page. The
+ * missions spend re-read uses .single(); writes arrive as upsert
+ * (ON CONFLICT DO NOTHING) and are recorded per table.
  */
 function makeSupabase({ spendSequence = [0.01], priorResponseRows = [] } = {}) {
   let spendIdx = 0;
@@ -56,7 +56,7 @@ function makeSupabase({ spendSequence = [0.01], priorResponseRows = [] } = {}) {
         eq: () => chain,
         update: () => chain,
         order: () => chain,
-        range: async () => ({ data: [], error: null }),
+        range: () => chain,
         single: async () => {
           const spend = spendSequence[Math.min(spendIdx, spendSequence.length - 1)] ?? 0;
           spendIdx += 1;
