@@ -131,6 +131,11 @@ function makeSupabaseMock(spendRef) {
           error: null,
         }),
         insert: async () => ({ error: null }),
+        // Pass 48 — the loop now persists via persistResponseRows, which
+        // issues INSERT ... ON CONFLICT DO NOTHING (supabase-js upsert).
+        upsert: async () => ({ error: null }),
+        order: () => chain,
+        range: async () => ({ data: [], error: null }),
         then: (resolve) => resolve({ data: [], error: null }),
       };
       return chain;

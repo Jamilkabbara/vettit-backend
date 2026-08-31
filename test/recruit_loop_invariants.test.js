@@ -58,6 +58,11 @@ function makeSupabase({ spendSequence = [] } = {}) {
           if (table === 'admin_alerts') alerts.push(row);
           return { error: null };
         },
+        // Pass 48 — persistResponseRows writes via upsert (ON CONFLICT
+        // DO NOTHING) with a plain-insert fallback.
+        upsert: async () => ({ error: null }),
+        order: () => self,
+        range: async () => ({ data: [], error: null }),
         update: () => self,
       };
       return self;

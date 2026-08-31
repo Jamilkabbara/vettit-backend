@@ -37,6 +37,8 @@ const { updateMission } = require('../db/missionSchema');
 // generate+simulate+retry path with a streaming per-persona loop
 // that respects the 70% margin ceiling.
 const { runRecruitmentLoop, shouldUseRecruitLoop } = require('../services/ai/recruitLoop');
+// Pass 48 — idempotent mission_responses persistence (duplicate-run guard).
+const { persistResponseRows } = require('../services/ai/persistResponses');
 // Pass 46 Phase 2 — empty-survey guard (audit P0-5).
 const { ensureMissionQuestions } = require('../services/ai/ensureQuestions');
 // Pass 46 Phase 3 — deterministic methodology analysis.
@@ -391,15 +393,33 @@ async function runMission(missionId, opts = {}) {
       screened_out:    Boolean((r.persona_profile || {}).screened_out),
       exposure_status: exposureByPersonaId[r.persona_id] || 'not_applicable',
     }));
-    let responsePersistError = null;
-    for (let i = 0; i < rows.length; i += RESPONSE_INSERT_CHUNK) {
-      const { error: insErr } = await supabase
-        .from('mission_responses')
-        .insert(rows.slice(i, i + RESPONSE_INSERT_CHUNK));
-      if (insErr) {
-        responsePersistError = insErr;
-        logger.error('Mission run: responses insert chunk failed', { missionId, err: insErr });
-      }
+    //
+    // Pass 48 — IDEMPOTENT. The old code here was an unconditional
+    // chunked insert, and it is what put 785 duplicate rows across 3
+    // production missions: runMission is re-enterable with {resume:true}
+    // (the claim guard above is deliberately bypassed for resume, and
+    // missionRecovery Job 3 re-enters every status='processing' mission),
+    // so a second invocation regenerated and re-inserted the ENTIRE
+    // dataset. Because the second copy came from an independent
+    // generate+simulate run, the same persona_id carried a different
+    // profile and different answers — corrupting distributions, not just
+    // doubling counts. persistResponseRows skips keys already stored and
+    // uses ON CONFLICT DO NOTHING once the pass-48 unique index is live.
+    const persistResult = await persistResponseRows(supabase, missionId, rows, {
+      caller: 'runMission: completion insert',
+    });
+    const responsePersistError = persistResult.error;
+    if (persistResult.skipped > 0) {
+      logger.warn('Mission run: skipped already-persisted response rows (duplicate run detected)', {
+        missionId,
+        attempted: persistResult.attempted,
+        skipped: persistResult.skipped,
+        inserted: persistResult.sent,
+        resume,
+      });
+    }
+    if (responsePersistError) {
+      logger.error('Mission run: responses persist failed', { missionId, err: responsePersistError });
     }
 
     // FAIL LOUD — a survey mission that simulated responses but could not
