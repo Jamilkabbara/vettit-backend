@@ -421,6 +421,141 @@ function buildPPTX(pack, res) {
     slide.addText(items, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: FONT, valign: 'top' });
   }
 
+  // ── PR 2: CREATIVE ATTENTION DEPTH SLIDES ──────────────────────────────
+  // CA has no survey; its depth lives in mission.creative_analysis. These
+  // slides surface the fields the deck previously dropped (effectiveness
+  // breakdown, vs-benchmark, platform-fit rationale, frame diagnostics +
+  // hotspots, full 24-emotion profile). Guarded on goal_type so every other
+  // methodology's deck is byte-identical. All content boxes end by y=7.0,
+  // clear of the 7.15 footer.
+  const caData = (mission.goal_type === 'creative_attention'
+    && mission.creative_analysis && typeof mission.creative_analysis === 'object')
+    ? mission.creative_analysis : null;
+  if (caData) {
+    const ce = caData.creative_effectiveness || {};
+    const caSum = caData.summary || {};
+    const frames = Array.isArray(caData.frame_analyses) ? caData.frame_analyses : [];
+
+    // Slide: effectiveness breakdown (component / score / weight).
+    if (ce.components && typeof ce.components === 'object') {
+      const slide = pptx.addSlide();
+      addDarkBackground(slide);
+      addSectionHeader(slide, '· EFFECTIVENESS BREAKDOWN', `How the ${ce.score != null ? ce.score + '/100 ' : ''}score is composed`);
+      const weights = ce.weights || {};
+      const rows = [[
+        { text: 'Component', options: { bold: true, color: hex(BRAND.text3) } },
+        { text: 'Score (0-100)', options: { bold: true, color: hex(BRAND.text3), align: 'right' } },
+        { text: 'Weight', options: { bold: true, color: hex(BRAND.text3), align: 'right' } },
+      ]];
+      Object.entries(ce.components)
+        .map(([k, v]) => ({ k, v: Math.round(Number(v) || 0), w: Number(weights[k]) || 0 }))
+        .sort((a, b) => b.w - a.w)
+        .forEach(({ k, v, w }) => rows.push([
+          { text: k.replace(/_/g, ' '), options: { color: hex(BRAND.text1) } },
+          { text: String(v), options: { color: hex(BRAND.lime), align: 'right' } },
+          { text: w ? `${Math.round(w * 100)}%` : '', options: { color: hex(BRAND.text2), align: 'right' } },
+        ]));
+      slide.addTable(rows, {
+        x: 0.5, y: 1.65, w: 12.3, h: Math.min(4.6, 0.42 * rows.length), fontSize: 12, fontFace: FONT,
+        colW: [7.3, 2.5, 2.5], border: { type: 'solid', color: hex(BRAND.border), pt: 0.5 },
+      });
+      if (ce.band_explanation) {
+        slide.addText(String(ce.band_explanation), {
+          x: 0.5, y: 5.1, w: 12.3, h: 1.85, fontSize: 11, color: hex(BRAND.text2), fontFace: FONT, valign: 'top', shrinkText: true,
+        });
+      }
+    }
+
+    // Slide: vs category benchmark + best platform fit (with rationale).
+    const fits = Array.isArray(caSum.best_platform_fit) ? caSum.best_platform_fit : [];
+    if (caSum.vs_benchmark || fits.length) {
+      const slide = pptx.addSlide();
+      addDarkBackground(slide);
+      addSectionHeader(slide, '· PLATFORM FIT', 'Where this creative earns attention, and why');
+      const items = [];
+      if (caSum.vs_benchmark) {
+        items.push({ text: 'VS CATEGORY BENCHMARK', options: { fontSize: 10, bold: true, color: hex(BRAND.lime), charSpacing: 2 } });
+        items.push({ text: '', options: { breakLine: true } });
+        items.push({ text: String(caSum.vs_benchmark), options: { fontSize: 12, color: hex(BRAND.text1), paraSpaceAfter: 12 } });
+        items.push({ text: '', options: { breakLine: true } });
+      }
+      fits.slice()
+        .sort((a, b) => (b.fit_score ?? 0) - (a.fit_score ?? 0))
+        .forEach((f) => {
+          items.push({ text: `${f.platform} · ${Math.round(Number(f.fit_score) || 0)}/100`, options: { fontSize: 13, bold: true, color: 'FFFFFF', bullet: { code: '25CF' } } });
+          if (f.rationale) {
+            items.push({ text: '', options: { breakLine: true } });
+            items.push({ text: String(f.rationale), options: { fontSize: 10.5, color: hex(BRAND.text2), paraSpaceAfter: 8 } });
+          }
+        });
+      slide.addText(items, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: FONT, valign: 'top', shrinkText: true });
+    }
+
+    // Slide: frame diagnostics (description, clarity, resonance, hotspots).
+    if (frames.length) {
+      const slide = pptx.addSlide();
+      addDarkBackground(slide);
+      const FRAME_CAP = 6;
+      const shown = frames.slice(0, FRAME_CAP);
+      addSectionHeader(slide, '· FRAME READ', frames.length > FRAME_CAP
+        ? `First ${FRAME_CAP} of ${frames.length} frames (full list in PDF and XLSX)`
+        : (frames.length === 1 ? 'What the single frame communicates' : 'What each frame communicates'));
+      const items = [];
+      shown.forEach((f, i) => {
+        if (i > 0) items.push({ text: '', options: { breakLine: true } });
+        const head = [`Frame ${i + 1}`];
+        if (f.message_clarity != null) head.push(`clarity ${f.message_clarity}`);
+        if (f.audience_resonance != null) head.push(`resonance ${f.audience_resonance}`);
+        if (f.engagement_score != null) head.push(`engagement ${f.engagement_score}`);
+        items.push({ text: head.join(' · '), options: { fontSize: 13, bold: true, color: 'FFFFFF', bullet: { code: '25CF' } } });
+        if (f.brief_description) {
+          items.push({ text: '', options: { breakLine: true } });
+          items.push({ text: String(f.brief_description), options: { fontSize: 11, color: hex(BRAND.text1), paraSpaceAfter: 4 } });
+        }
+        if (Array.isArray(f.attention_hotspots) && f.attention_hotspots.length) {
+          items.push({ text: '', options: { breakLine: true } });
+          items.push({ text: `Hotspots: ${f.attention_hotspots.join(' · ')}`, options: { fontSize: 10.5, color: hex(BRAND.text2), paraSpaceAfter: 8 } });
+        }
+      });
+      slide.addText(items, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: FONT, valign: 'top', shrinkText: true });
+    }
+
+    // Slide: full 24-emotion profile, frame-averaged, two columns.
+    {
+      const sums = new Map();
+      for (const f of frames) {
+        for (const [name, v] of Object.entries((f && f.emotions) || {})) {
+          const n = Number(v);
+          if (!Number.isFinite(n)) continue;
+          const cur = sums.get(name) || { total: 0, count: 0 };
+          cur.total += n; cur.count += 1;
+          sums.set(name, cur);
+        }
+      }
+      const emotions = [...sums.entries()]
+        .map(([name, { total, count }]) => ({ name: name.replace(/_/g, ' '), score: Math.round(total / Math.max(1, count)) }))
+        .sort((a, b) => b.score - a.score);
+      if (emotions.length) {
+        const slide = pptx.addSlide();
+        addDarkBackground(slide);
+        addSectionHeader(slide, '· FULL EMOTION PROFILE', `${emotions.length} emotions scored 0-100${frames.length > 1 ? ', averaged across frames' : ''}`);
+        const half = Math.ceil(emotions.length / 2);
+        const col = (list, x) => {
+          const items = [];
+          list.forEach((e) => {
+            items.push({ text: `${e.score}`.padStart(3, ' ') + `  ${e.name}`, options: {
+              fontSize: 12, color: e.score > 50 ? hex(BRAND.lime) : hex(BRAND.text2),
+              bold: e.score > 50, paraSpaceAfter: 5,
+            } });
+          });
+          slide.addText(items, { x, y: 1.65, w: 5.9, h: 5.3, fontFace: FONT, valign: 'top' });
+        };
+        col(emotions.slice(0, half), 0.5);
+        col(emotions.slice(half), 6.6);
+      }
+    }
+  }
+
   // ── SURVEY (curated for a DECK, not the full document) ──
   // §9 — a deck should SUMMARISE, not reproduce every raw task. Skip the
   // repetitive instrument-mechanic questions (MaxDiff / Kano / forced-choice /

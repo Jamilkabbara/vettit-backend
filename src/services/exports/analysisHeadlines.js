@@ -313,6 +313,23 @@ function analysisHeadlines(analysis) {
         const topFit = Array.isArray(s.best_platform_fit)
           ? s.best_platform_fit.slice().sort((a, b) => (b.fit_score ?? 0) - (a.fit_score ?? 0))[0] : null;
         if (topFit && topFit.platform) push('Best channel fit', `${topFit.platform} (${num(topFit.fit_score, 0)}/100)`);
+        // PR 2 enrichment — surface the previously-dropped attention +
+        // frame diagnostics on the scorecard (PDF table + PPTX headline
+        // slide read this same list).
+        if (att.dba_read_seconds != null) push('Brand asset read time', `${num(att.dba_read_seconds)}s`);
+        if (att.non_attention_pct != null) push('Non-attention', pct(att.non_attention_pct));
+        if (att.predicted_passive_attention_seconds != null) push('Predicted passive attention', `${num(att.predicted_passive_attention_seconds)}s`);
+        const caFrames = Array.isArray(analysis.frame_analyses) ? analysis.frame_analyses : [];
+        if (caFrames.length) {
+          const avg = (k) => {
+            const vals = caFrames.map((f) => Number(f && f[k])).filter(Number.isFinite);
+            return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+          };
+          const clarity = avg('message_clarity');
+          const resonance = avg('audience_resonance');
+          if (clarity != null) push('Message clarity (0-100)', num(clarity, 0));
+          if (resonance != null) push('Audience resonance (0-100)', num(resonance, 0));
+        }
         break;
       }
 
