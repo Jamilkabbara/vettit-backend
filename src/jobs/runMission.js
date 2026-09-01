@@ -214,6 +214,14 @@ async function runMission(missionId, opts = {}) {
     let personas;
     let responses;
     let recruitmentPartial = false;
+    // Batch-path fault tolerance — simulateAllResponses no longer lets a
+    // single failed Anthropic call (one 429 / 529 / timeout) reject the
+    // whole wave and fail a PAID mission. It drops the personas it could
+    // not simulate and reports them here, so the shortfall reaches the
+    // persisted counters instead of being silently rounded back up to the
+    // paid-for target. Null on the recruit-loop path (the loop has always
+    // had its own per-persona catch).
+    let simFailureReport = null;
     // Pass 45 T2a — carry the loop's REAL counters to completion.
     // Pre-Pass-45, completion hardcoded qualified_respondent_count =
     // targetCount (Pass 23 always-deliver), which produced impossible
@@ -270,7 +278,7 @@ async function runMission(missionId, opts = {}) {
         missionId, exposed: exposedCount, control: personas.length - exposedCount,
       });
     }
-    responses = await simulateAllResponses(
+    const simResult = await simulateAllResponses(
       personas,
       mission.questions || [],
       mission,
@@ -280,6 +288,55 @@ async function runMission(missionId, opts = {}) {
         }
       },
     );
+    responses = simResult.responses;
+
+    // ── HONEST COUNTERS ───────────────────────────────────────────────
+    // Every delivery column downstream is derived from `personas.length`
+    // (totalSimulated → qualified_respondent_count cap →
+    // qualification_rate → recruited_persona_count). If we leave the
+    // personas we FAILED to simulate in that array, all four keep
+    // claiming the paid-for N while only N-k respondents actually
+    // exist in mission_responses — the exact "four of five delivery
+    // columns still claimed 60" shape that already bit this codebase.
+    // Prune here, once, so the shortfall propagates everywhere.
+    if (simResult.failed > 0) {
+      simFailureReport = simResult;
+      const lost = new Set(simResult.failedPersonaIds);
+      const beforePrune = personas.length;
+      personas = personas.filter((p, i) => !lost.has(p.persona_id || p.id || `idx:${i}`));
+      logger.error('Mission run: personas lost to simulation failures — counters pruned', {
+        missionId,
+        attempted: simResult.attempted,
+        succeeded: simResult.succeeded,
+        failed: simResult.failed,
+        failureRatio: Number(simResult.failureRatio.toFixed(4)),
+        personasBefore: beforePrune,
+        personasAfter: personas.length,
+        failedPersonaIds: simResult.failedPersonaIds,
+      });
+      // Best-effort quality signal for ops — same posture as the
+      // constraint_violation alert below (never blocks the run).
+      try {
+        await supabase.from('admin_alerts').insert({
+          alert_type: 'simulation_persona_failures',
+          mission_id: missionId,
+          user_id:    mission.user_id,
+          payload: {
+            attempted: simResult.attempted,
+            succeeded: simResult.succeeded,
+            failed:    simResult.failed,
+            failure_ratio: Number(simResult.failureRatio.toFixed(4)),
+            target_count:  targetCount,
+            failures: simResult.failures.slice(0, 25),
+          },
+          resolved: false,
+        });
+      } catch (alertErr) {
+        logger.warn('Mission run: simulation_persona_failures alert insert failed (non-fatal)', {
+          missionId, err: alertErr.message,
+        });
+      }
+    }
 
     // Defensive screener verification. Constraint-based generation should
     // produce 0 misses; the retry below catches the rare model error.
@@ -325,12 +382,27 @@ async function runMission(missionId, opts = {}) {
           replacementCount,
           { stricter: true, startOffset: personas.length + retryRound * 1000 },
         );
-        const replacementResponses = await simulateAllResponses(
+        // Replacements are already a best-effort top-up; a persona we
+        // cannot simulate here simply doesn't become a replacement.
+        const replacementSim = await simulateAllResponses(
           replacementPersonas,
           mission.questions || [],
           mission,
           () => {},
+          // Tiny batch: one loss out of two replacements is 50% by
+          // arithmetic. The ceiling must not fail a mission whose main
+          // batch is healthy just because a top-up persona blipped.
+          { enforceFailureCeiling: false },
         );
+        const replacementResponses = replacementSim.responses;
+        if (replacementSim.failed > 0) {
+          logger.warn('Mission run: replacement personas lost to simulation failures', {
+            missionId,
+            round: retryRound,
+            failed: replacementSim.failed,
+            attempted: replacementSim.attempted,
+          });
+        }
 
         // Pick which replacements qualified.
         const replacementScreenedOut = new Set(
@@ -716,6 +788,10 @@ async function runMission(missionId, opts = {}) {
 
     logger.info('Mission run: complete', {
       missionId, qualifiedRespondent, totalSimulated,
+      // Per-mission simulation-failure count, carried all the way to the
+      // completion line so a short delivery is never silent.
+      simulationFailures: simFailureReport ? simFailureReport.failed : 0,
+      simulationAttempted: simFailureReport ? simFailureReport.attempted : totalSimulated,
     });
 
     // Funnel event.
