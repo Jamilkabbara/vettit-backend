@@ -29,6 +29,7 @@ const { getReportMetadata } = require('../reportMetadata');
 const { buildCanonicalReport } = require('../../report/buildReport');
 const { buildRenderModel } = require('../../report/reportRenderModel');
 const { sanitizeDashesDeep, sanitizeDashesString } = require('../../../utils/textSanitize');
+const { METHODOLOGY_URL } = require('../shared');
 // PR 3 — shared hotspot normalizer. attention_hotspots is EITHER an array of
 // legacy strings (every mission run before the spatial schema shipped) or an
 // array of {label,x,y,w,h,weight} objects. One helper, three surfaces.
@@ -169,6 +170,11 @@ function buildViewModel(pack) {
     ...buildCaViewExtras(caSanitized),
     media_url: mission?.media_url || null,
     brand_name: sanitizeDashesString(mission?.brand_name) || null,
+
+    // Public methodology page, linked from the cover footer and beside the
+    // simulation-honesty disclaimer (never in place of it) so a reader who
+    // receives this PDF second-hand can audit how the figures were produced.
+    methodologyUrl:     METHODOLOGY_URL,
 
     fontFaceCss:        getFontFaceCss(),
     baseCss:            loadBaseCss(),

@@ -167,6 +167,20 @@ html, body {
   text-transform: uppercase;
 }
 
+/* Second cover-footer line: the public methodology URL. Lower-case + no
+   letter-spacing so the URL stays readable/copyable next to the branded
+   line above it. */
+.cover-footer-method {
+  margin-top: 4pt;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  color: var(--text3);
+}
+
+/* Methodology link printed beside the simulation-honesty disclaimer. */
+.method-link { margin-top: 8pt; font-size: 9pt; color: var(--text3); }
+.method-link a { color: var(--lime); text-decoration: none; }
+
 /* ─── Section header (e.g. "01 · EXECUTIVE SUMMARY") ──────────────────────── */
 .section-eyebrow {
   font-family: 'Inter', system-ui, sans-serif;

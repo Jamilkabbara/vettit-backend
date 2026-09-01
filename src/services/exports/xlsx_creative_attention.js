@@ -25,7 +25,7 @@
  */
 
 const ExcelJS = require('exceljs');
-const { BRAND } = require('./shared');
+const { BRAND, METHODOLOGY_URL } = require('./shared');
 const { getReportMetadata } = require('./reportMetadata');
 const { sanitizeDashesDeep, sanitizeDashesString } = require('../../utils/textSanitize');
 
@@ -134,6 +134,22 @@ async function buildCreativeAttentionXLSX(pack, res) {
     cover.getCell('B22').value = `${ca.summary.overall_engagement_score} / 100`;
     cover.getCell('B22').font = { name: 'Calibri', size: 16, bold: true, color: { argb: argb(BRAND.lime) } };
   }
+
+  // ── Cover footer: link to the public methodology page ──────────────
+  // The canonical XLSX puts this beside the simulation-honesty disclaimer.
+  // This variant has no such disclaimer to sit beside — Creative Attention
+  // is a vision read of a real creative, not a simulated respondent set — so
+  // the link stands alone in the cover footer. A22/B22 above is the last
+  // occupied row and A12:D20 is the merged summary, so row 24 is free.
+  cover.mergeCells('A24:D24');
+  const methodCell = cover.getCell('A24');
+  methodCell.value = {
+    text: `How every figure in this report is produced: ${METHODOLOGY_URL}`,
+    hyperlink: METHODOLOGY_URL,
+    tooltip: 'VETT methodology',
+  };
+  methodCell.font = { name: 'Calibri', size: 10, color: { argb: argb(BRAND.lime) }, underline: true };
+  methodCell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
 
   // ── 2. FRAME ANALYSIS ───────────────────────────────────────────
   const frameSheet = wb.addWorksheet('Frame Analysis', {

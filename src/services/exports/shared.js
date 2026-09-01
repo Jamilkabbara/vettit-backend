@@ -137,4 +137,11 @@ const BRAND = {
   amber:   '#E7B45A', // low-n / directional confidence flag
 };
 
-module.exports = { loadMissionForExport, BRAND };
+// Public methodology page. Linked from EVERY export footer beside the
+// simulation-honesty disclaimer (never in place of it): a reader who receives
+// the file second-hand can check how the numbers were produced without an
+// account. Single constant so PDF / PPTX / XLSX / CA-XLSX can never drift.
+const METHODOLOGY_URL = 'https://vettit.ai/methodology';
+const METHODOLOGY_FOOTER_LABEL = 'How these numbers are produced: ' + METHODOLOGY_URL;
+
+module.exports = { loadMissionForExport, BRAND, METHODOLOGY_URL, METHODOLOGY_FOOTER_LABEL };
