@@ -9,11 +9,29 @@ const logger = require('../../utils/logger');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// Pricing ($ per 1M tokens).
+// Pricing ($ per 1M tokens). Anthropic list prices, verified 2026-09-01.
+//
+// These are not decorative: every ai_calls.cost_usd row is computed from
+// this table, missions.ai_spend_usd_actual is the running sum of those, and
+// the recruit loop reads THAT against ai_spend_ceiling_usd to decide when to
+// stop recruiting (src/services/ai/recruitLoop.js). A stale entry therefore
+// mis-states margin reporting AND moves a live spend gate.
+//
+// Two entries were stale before 2026-09-01 and are corrected here:
+//   haiku-4-5   0.80 / 4.00  -> 1.00 / 5.00   (UNDER-reported by 20% per row)
+//   opus-4-7   15.00 / 75.00 -> 5.00 / 25.00  (OVER-reported by 3x; never
+//                                              exercised - 0 rows in ai_calls)
+// Measured impact of the haiku error across all 2857 historical calls:
+// recorded $20.72 vs true $23.07, i.e. $2.35 (11.33% of recorded) understated
+// in total. No mission was affected at the ceiling - see the PR body.
+//
+// If you edit this table, update the date above and expect
+// test/model_pricing.test.js to fail until you update it too. That is
+// deliberate: a silent price drift is what this comment exists to prevent.
 const MODEL_PRICING = {
-  'claude-haiku-4-5':    { input: 0.80,  output: 4.00  },
+  'claude-haiku-4-5':    { input: 1.00,  output: 5.00  },
   'claude-sonnet-4-6':   { input: 3.00,  output: 15.00 },
-  'claude-opus-4-7':     { input: 15.00, output: 75.00 },
+  'claude-opus-4-7':     { input: 5.00,  output: 25.00 },
 };
 
 // Pass 34 C3 — call_type → purpose bucket. Mirrors the SQL CASE in
