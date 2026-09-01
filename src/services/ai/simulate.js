@@ -5,6 +5,7 @@
  */
 
 const { callClaude, extractJSON } = require('./anthropic');
+const { orderQuestionsForPersona } = require('./questionOrder');
 const { DEFAULT_SIM_TEMPERATURE } = require('./simMeta');
 const { WRITING_STYLE } = require('./writingStyle');
 const logger = require('../../utils/logger');
@@ -134,12 +135,23 @@ Return ONLY this JSON (answer shape matches each question's type):
   };
 
   const answersById = new Map();
+
+  // Hardening item 2 — per-persona SEEDED question order. This changes ONLY
+  // the order questions are PRESENTED IN THE PROMPT; screeners stay pinned
+  // first and order-locked methodology blocks (Van Westendorp, Gabor-Granger,
+  // brand-lift/ad-effectiveness funnels, concept batteries) stay intact. See
+  // services/ai/questionOrder.js for the zone model and the per-methodology
+  // justification. Answers are matched back by question_id below, and the
+  // return statement re-emits them in the ORIGINAL `questions` order — the
+  // asked order is never allowed to leak into the persisted rows.
+  const askOrder = orderQuestionsForPersona(questions, mission, persona);
+
   const response = await callClaude({
     temperature: DEFAULT_SIM_TEMPERATURE,
     callType:  'response_sim',
     missionId: mission.id,
     userId:    mission.user_id,
-    messages:  [{ role: 'user', content: buildPrompt(questions) }],
+    messages:  [{ role: 'user', content: buildPrompt(askOrder) }],
     systemPrompt: SIM_SYSTEM_PROMPT,
     maxTokens: tokenBudgetFor(questions.length),
     enablePromptCache: true,
@@ -151,7 +163,7 @@ Return ONLY this JSON (answer shape matches each question's type):
   // the retry is cheap and can't itself truncate. This is what lifts
   // late-funnel stages (sharing intent, final paired comparisons) and
   // big max-diff batteries from "0 answers" to fully covered.
-  const missing = questions.filter((q) => !answersById.has(q.id));
+  const missing = askOrder.filter((q) => !answersById.has(q.id));
   if (missing.length > 0) {
     logger.info('Response sim: retrying missing questions', {
       personaId: persona.id, missing: missing.length, total: questions.length,
