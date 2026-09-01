@@ -405,6 +405,22 @@ router.post('/', authenticate, async (req, res, next) => {
         ...((req.body.namingTestType ?? req.body.naming_test_type) !== undefined
           ? { naming_test_type: req.body.namingTestType ?? req.body.naming_test_type } : {}),
       } : {}),
+
+      // The brand_required gate above (competitor) validates the focal brand,
+      // but the payload never carried it - so the validated value was read,
+      // checked, and then silently discarded, landing brand_name NULL: exactly
+      // the failure the gate exists to prevent (focalBrand.js then has to
+      // derive a name from the brief). category + audience_description are
+      // dropped the same way; the frontend writes all three via its
+      // universalFields block (MissionSetupPage.tsx) on the client-side insert
+      // path, which is why this went unnoticed on the API path.
+      // camelCase from the JS client OR snake_case from API callers.
+      ...((req.body.brandName ?? req.body.brand_name) !== undefined
+        ? { brand_name: req.body.brandName ?? req.body.brand_name } : {}),
+      ...((req.body.category) !== undefined
+        ? { category: req.body.category } : {}),
+      ...((req.body.audienceDescription ?? req.body.audience_description) !== undefined
+        ? { audience_description: req.body.audienceDescription ?? req.body.audience_description } : {}),
     });
     if (rejected.length) logger.warn('POST /missions: dropped cols', { rejected });
 
