@@ -854,23 +854,18 @@ async function runMission(missionId, opts = {}) {
       }
     } catch { /* swallowed; logging-only */ }
 
-    // Pass 44 P0 — failure email now uses the generic failure sender
-    // when available; the old sendMissionFailedRefundEmail promised a
-    // refund in its template. Passing refund-free fields; if only the
-    // legacy sender exists it receives no refund amount (0) and
-    // refundFailed=false so its template's refund branch can't fire.
+    // Pass 44 P0 — failure email. sendMissionFailedEmail is the no-refund
+    // rewrite of the old sendMissionFailedRefundEmail, whose template
+    // promised a refund the removed auto-refund block never issued. The
+    // refundAmountUsd/refundFailed arguments went away with that copy.
     try {
       const { data: { user } } = await supabase.auth.admin.getUserById(mission.user_id);
       if (user?.email) {
-        const sendFailureEmail =
-          emailService.sendMissionFailedEmail || emailService.sendMissionFailedRefundEmail;
-        await sendFailureEmail?.({
+        await emailService.sendMissionFailedEmail?.({
           to: user.email,
           name: user.user_metadata?.name || user.email.split('@')[0],
           missionTitle: mission.title || 'Your VETT mission',
           missionId,
-          refundAmountUsd: 0,
-          refundFailed: false,
           // Sanitize the failure reason — strip stack-trace-ish content + cap length.
           friendlyReason: friendlyFailureReason(failureReason),
         });
