@@ -240,6 +240,27 @@ async function runMission(missionId, opts = {}) {
         ceilingUsd: mission.ai_spend_ceiling_usd,
       });
       const loopResult = await runRecruitmentLoop(mission, supabase);
+
+      // Pass 49 — the loop noticed mid-run that this mission left
+      // 'processing'. Stop here: synthesis, persistence and the terminal
+      // write would all be work on a row somebody else owns, and the
+      // scoped write (PR 1) would no-op anyway. Return rather than throw —
+      // a throw would reach the fatal handler and try to stamp 'failed'
+      // over the other writer's terminal state.
+      if (loopResult.claimRevoked) {
+        logger.error('Mission run: loop path aborted — claim revoked mid-run', {
+          missionId,
+          qualified: loopResult.qualifiedCount,
+          recruited: loopResult.recruitedCount,
+        });
+        return {
+          aborted: true,
+          reason: 'claim revoked mid-run',
+          qualified: loopResult.qualifiedCount,
+          recruited: loopResult.recruitedCount,
+        };
+      }
+
       personas  = loopResult.personas;
       responses = loopResult.responses;
       recruitmentPartial = loopResult.partial;
@@ -278,6 +299,42 @@ async function runMission(missionId, opts = {}) {
         missionId, exposed: exposedCount, control: personas.length - exposedCount,
       });
     }
+    // ── Pass 49 mid-run kill switch (legacy batch path) ───────────────────
+    // The recruit loop gets this for free: it already re-reads the mission
+    // every iteration for ai_spend_usd_actual, so `status` rides along on
+    // an existing query. The batch path has no such read, so it does a
+    // THROTTLED one — the same every-25-personas cadence the progress log
+    // already uses. At the measured batch rate (~2.2s per persona) that is
+    // roughly one extra single-row read per minute of simulation, ~40 reads
+    // across a 1000-respondent run.
+    //
+    // The read is fired from onProgress and its result is latched into
+    // `batchClaimRevoked`; shouldAbort (checked at each concurrency wave
+    // boundary) just reads the latch, so no wave ever blocks on a query.
+    let batchClaimRevoked = false;
+    let claimCheckInFlight = false;
+    const checkClaimStillOurs = async () => {
+      if (claimCheckInFlight || batchClaimRevoked) return;
+      claimCheckInFlight = true;
+      try {
+        const { data: cur, error: curErr } = await supabase
+          .from('missions').select('status').eq('id', missionId).single();
+        // A transient read error must never look like a revoked claim.
+        if (!curErr && cur && cur.status !== 'processing') {
+          batchClaimRevoked = true;
+          logger.error('Mission run: ABORTING simulation — mission is no longer processing; our claim was revoked', {
+            missionId, observedStatus: cur.status,
+          });
+        }
+      } catch (e) {
+        logger.warn('Mission run: mid-run claim check failed (non-fatal, continuing)', {
+          missionId, err: e?.message,
+        });
+      } finally {
+        claimCheckInFlight = false;
+      }
+    };
+
     const simResult = await simulateAllResponses(
       personas,
       mission.questions || [],
@@ -285,8 +342,12 @@ async function runMission(missionId, opts = {}) {
       (completed, total) => {
         if (completed % 25 === 0) {
           logger.info('Mission run: progress', { missionId, completed, total });
+          // Fire-and-forget: onProgress is synchronous and called from
+          // inside a wave, so awaiting here would serialise the simulation.
+          checkClaimStillOurs();
         }
       },
+      { shouldAbort: () => batchClaimRevoked },
     );
     responses = simResult.responses;
 
@@ -336,6 +397,18 @@ async function runMission(missionId, opts = {}) {
           missionId, err: alertErr.message,
         });
       }
+    }
+
+    // A revoked claim ends the batch path immediately. Falling through would
+    // spend more money on synthesis for a mission we no longer own — and the
+    // scoped terminal write (PR 1) would no-op anyway. Returning is a CLEAN
+    // exit: no throw, so the fatal handler never gets the chance to stamp
+    // 'failed' over the other writer's terminal state.
+    if (batchClaimRevoked) {
+      logger.error('Mission run: batch path aborted — claim revoked mid-simulation', {
+        missionId, partialRows: (responses || []).length,
+      });
+      return { aborted: true, reason: 'claim revoked mid-run', partialRows: (responses || []).length };
     }
 
     // Defensive screener verification. Constraint-based generation should

@@ -179,7 +179,9 @@ async function runRecruitmentLoop(mission, supabase) {
   // 'ceiling_hit', including transient persona-gen failures (429s),
   // which produced partial deliveries blamed on "strict screener" at
   // 3% budget spend.
-  let breakReason = null; // 'ceiling' | 'max_personas' | 'persona_gen_failed' | 'persona_gen_empty'
+  // Pass 49 — 'claim_revoked' joins the set: the mission left 'processing'
+  // mid-run, so another writer owns it and we must stop spending.
+  let breakReason = null; // 'ceiling' | 'max_personas' | 'persona_gen_failed' | 'persona_gen_empty' | 'claim_revoked'
   // Pass 46 Phase 2 — rows whose incremental insert failed; runMission's
   // completion insert picks these up so no qualified data is ever lost.
   const unpersistedResponses = [];
@@ -194,13 +196,16 @@ async function runRecruitmentLoop(mission, supabase) {
       break;
     }
 
-    // ── Re-read mission for fresh ai_spend_usd_actual ──────────────────
+    // ── Re-read mission for fresh ai_spend_usd_actual + status ─────────
     // The cost telemetry in anthropic.js updates the column via RPC
     // out-of-band; we re-read after every persona so the ceiling
     // check is honest. Single-row read on a UUID PK is cheap.
+    //
+    // Pass 49 — `status` is added to this EXISTING projection, so the
+    // kill switch below costs ZERO extra queries.
     const { data: fresh, error: readErr } = await supabase
       .from('missions')
-      .select('ai_spend_usd_actual')
+      .select('ai_spend_usd_actual, status')
       .eq('id', missionId)
       .single();
     if (readErr) {
@@ -209,6 +214,35 @@ async function runRecruitmentLoop(mission, supabase) {
       });
     }
     const spentUsd = Number(fresh?.ai_spend_usd_actual ?? 0);
+
+    // ── Kill switch: is our claim still valid? ─────────────────────────
+    // Pass 49 — nothing used to check this. A mission that missionRecovery
+    // Job 1 had marked 'failed' (or that an admin had force-completed, or
+    // that a second concurrent run had finished) kept recruiting for
+    // hours, burning real Anthropic spend on a row nobody would ever read.
+    // The status is only trusted when the read actually succeeded AND
+    // actually came back: a transient read error, or a projection that
+    // somehow omits the column, must not look like a revoked claim. Fail
+    // OPEN — a missed abort costs money, a false abort costs a paid
+    // mission.
+    //
+    // This is a CLEAN exit, deliberately not a throw. Throwing would land
+    // in runMission's fatal handler, which would try to write 'failed'
+    // over whatever terminal state the other writer just set — the exact
+    // clobber PR 1 exists to prevent. Exiting like a ceiling hit keeps the
+    // partial work and reports it honestly.
+    if (!readErr && fresh && fresh.status && fresh.status !== 'processing') {
+      logger.error('Recruitment loop: ABORTING — mission is no longer processing; our claim was revoked', {
+        missionId,
+        observedStatus: fresh.status,
+        recruitedCount,
+        qualifiedCount,
+        target,
+        spentUsd,
+      });
+      breakReason = 'claim_revoked';
+      break;
+    }
 
     // ── Ceiling check #1: hard cap on accumulated spend ────────────────
     if (spentUsd >= ceiling) {
@@ -449,13 +483,24 @@ async function runRecruitmentLoop(mission, supabase) {
   const terminalStatus = reachedTarget
     ? 'target_hit'
     : (breakReason === 'ceiling' ? 'ceiling_hit' : 'incomplete');
+  // Pass 49 — when the claim was revoked, another writer owns this mission.
+  // Scope the recruitment bookkeeping the same way PR 1 scopes the terminal
+  // status writes so an aborting loop cannot stamp its counters over a run
+  // that has already been resolved.
   await updateMission(supabase, missionId, {
     recruitment_status: terminalStatus,
     recruited_persona_count: recruitedCount,
     recruitment_completed_at: new Date().toISOString(),
-  }, { caller: `recruitLoop: terminal=${terminalStatus}` });
+  }, {
+    caller: `recruitLoop: terminal=${terminalStatus}`,
+    ...(breakReason === 'claim_revoked' ? { scope: { status: 'processing' } } : {}),
+  });
 
-  if (!reachedTarget && breakReason && breakReason !== 'ceiling') {
+  // Pass 49 — 'claim_revoked' is excluded from the infra-partial alert. It
+  // is not an infra failure and there is nothing to re-run: the mission was
+  // resolved by somebody else, and runMission's own lost-terminal-write
+  // alert (PR 1) already covers the ops-visible half.
+  if (!reachedTarget && breakReason && breakReason !== 'ceiling' && breakReason !== 'claim_revoked') {
     try {
       await supabase.from('admin_alerts').insert({
         alert_type: 'recruitment_infra_partial',
@@ -489,6 +534,10 @@ async function runRecruitmentLoop(mission, supabase) {
     qualifiedCount,
     terminalStatus,
     partial: !reachedTarget,
+    // Pass 49 — runMission needs to distinguish "we ran out of budget" from
+    // "somebody else owns this mission now".
+    breakReason,
+    claimRevoked: breakReason === 'claim_revoked',
     // Pass 46 Phase 2 — the loop persists qualified rows incrementally
     // (resume support); runMission must NOT bulk-insert `responses`
     // again. Only the rows whose incremental insert failed need a

@@ -336,6 +336,15 @@ function describeSimError(err) {
  */
 async function simulateAllResponses(personas, questions, mission, onProgress, options = {}) {
   const enforceFailureCeiling = options.enforceFailureCeiling !== false;
+  // Pass 49 mid-run kill switch. Called once per concurrency wave (NOT per
+  // persona). Return truthy to stop simulating and return the partial work
+  // collected so far. A plain synchronous predicate, so it costs nothing:
+  // the caller does its own throttled status read from onProgress and just
+  // flips a boolean here. Aborting RETURNS partial work and never throws -
+  // throwing would route into runMission's fatal handler and try to write
+  // 'failed' over whatever terminal state the other writer already set.
+  const shouldAbort = typeof options.shouldAbort === 'function' ? options.shouldAbort : null;
+  let aborted = false;
   // UNCHANGED — raising this is deliberately a separate change, landed
   // only after allSettled is verified in production.
   const CONCURRENCY = 8;
@@ -418,6 +427,18 @@ async function simulateAllResponses(personas, questions, mission, onProgress, op
    */
   async function runWaves(list, { attempt }) {
     for (let i = 0; i < list.length; i += CONCURRENCY) {
+      // Pass 49 - wave boundary is the clean break point: no in-flight
+      // simulation is discarded, and everything already collected is kept.
+      // Also stops the recovery sweep, which runWaves drives too: retrying
+      // a mission that has already left 'processing' is exactly the zombie
+      // spend this abort exists to prevent.
+      if (shouldAbort && shouldAbort()) {
+        aborted = true;
+        logger.warn('simulateAllResponses: aborted mid-run by shouldAbort', {
+          missionId: mission && mission.id, attempt, completed, total: list.length,
+        });
+        break;
+      }
       const slice = list.slice(i, i + CONCURRENCY);
       const settled = await Promise.allSettled(
         slice.map((entry) => runPersona(entry.persona)),
@@ -460,7 +481,19 @@ async function simulateAllResponses(personas, questions, mission, onProgress, op
 
   const attempted = roster.length;
   const failed = failures.size;
-  const succeeded = attempted - failed;
+  // `succeeded` is documented as "personas that produced >= 1 response row".
+  // attempted - failed is only equivalent when every persona actually RAN.
+  // A Pass 49 abort breaks that: personas past the break point never ran, so
+  // they are neither failed nor succeeded, and the subtraction would report
+  // the whole untouched roster as delivered (measured: abort-immediately gave
+  // attempted 40 / succeeded 40 / responses 0). runMission derives its
+  // delivery columns from these counters, so that would claim 40 delivered on
+  // a run that produced nothing. Count the roster that actually produced rows.
+  const succeeded = aborted
+    ? new Set(out.map((r) => r.persona_id)).size
+    : attempted - failed;
+  // Ratio stays relative to what was attempted; on an abort the shortfall is
+  // deliberate, not failure, so it must not inflate the failure ratio.
   const failureRatio = attempted > 0 ? failed / attempted : 0;
   const failureList = Array.from(failures.values());
 
@@ -502,7 +535,11 @@ async function simulateAllResponses(personas, questions, mission, onProgress, op
   //
   // Denominator is now `succeeded`, not the full roster: personas we
   // already reported as lost must not re-trigger this alarm.
-  const expectedRows = succeeded * (questions || []).length;
+  // Pass 49 - an aborted run is short BY DESIGN, so the divergence warn
+  // below would be pure noise and misleading in the logs. #109's denominator
+  // is `succeeded` (not the full roster) so already-reported losses do not
+  // re-trigger the alarm; abort suppresses it entirely.
+  const expectedRows = aborted ? 0 : succeeded * (questions || []).length;
   if (expectedRows > 0) {
     const ratio = out.length / expectedRows;
     if (ratio < 0.5 || ratio > 1.5) {
