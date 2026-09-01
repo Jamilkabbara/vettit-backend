@@ -223,6 +223,84 @@ function passesScreening(question, answer) {
 }
 
 /**
+ * ── Batch-path fault tolerance policy ────────────────────────────────
+ *
+ * Before this, the wave barrier was `await Promise.all(wave)` with NO
+ * per-persona try/catch. A single failed Anthropic call — one 429, one
+ * 529, one socket timeout — rejected the whole wave, propagated through
+ * jobs/runMission.js into the fatal handler and marked a PAID mission
+ * `failed`. Nothing is persisted incrementally on this path, so the
+ * customer lost the entire run after minutes of burn.
+ *
+ * The recruitment loop (services/ai/recruitLoop.js) already had the
+ * right posture: catch per persona, treat the failure as a wasted
+ * generation, keep going. This mirrors it, with three additions the
+ * batch path needs because it has no outer loop to top the order back up:
+ *
+ *  1. ONE deferred recovery sweep. Failures are collected across ALL
+ *     waves and re-attempted once at the END of the run, not inline.
+ *     By then the whole batch has elapsed, so a rate-limit window has
+ *     almost certainly closed — a same-instant retry against a 429
+ *     mostly just burns another call. This is a persona-level recovery
+ *     sweep, NOT request-level retry/backoff; adding real backoff in
+ *     services/ai/anthropic.js is the natural follow-up.
+ *
+ *  2. An HONEST count. The caller gets attempted / succeeded / failed
+ *     and the failed persona ids, so jobs/runMission.js can prune the
+ *     persona list before it derives total_simulated_count,
+ *     qualified_respondent_count, qualification_rate and
+ *     recruited_persona_count. Silently delivering N-1 while four
+ *     columns still claim N is the failure mode that already bit this
+ *     codebase (persona-id collision, n=59 of a 60-respondent order).
+ *
+ *  3. A failure ceiling. Dropping 1 of 60 is a partial delivery;
+ *     dropping 55 of 60 is a failed mission dressed up as a success.
+ *     Past the ceiling we throw, which routes to runMission's fatal
+ *     handler → mission marked `failed` → the existing auto-refund
+ *     messaging. Nothing is persisted before this point on the batch
+ *     path, so the abort leaves no half-written state.
+ *
+ * Concurrency is UNCHANGED at 8 (see CONCURRENCY below).
+ */
+
+/**
+ * Fraction of personas that may fail to simulate before the whole run is
+ * treated as a failed mission rather than a partial delivery. Strictly
+ * greater-than: exactly 20% is tolerated, 20.1% aborts.
+ *
+ * Why 20% — OWNER: this is the one number to tune.
+ *  - The smallest paid tier is 10 respondents (pricingEngine.js
+ *    CA_MIN_RESPONDENTS / `sniff_test`). 20% there is 2 personas, i.e.
+ *    the widest ratio that still absorbs two independent transient
+ *    blips on the smallest order without failing a paid mission.
+ *  - On the large tiers (100 / 250) 20% means 20 / 50 personas lost.
+ *    A loss that big is not a blip — it is a systemic condition (bad
+ *    key, sustained rate limit, model outage) and shipping it as a
+ *    success is exactly the dressed-up failure we are trying to avoid.
+ *  - It is strictly tighter than the pre-existing row-count monitoring
+ *    warn further down this file, which only fires once HALF the rows
+ *    are already gone. That was an alarm, never a delivery gate.
+ *  - Everything below the ceiling still delivers, but delivers HONESTLY:
+ *    the shortfall reaches the persisted counters, it is not hidden.
+ */
+const MAX_SIMULATION_FAILURE_RATIO = 0.20;
+
+/** Number of deferred end-of-run recovery sweeps over failed personas. */
+const SIM_RECOVERY_SWEEPS = 1;
+
+/** Pull the diagnostically useful bits off an SDK / network error. */
+function describeSimError(err) {
+  return {
+    message: (err && err.message) || String(err),
+    // Anthropic SDK APIError carries `status` (429 / 529 / 500 …).
+    status:  (err && (err.status ?? err.statusCode)) ?? null,
+    // `code` for socket errors (ETIMEDOUT, ECONNRESET), `error.type` for API errors.
+    code:    (err && (err.code || (err.error && err.error.type))) || null,
+    name:    (err && err.name) || null,
+  };
+}
+
+/**
  * Simulate responses for all personas with capped concurrency.
  *
  * Screening gate (Part D.2): after simulation, personas that fail a
@@ -234,60 +312,185 @@ function passesScreening(question, answer) {
  * @param {Array}  questions
  * @param {object} mission
  * @param {Function} [onProgress]  called with (completed, total)
- * @returns {Promise<Array>} flat array of { persona_id, persona_profile, question_id, answer }
+ * @param {object}  [options]
+ * @param {boolean} [options.enforceFailureCeiling=true]  when false, report the
+ *        failures but never throw. Used for the screener-replacement top-up in
+ *        runMission: those batches are tiny (often 1-2 personas), so one loss
+ *        is >20% by arithmetic and would fail a mission whose MAIN batch is
+ *        perfectly healthy. A replacement we cannot simulate simply doesn't
+ *        become a replacement.
+ * @returns {Promise<{
+ *   responses: Array,        flat { persona_id, persona_profile, question_id, answer }
+ *   attempted: number,       personas handed to us
+ *   succeeded: number,       personas that produced >= 1 response row
+ *   failed: number,          personas dropped after the recovery sweep
+ *   failureRatio: number,
+ *   failedPersonaIds: Array,
+ *   failures: Array          [{ personaId, message, status, code, name, attempts }]
+ * }>}
+ *
+ * NOTE: the return type changed from a bare Array to this object so the
+ * failure count cannot be silently lost by a downstream .filter()/.map()
+ * (a property hung off the array would have been). A stale caller fails
+ * loudly on `.map is not a function` instead of quietly counting wrong.
  */
-async function simulateAllResponses(personas, questions, mission, onProgress) {
+async function simulateAllResponses(personas, questions, mission, onProgress, options = {}) {
+  const enforceFailureCeiling = options.enforceFailureCeiling !== false;
+  // UNCHANGED — raising this is deliberately a separate change, landed
+  // only after allSettled is verified in production.
   const CONCURRENCY = 8;
   const out = [];
   let completed = 0;
+  const missionId = mission && mission.id;
+  const roster = Array.isArray(personas) ? personas : [];
 
   // Pre-index questions by id for O(1) screening lookups.
   const questionById = Object.fromEntries((questions || []).map(q => [q.id, q]));
 
-  for (let i = 0; i < personas.length; i += CONCURRENCY) {
-    const wave = personas.slice(i, i + CONCURRENCY).map(async (persona) => {
-      const responses = await simulateResponses(persona, questions, mission);
+  // personaId → failure record. Keyed so the recovery sweep can clear
+  // an entry when the retry succeeds.
+  const failures = new Map();
+  const keyOf = (persona, idx) => persona.persona_id || persona.id || `idx:${idx}`;
 
-      // ── Screening gate ──────────────────────────────────────────────────
-      // Walk through responses in order. Once a screening question is
-      // answered with a non-qualifying response, mark the persona as
-      // screened out and discard all subsequent answers.
-      let screenedOut = false;
-      const keptResponses = [];
+  /**
+   * Run ONE persona end-to-end. Throws on failure; the caller decides.
+   * Rows are staged locally and only appended once the persona is known
+   * good, so a throw can never leave a half-written persona in `out`.
+   */
+  async function runPersona(persona) {
+    const responses = await simulateResponses(persona, questions, mission);
 
-      for (const r of responses) {
-        const q = questionById[r.question_id];
-        if (!screenedOut) {
-          keptResponses.push(r);
-          if (q && q.isScreening && !passesScreening(q, r.answer)) {
-            screenedOut = true; // stop keeping further responses
-          }
+    // Mirror recruitLoop's zero-response guard: a persona that produced
+    // NO parseable answers is not a respondent. simulateResponses swallows
+    // parse errors and returns [], so without this the batch path would
+    // count an empty persona toward the delivered n — the same silent
+    // overstatement the loop path already refuses.
+    if (!Array.isArray(responses) || responses.length === 0) {
+      const e = new Error('persona produced zero parseable responses');
+      e.code = 'ZERO_RESPONSES';
+      throw e;
+    }
+
+    // ── Screening gate ──────────────────────────────────────────────────
+    // Walk through responses in order. Once a screening question is
+    // answered with a non-qualifying response, mark the persona as
+    // screened out and discard all subsequent answers.
+    let screenedOut = false;
+    const keptResponses = [];
+
+    for (const r of responses) {
+      const q = questionById[r.question_id];
+      if (!screenedOut) {
+        keptResponses.push(r);
+        if (q && q.isScreening && !passesScreening(q, r.answer)) {
+          screenedOut = true; // stop keeping further responses
         }
-        // Screened-out responses after the gate are intentionally dropped.
       }
-      // ───────────────────────────────────────────────────────────────────
+      // Screened-out responses after the gate are intentionally dropped.
+    }
+    // ───────────────────────────────────────────────────────────────────
 
-      const personaProfile = screenedOut
-        ? { ...persona, screened_out: true }
-        : persona;
+    const personaProfile = screenedOut
+      ? { ...persona, screened_out: true }
+      : persona;
 
-      for (const r of keptResponses) {
-        out.push({
-          persona_id:      persona.id,
-          persona_profile: personaProfile,
-          question_id:     r.question_id,
-          answer:          r.answer,
-          // Pass 22 Bug 22.14 — reasoning trace passed through to runMission
-          // for persistence into persona_response_reasoning when the mission
-          // is small enough (<=50 personas).
-          reasoning:       typeof r.reasoning === 'string' ? r.reasoning : null,
+    const staged = keptResponses.map((r) => ({
+      persona_id:      persona.id,
+      persona_profile: personaProfile,
+      question_id:     r.question_id,
+      answer:          r.answer,
+      // Pass 22 Bug 22.14 — reasoning trace passed through to runMission
+      // for persistence into persona_response_reasoning when the mission
+      // is small enough (<=50 personas).
+      reasoning:       typeof r.reasoning === 'string' ? r.reasoning : null,
+    }));
+
+    out.push(...staged);
+
+    completed += 1;
+    if (onProgress) onProgress(completed, roster.length);
+  }
+
+  /**
+   * Drive `list` through capped-concurrency waves. One persona's
+   * rejection can no longer take the wave with it: Promise.allSettled
+   * waits for every task and hands back each outcome individually.
+   */
+  async function runWaves(list, { attempt }) {
+    for (let i = 0; i < list.length; i += CONCURRENCY) {
+      const slice = list.slice(i, i + CONCURRENCY);
+      const settled = await Promise.allSettled(
+        slice.map((entry) => runPersona(entry.persona)),
+      );
+      settled.forEach((res, idx) => {
+        const { persona, key } = slice[idx];
+        if (res.status === 'fulfilled') {
+          failures.delete(key); // recovery sweep succeeded
+          return;
+        }
+        const detail = describeSimError(res.reason);
+        failures.set(key, { personaId: key, attempts: attempt, ...detail });
+        logger.warn('simulateAllResponses: persona simulation failed', {
+          missionId,
+          personaId: key,
+          attempt,
+          status: detail.status,
+          code: detail.code,
+          err: detail.message,
         });
-      }
+      });
+    }
+  }
 
-      completed += 1;
-      if (onProgress) onProgress(completed, personas.length);
+  const entries = roster.map((persona, idx) => ({ persona, key: keyOf(persona, idx) }));
+  await runWaves(entries, { attempt: 1 });
+
+  // ── Deferred recovery sweep ────────────────────────────────────────
+  // Retry each failed persona ONCE, after every wave has run. The delay
+  // is free (it is the rest of the batch) and is what makes the retry
+  // worth making at all against a rate-limit window.
+  for (let sweep = 1; sweep <= SIM_RECOVERY_SWEEPS && failures.size > 0; sweep += 1) {
+    const retryKeys = new Set(failures.keys());
+    const retryEntries = entries.filter((e) => retryKeys.has(e.key));
+    logger.warn('simulateAllResponses: recovery sweep for failed personas', {
+      missionId, sweep, count: retryEntries.length, of: roster.length,
     });
-    await Promise.all(wave);
+    await runWaves(retryEntries, { attempt: sweep + 1 });
+  }
+
+  const attempted = roster.length;
+  const failed = failures.size;
+  const succeeded = attempted - failed;
+  const failureRatio = attempted > 0 ? failed / attempted : 0;
+  const failureList = Array.from(failures.values());
+
+  if (failed > 0) {
+    logger.error('simulateAllResponses: personas lost to simulation failures', {
+      missionId,
+      attempted,
+      succeeded,
+      failed,
+      failureRatio: Number(failureRatio.toFixed(4)),
+      failedPersonaIds: failureList.map((f) => f.personaId),
+      // First few reasons, so the Railway line is diagnosable without a join.
+      reasons: failureList.slice(0, 5).map((f) => ({
+        personaId: f.personaId, status: f.status, code: f.code, err: f.message,
+      })),
+    });
+  }
+
+  // ── Failure ceiling ────────────────────────────────────────────────
+  if (enforceFailureCeiling && attempted > 0 && failureRatio > MAX_SIMULATION_FAILURE_RATIO) {
+    const err = new Error(
+      `simulation failed for ${failed}/${attempted} personas `
+      + `(${(failureRatio * 100).toFixed(1)}% > ${(MAX_SIMULATION_FAILURE_RATIO * 100).toFixed(0)}% ceiling); `
+      + 'refusing to deliver a gutted sample as a completed mission',
+    );
+    err.code = 'SIMULATION_FAILURE_THRESHOLD';
+    err.attempted = attempted;
+    err.failed = failed;
+    err.succeeded = succeeded;
+    throw err;
   }
 
   // Pass 32 X1 — contract verification. The customer paid for
@@ -296,14 +499,17 @@ async function simulateAllResponses(personas, questions, mission, onProgress) {
   // when no screening kicked in, less when some personas got
   // screened out. We log when actual diverges by >25% so production
   // monitoring can flag mid-flight regressions early.
-  const expectedRows = personas.length * (questions || []).length;
+  //
+  // Denominator is now `succeeded`, not the full roster: personas we
+  // already reported as lost must not re-trigger this alarm.
+  const expectedRows = succeeded * (questions || []).length;
   if (expectedRows > 0) {
     const ratio = out.length / expectedRows;
     if (ratio < 0.5 || ratio > 1.5) {
-      const Logger = require('../../utils/logger');
-      Logger.warn('simulateAllResponses: row count diverges from expected', {
-        missionId: mission?.id,
-        personaCount: personas.length,
+      logger.warn('simulateAllResponses: row count diverges from expected', {
+        missionId,
+        personaCount: succeeded,
+        failedPersonaCount: failed,
         questionCount: (questions || []).length,
         expected: expectedRows,
         actual: out.length,
@@ -312,7 +518,15 @@ async function simulateAllResponses(personas, questions, mission, onProgress) {
     }
   }
 
-  return out;
+  return {
+    responses: out,
+    attempted,
+    succeeded,
+    failed,
+    failureRatio,
+    failedPersonaIds: failureList.map((f) => f.personaId),
+    failures: failureList,
+  };
 }
 
 // Pass 42 A2 — passesScreening exported so the recruitment loop in
@@ -322,6 +536,10 @@ module.exports = {
   simulateResponses,
   simulateAllResponses,
   passesScreening,
+  // Fault-tolerance knobs — owner-tunable; exported for the tests that
+  // pin the threshold behaviour.
+  MAX_SIMULATION_FAILURE_RATIO,
+  SIM_RECOVERY_SWEEPS,
   // Pass 47 — exported for the type-coverage invariant test + reuse.
   SUPPORTED_QUESTION_TYPES,
   tokenBudgetFor,
