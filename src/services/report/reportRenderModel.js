@@ -205,7 +205,30 @@ function buildRenderModel(report) {
   addMeta('Mission ID', sample.mission_id);
 
   // ── headline (key computed metrics — label/value) ──
-  const headline = report.headline && Array.isArray(report.headline.all) && report.headline.all.length
+  const rawGate = (report.centerpiece && report.centerpiece.gate) || null;
+
+  // §2.4 — WITHHOLD, don't decorate. `suppress_headline` is set by statGate for
+  // the HARD-gated methods below threshold (pricing/roadmap/market_entry n<30,
+  // audience_profiling n<50) whose single point estimate must not be presented
+  // as confident. Until Pass 49 nothing acted on it in any export, and on the
+  // web its only effect was a CSS rule that greyed the number and left it on
+  // screen at full size. So the flag existed, was computed correctly, and
+  // suppressed nothing anywhere.
+  //
+  // Suppressing HERE rather than in each renderer is deliberate: `headline:
+  // null` is already a supported state that pptx.js, xlsx.js and the pdf-v2
+  // template all guard on (`if (model.headline)` / `{{#if hasHeadline}}`), so
+  // every export inherits the behaviour with no renderer change, and any
+  // future exporter gets it for free instead of having to remember.
+  //
+  // What is NOT suppressed: the supporting data. Distributions, per-question
+  // breakdowns, personas, verbatims and audience_profiling's aggregate profile
+  // (which lives in analysis.aggregate, not in headline) all still render. The
+  // gate withholds the confident point estimate, not the evidence.
+  const suppressHeadline = !!(rawGate && rawGate.suppress_headline);
+
+  const headline = (!suppressHeadline && report.headline
+      && Array.isArray(report.headline.all) && report.headline.all.length)
     ? { primary: { label: report.headline.metric, value: report.headline.value }, all: report.headline.all }
     : null;
 
@@ -259,7 +282,18 @@ function buildRenderModel(report) {
     // §2.4 — statistical-integrity gate, carried into every export so the PDF/
     // PPTX/XLSX show the same directional banner the web does and never headline
     // a degenerate number.
-    gate: (report.centerpiece && report.centerpiece.gate) || null,
+    // The note is what every renderer already prints, so the explanation of a
+    // withheld figure rides along with zero renderer changes. `withheld` is
+    // exposed too for any surface that wants to style it explicitly.
+    gate: rawGate
+      ? {
+        ...rawGate,
+        withheld: suppressHeadline,
+        note: suppressHeadline && rawGate.note
+          ? `${rawGate.note} The headline figure is withheld at n=${rawGate.n || 0}; this method needs at least ${rawGate.threshold} for a reliable point estimate.`
+          : rawGate.note,
+      }
+      : null,
     keyFindings,
     recommendations,
     survey,
