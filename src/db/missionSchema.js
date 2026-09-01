@@ -204,7 +204,30 @@ function sanitizeMissionPatch(raw) {
  *   await updateMission(supabase, missionId, patch, { caller: 'routes/missions PATCH', userId: req.user.id });
  *
  * Caller can pass additional `.eq()` filters via `scope` — e.g.
- * { user_id: req.user.id } — to scope the update to the row's owner.
+ * { user_id: req.user.id } — to scope the update to the row's owner, or
+ * { status: 'processing' } to make a terminal write conditional on the
+ * mission still being in the state the writer believes it owns.
+ *
+ * Pass 49 — RETURN CONTRACT for scoped writes.
+ * `matched` is the number of rows the UPDATE actually hit:
+ *   null  — unknown (an error occurred, or nothing was requested back)
+ *   0     — the row exists but did NOT satisfy `scope`; ANOTHER WRITER
+ *           already moved it. The caller MUST treat this as a lost race
+ *           and suppress any side effect that assumes it won.
+ *   >0    — this writer won.
+ *
+ * The row count is only observable when `.select()` is chained, so a
+ * scoped write implies it. Note `.single()` is deliberately NOT used:
+ * PostgREST raises PGRST116 ("JSON object requested, multiple (or no)
+ * rows returned") on a 0-row result, which would turn the exact signal
+ * we need into an error. This mirrors the atomic paid→processing claim
+ * in src/jobs/runMission.js, which has always used bare `.select('id')`
+ * plus a `length === 0` test for the same reason.
+ *
+ * Consequence: `select: true` now resolves `data` to an ARRAY rather
+ * than a single object. No caller in this repo passed `select: true`
+ * when this changed (grep across src/, test/ and scripts/ was clean),
+ * so no existing call site is affected.
  */
 async function updateMission(supabase, missionId, rawPatch, opts = {}) {
   const { caller = 'unknown', scope = null, select = false } = opts;
@@ -220,14 +243,19 @@ async function updateMission(supabase, missionId, rawPatch, opts = {}) {
 
   if (Object.keys(patch).length === 0) {
     logger.warn('missions.update: nothing to update after sanitize', { caller, missionId });
-    return { data: null, error: null, rejected };
+    return { data: null, error: null, rejected, matched: null };
   }
 
   let query = supabase.from('missions').update(patch).eq('id', missionId);
-  if (scope) {
+  const scopeKeys = scope ? Object.keys(scope) : [];
+  if (scopeKeys.length > 0) {
     for (const [k, v] of Object.entries(scope)) query = query.eq(k, v);
   }
-  if (select) query = query.select().single();
+  // A scoped write is worthless without knowing whether it matched, so it
+  // always asks for the affected rows back. `select: true` keeps working
+  // for callers that just want the updated row.
+  const wantRows = select || scopeKeys.length > 0;
+  if (wantRows) query = query.select();
 
   const { data, error } = await query;
   if (error) {
@@ -238,7 +266,24 @@ async function updateMission(supabase, missionId, rawPatch, opts = {}) {
       patchKeys: Object.keys(patch),
     });
   }
-  return { data, error, rejected };
+
+  let matched = null;
+  if (!error && wantRows) {
+    if (Array.isArray(data)) matched = data.length;
+    else if (data) matched = 1;
+    else matched = 0;
+  }
+
+  if (matched === 0) {
+    logger.error('missions.update: SCOPED WRITE MATCHED 0 ROWS — another writer owns this mission', {
+      caller,
+      missionId,
+      scope,
+      patchKeys: Object.keys(patch),
+    });
+  }
+
+  return { data, error, rejected, matched };
 }
 
 module.exports = { ALLOWED_COLUMNS, sanitizeMissionPatch, updateMission };
