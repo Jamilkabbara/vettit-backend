@@ -234,17 +234,37 @@ function passesScreening(question, answer) {
  * @param {Array}  questions
  * @param {object} mission
  * @param {Function} [onProgress]  called with (completed, total)
+ * @param {object}   [opts]
+ * @param {Function} [opts.shouldAbort]  Pass 49 mid-run kill switch. Called
+ *   once per concurrency wave (NOT per persona). Return truthy to stop
+ *   simulating and return the partial `out` collected so far. It is a plain
+ *   synchronous predicate so it costs nothing: the caller does its own
+ *   throttled status read from `onProgress` and just flips a boolean here.
+ *   Aborting RETURNS partial work — it never throws, because throwing would
+ *   route into runMission's fatal handler and try to write 'failed' over
+ *   whatever terminal state the other writer set.
  * @returns {Promise<Array>} flat array of { persona_id, persona_profile, question_id, answer }
  */
-async function simulateAllResponses(personas, questions, mission, onProgress) {
+async function simulateAllResponses(personas, questions, mission, onProgress, opts = {}) {
   const CONCURRENCY = 8;
+  const { shouldAbort = null } = opts;
   const out = [];
   let completed = 0;
+  let aborted = false;
 
   // Pre-index questions by id for O(1) screening lookups.
   const questionById = Object.fromEntries((questions || []).map(q => [q.id, q]));
 
   for (let i = 0; i < personas.length; i += CONCURRENCY) {
+    // Pass 49 — wave boundary is the clean break point: no in-flight
+    // simulation is discarded, and everything already collected is kept.
+    if (shouldAbort && shouldAbort()) {
+      aborted = true;
+      logger.warn('simulateAllResponses: aborted mid-run by shouldAbort', {
+        missionId: mission?.id, completed, total: personas.length,
+      });
+      break;
+    }
     const wave = personas.slice(i, i + CONCURRENCY).map(async (persona) => {
       const responses = await simulateResponses(persona, questions, mission);
 
@@ -296,7 +316,9 @@ async function simulateAllResponses(personas, questions, mission, onProgress) {
   // when no screening kicked in, less when some personas got
   // screened out. We log when actual diverges by >25% so production
   // monitoring can flag mid-flight regressions early.
-  const expectedRows = personas.length * (questions || []).length;
+  // Pass 49 — an aborted run is short BY DESIGN; the divergence warn below
+  // would be pure noise (and misleading in the logs) for that case.
+  const expectedRows = aborted ? 0 : personas.length * (questions || []).length;
   if (expectedRows > 0) {
     const ratio = out.length / expectedRows;
     if (ratio < 0.5 || ratio > 1.5) {
