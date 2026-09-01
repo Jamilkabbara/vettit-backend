@@ -40,6 +40,10 @@ const CALL_TYPE_TO_PURPOSE = {
   brief_clarify:      'clarify',
   adaptive_clarify:   'clarify',
   question_refine:    'clarify',
+  // POST /api/ai/draft-question — drafts ONE ad-hoc extra question.
+  // Its own call_type (rather than reusing question_refine) so the
+  // spend on user-drafted questions is separable in ai_calls.
+  question_draft:     'clarify',
   targeting_suggest:  'targeting_brief',
   targeting_brief:    'targeting_brief',
   // Editorial.
@@ -65,6 +69,11 @@ const MODEL_ROUTING = {
   chat_admin_crm: 'claude-haiku-4-5',
   targeting_suggest: 'claude-sonnet-4-6',
   question_refine:   'claude-haiku-4-5',
+  // One short question from a short prompt — Haiku is ample, and this
+  // sits on an interactive path where latency is visible to the user.
+  // Unrouted this would throw "Unknown AI callType" on the first call,
+  // the exact failure mode admin_insights shipped with (see below).
+  question_draft:    'claude-haiku-4-5',
   adaptive_clarify:  'claude-haiku-4-5',
   results_analysis:  'claude-sonnet-4-6',
   targeting_brief:              'claude-sonnet-4-6',

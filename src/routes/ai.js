@@ -5,6 +5,12 @@ const ai = require('../services/claudeAI');
 const { callClaude, extractJSON } = require('../services/ai/anthropic');
 const { CATEGORY_PROMPT_BLOCK, normalizeCategory } = require('../services/ai/missionCategory');
 const logger = require('../utils/logger');
+const supabase = require('../db/supabase');
+const {
+  DRAFT_QUESTION_CAP,
+  countUserDrafts,
+  draftQuestion,
+} = require('../services/ai/draftQuestion');
 
 // POST /api/ai/generate-survey
 //
@@ -294,6 +300,140 @@ router.post('/analyse-results', authenticate, async (req, res, next) => {
     res.json(result);
   } catch (err) {
     next(err);
+  }
+});
+
+// POST /api/ai/draft-question
+//
+// Drafts ONE ad-hoc extra survey question for a mission the caller
+// owns, and RETURNS it for review. It is never written to
+// missions.questions here — see "preview, not append" below.
+//
+// Contract:
+//   Request:  { mission_id: uuid, prompt: string, pending_drafts?: int }
+//             pending_drafts = how many user-drafted questions the client's
+//             own list holds; only ever tightens the cap (see below).
+//   200:      { question: { text, type, options, source:'user_drafted' },
+//               cap: int, used: int, remaining: int }
+//   400:      { error: 'mission_id_required' | 'prompt_too_short' }
+//   404:      { error: 'mission_not_found' }
+//   409:      { error: 'draft_cap_reached', cap, used, remaining: 0 }
+//   503:      { error: 'draft_unavailable' }
+//
+// ── PREVIEW, NOT APPEND ─────────────────────────────────────────────
+// This route performs NO write. The drafted question reaches the
+// client, the user reviews it, and it enters missions.questions only
+// when they accept — through the question-list persistence path that
+// already exists (DashboardPage.flushQuestions). Drafting is therefore
+// free of side effects and a discarded draft leaves no trace.
+//
+// ── NO METHODOLOGY METADATA ─────────────────────────────────────────
+// services/ai/draftQuestion.js builds the returned object from a
+// closed allowlist, so it cannot carry kind / dimension / methodology /
+// funnel_stage / vw_band / feature_id / concept_id / ... . That matters
+// because services/analysis/* select questions by exactly those tags
+// (audienceProfiling.js:153 et al) — a fake tag here would put an
+// ad-hoc question inside a methodology bucket and corrupt the analysis
+// the customer paid for. The question carries source:'user_drafted'
+// instead, which is a marker no generated question has.
+//
+// ── AUTH: `authenticate`, not `optionalAuthenticate` ────────────────
+// Stricter than the setup-funnel endpoints above (clarify / refine /
+// suggest / generate-survey are optionally-authenticated because they
+// run in the anonymous pre-signup funnel), and matching analyse-results.
+// Three reasons:
+//   1. There is no anonymous use. Drafting an extra question happens in
+//      Mission Control, which is already behind auth — an anonymous
+//      caller has no mission to draft against.
+//   2. The cap is per-mission and MUST be counted from the stored row.
+//      Reading that row requires knowing who is asking, so the cap and
+//      the auth requirement are the same requirement.
+//   3. Cost profile matches analyse-results: an LLM call driven by
+//      arbitrary user text. Rate limiting is inherited from the
+//      /api/ai mount in app.js — aiLimiter (10/min/IP) stacked with
+//      aiHourlyLimiter (80/hr/IP) — so call volume is bounded even for
+//      an authenticated user drafting and discarding repeatedly.
+router.post('/draft-question', authenticate, async (req, res) => {
+  try {
+    const { mission_id: missionId, prompt, pending_drafts: pendingDrafts } = req.body || {};
+
+    if (!missionId || typeof missionId !== 'string') {
+      return res.status(400).json({ error: 'mission_id_required' });
+    }
+    const ask = typeof prompt === 'string' ? prompt.trim() : '';
+    if (ask.length < 3) {
+      return res.status(400).json({ error: 'prompt_too_short' });
+    }
+
+    // Ownership is part of the query, not a separate check: a mission
+    // belonging to someone else returns 404 rather than 403 so this
+    // route cannot be used to probe which mission ids exist.
+    const { data: mission, error: loadErr } = await supabase
+      .from('missions')
+      .select('id, user_id, goal_type, brief, title, questions')
+      .eq('id', missionId)
+      .eq('user_id', req.user.id)
+      .maybeSingle();
+
+    if (loadErr) {
+      logger.error('draft-question: mission load failed', {
+        missionId, error: { code: loadErr.code, message: loadErr.message },
+      });
+      return res.status(503).json({ error: 'draft_unavailable' });
+    }
+    if (!mission) {
+      return res.status(404).json({ error: 'mission_not_found' });
+    }
+
+    // ── SERVER-SIDE CAP ─────────────────────────────────────────────
+    // The authoritative count comes from the PERSISTED questions array,
+    // which the client cannot influence.
+    //
+    // `pending_drafts` covers one real gap: the client saves the
+    // question list on a debounce, so a user who accepts three drafts
+    // quickly can still be looking at a stored row that shows zero. The
+    // client therefore reports how many user-drafted questions its own
+    // list holds, and we take the MAX of the two — never the sum, which
+    // would double-count the drafts present in both.
+    //
+    // MAX is what makes this safe: the stored count is a floor the
+    // client cannot lower, and the client's number can only ever push
+    // `used` UP. A malicious client can decline itself drafts; it
+    // cannot grant itself any.
+    const stored = countUserDrafts(mission.questions);
+    const claimed = Number.isFinite(Number(pendingDrafts))
+      ? Math.max(0, Math.floor(Number(pendingDrafts)))
+      : 0;
+    const used = Math.min(Math.max(stored, claimed), DRAFT_QUESTION_CAP);
+
+    if (used >= DRAFT_QUESTION_CAP) {
+      logger.info('draft-question: cap reached', {
+        missionId, userId: req.user.id, cap: DRAFT_QUESTION_CAP, stored, claimed,
+      });
+      return res.status(409).json({
+        error: 'draft_cap_reached',
+        cap: DRAFT_QUESTION_CAP,
+        used,
+        remaining: 0,
+      });
+    }
+
+    const question = await draftQuestion({ prompt: ask, mission, userId: req.user.id });
+
+    logger.info('draft-question: drafted', {
+      missionId, userId: req.user.id, used, cap: DRAFT_QUESTION_CAP,
+    });
+
+    // No write. The client shows this for review; accept persists it.
+    return res.json({
+      question,
+      cap: DRAFT_QUESTION_CAP,
+      used,
+      remaining: DRAFT_QUESTION_CAP - used,
+    });
+  } catch (err) {
+    logger.warn('draft-question failed', { err: err.message });
+    return res.status(503).json({ error: 'draft_unavailable' });
   }
 });
 
