@@ -185,10 +185,23 @@ const baseMission = (over = {}) => ({
 /** Wire the happy batch path: 2 personas, 1 answer each, insights returned. */
 function wireHappyPath() {
   generatePersonas.mockResolvedValue([{ id: 'p1' }, { id: 'p2' }]);
-  simulateAllResponses.mockResolvedValue([
+  // PR #109 changed simulateAllResponses from a bare array to a result object
+  // so a partial delivery can never be silent. This fixture follows that
+  // contract; returning the old array shape makes runMission throw and the
+  // mission ends 'failed', which is what broke this suite on the merge.
+  const simResponses = [
     { persona_id: 'p1', persona_profile: { id: 'p1' }, question_id: 'q1', answer: 'a', reasoning: null },
     { persona_id: 'p2', persona_profile: { id: 'p2' }, question_id: 'q1', answer: 'b', reasoning: null },
-  ]);
+  ];
+  simulateAllResponses.mockResolvedValue({
+    responses: simResponses,
+    attempted: 2,
+    succeeded: 2,
+    failed: 0,
+    failureRatio: 0,
+    failedPersonaIds: [],
+    failures: [],
+  });
   synthesizeInsights.mockResolvedValue({ executive_summary: 'fresh run summary' });
 }
 

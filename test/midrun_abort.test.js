@@ -284,21 +284,53 @@ describe('simulateAllResponses shouldAbort', () => {
       // Abort once the first wave (CONCURRENCY = 8) has finished.
       { shouldAbort: () => seen >= 8 });
 
-    expect(out.length).toBeGreaterThan(0);
-    expect(out.length).toBeLessThan(personas.length);
+    expect(out.responses.length).toBeGreaterThan(0);
+    expect(out.responses.length).toBeLessThan(personas.length);
     // Nothing in flight was discarded: the first wave completed in full.
-    expect(out).toHaveLength(8);
+    expect(out.responses).toHaveLength(8);
+    // ...and the honest counters agree with the rows actually produced.
+    expect(out.succeeded).toBe(8);
   });
 
   test('aborting returns — it never throws', async () => {
-    await expect(
-      simulateAllResponses(personas, questions, { id: MISSION_ID }, () => {},
-        { shouldAbort: () => true }),
-    ).resolves.toEqual([]);
+    const r = await simulateAllResponses(
+      personas, questions, { id: MISSION_ID }, () => {}, { shouldAbort: () => true },
+    );
+    expect(r.responses).toEqual([]);
+  });
+
+  // PR #109 computes succeeded as attempted - failed, which silently assumes
+  // every persona RAN. An abort breaks that assumption: personas past the
+  // break point never ran, so they are neither failed nor succeeded. Without
+  // the abort-aware count this returned succeeded=40 alongside zero response
+  // rows, and runMission derives its delivery columns from these counters -
+  // it would have reported 40 respondents delivered on a run that produced
+  // nothing.
+  test('an aborted run never reports un-run personas as succeeded', async () => {
+    const r = await simulateAllResponses(
+      personas, questions, { id: MISSION_ID }, () => {}, { shouldAbort: () => true },
+    );
+    expect(r.attempted).toBe(personas.length);
+    expect(r.responses).toHaveLength(0);
+    expect(r.succeeded).toBe(0);
+    expect(r.failed).toBe(0);
+  });
+
+  test('a partial abort reports only the personas that produced rows', async () => {
+    let waves = 0;
+    const r = await simulateAllResponses(
+      personas, questions, { id: MISSION_ID }, () => {}, { shouldAbort: () => waves++ >= 1 },
+    );
+    const distinct = new Set(r.responses.map((x) => x.persona_id)).size;
+    expect(r.succeeded).toBe(distinct);
+    expect(r.succeeded).toBeLessThan(personas.length);
+    expect(r.succeeded).toBeGreaterThan(0);
   });
 
   test('without shouldAbort the behaviour is exactly as before', async () => {
-    const out = await simulateAllResponses(personas, questions, { id: MISSION_ID }, () => {});
-    expect(out).toHaveLength(40);
+    const r = await simulateAllResponses(personas, questions, { id: MISSION_ID }, () => {});
+    expect(r.responses).toHaveLength(40);
+    expect(r.succeeded).toBe(40);
+    expect(r.failed).toBe(0);
   });
 });
