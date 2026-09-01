@@ -242,11 +242,31 @@ async function runJob1() {
       logger.warn('[cron] job1 tick: found stuck processing missions', { count: stuck.length });
 
       for (const m of stuck) {
-        await updateMission(supabase, m.id, {
+        // Pass 49 — status-scoped. The SELECT above already filters on
+        // status='processing', but time passes between the read and the
+        // write: on a large mission the run can finish (or an admin can
+        // force-complete it) in that window, and an unconditional UPDATE
+        // would stamp 'failed' + failure_reason + completed_at straight
+        // over a genuine terminal state. The .eq('status','processing')
+        // makes the reaper's own write lose that race instead of winning
+        // it. This is the reaper side of the same invariant runMission's
+        // two terminal writes now enforce.
+        const { error: reapErr, matched } = await updateMission(supabase, m.id, {
           status:         'failed',
           failure_reason: `Mission stuck in 'processing' for >${JOB1_STUCK_AFTER_HOURS}h — auto-failed by recovery cron`,
           completed_at:   new Date().toISOString(),
-        }, { caller: 'cron:missionRecovery:job1' });
+        }, { caller: 'cron:missionRecovery:job1', scope: { status: 'processing' } });
+
+        if (!reapErr && matched === 0) {
+          // Benign in outcome — the mission resolved itself — but loud on
+          // purpose: it means the reaper came within one query of
+          // clobbering a live run's terminal state, and the admin alert
+          // below would have been a false "stuck mission" page.
+          logger.error('[cron] job1 auto-fail SKIPPED — mission left processing between select and update', {
+            missionId: m.id, started_at: m.started_at,
+          });
+          continue;
+        }
 
         await alertAdmin('mission_stuck_processing', m.id, {
           user_id:           m.user_id,

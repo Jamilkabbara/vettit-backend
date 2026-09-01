@@ -769,7 +769,17 @@ async function runMission(missionId, opts = {}) {
       });
     }
 
-    await updateMission(supabase, missionId, {
+    // ─── Terminal write: status-scoped ────────────────────────────────────
+    // Pass 49 — this write used to be UNCONDITIONAL. A run that the Job 1
+    // reaper had already marked 'failed' (or that an admin had
+    // force-completed via PATCH /api/admin/missions/:id/force-complete)
+    // kept executing and then wrote 'completed' straight back over that
+    // terminal state, together with its own insights / analysis /
+    // aggregated_by_question — all of which are built from this process's
+    // in-memory arrays and are never re-read from the DB. Scoping to
+    // status='processing' makes the write conditional on this process
+    // still owning the claim it took at the top of runMission.
+    const { error: completeErr, matched: completeMatched } = await updateMission(supabase, missionId, {
       status: 'completed',
       completed_at: new Date().toISOString(),
       executive_summary: insights?.executive_summary || null,
@@ -795,15 +805,57 @@ async function runMission(missionId, opts = {}) {
       // NOTE: Pass 42 policy — NO REFUNDS, EVER. partial delivery from
       // a hit margin ceiling is not a refundable event; customer
       // agreed to this at checkout (Pass 42 G4 microcopy).
-    }, { caller: 'runMission: complete' });
+    }, { caller: 'runMission: complete', scope: { status: 'processing' } });
 
-    logger.info('Mission run: complete', {
-      missionId, qualifiedRespondent, totalSimulated,
-      // Per-mission simulation-failure count, carried all the way to the
-      // completion line so a short delivery is never silent.
-      simulationFailures: simFailureReport ? simFailureReport.failed : 0,
-      simulationAttempted: simFailureReport ? simFailureReport.attempted : totalSimulated,
-    });
+    // 0 rows matched => the mission left 'processing' while we were still
+    // working. We are the stale writer. Never silent: this is an incident.
+    // Legitimate causes: the Job 1 reaper auto-failed a long-but-healthy
+    // run, an admin force-completed it (src/routes/admin.js
+    // PATCH /missions/:id/force-complete), or a second concurrent run
+    // (Job 3 {resume:true} on a rolling deploy) finished first.
+    const terminalWriteLost = !completeErr && completeMatched === 0;
+    if (terminalWriteLost) {
+      logger.error('Mission run: COMPLETION WRITE LOST — mission is no longer processing; another writer resolved it', {
+        missionId,
+        attempted: 'status=completed',
+        qualifiedRespondent,
+        totalSimulated,
+        note: 'insights/analysis/aggregated_by_question from THIS process were NOT persisted; customer notification and completion email suppressed',
+        // From PR #109 - a lost write on a short delivery is doubly important
+        // to see: the run under-delivered AND its result was dropped.
+        simulationFailures: simFailureReport ? simFailureReport.failed : 0,
+        simulationAttempted: simFailureReport ? simFailureReport.attempted : totalSimulated,
+      });
+      // Ops-visible: the results this run computed exist only in memory
+      // and are about to be dropped. Someone has to decide whether to
+      // re-run or force-complete. admin_alerts is the existing channel.
+      try {
+        await supabase.from('admin_alerts').insert({
+          alert_type: 'mission_terminal_write_lost',
+          mission_id: missionId,
+          user_id:    mission.user_id,
+          payload: {
+            attempted_status:   'completed',
+            qualified:          qualifiedRespondent,
+            total_simulated:    totalSimulated,
+            action_required: 'A run finished but could not write its terminal state — the row had already left processing (reaper auto-fail, admin force-complete, or a concurrent run). Check the mission status and re-run or force-complete as appropriate.',
+          },
+          resolved: false,
+        });
+      } catch (alertErr) {
+        logger.warn('Mission run: terminal_write_lost alert insert failed (non-fatal)', {
+          missionId, err: alertErr.message,
+        });
+      }
+    } else {
+      logger.info('Mission run: complete', {
+        missionId, qualifiedRespondent, totalSimulated,
+        // Per-mission simulation-failure count (PR #109), carried all the way
+        // to the completion line so a short delivery is never silent.
+        simulationFailures: simFailureReport ? simFailureReport.failed : 0,
+        simulationAttempted: simFailureReport ? simFailureReport.attempted : totalSimulated,
+      });
+    }
 
     // Funnel event.
     // Pass 34 C4 — was fire-and-forget with silent .catch(() => {});
@@ -825,6 +877,10 @@ async function runMission(missionId, opts = {}) {
           qualified: qualifiedRespondent,
           paid_for: targetCount,
           total_simulated: totalSimulated,
+          // Pass 49 — true when THIS process could not write the terminal
+          // state (another writer owned the row). Kept in the funnel so
+          // analytics can separate real completions from lost races.
+          terminal_write_noop: terminalWriteLost,
         },
       });
       if (feErr) {
@@ -839,39 +895,50 @@ async function runMission(missionId, opts = {}) {
     }
 
     // Notification — single 'mission_complete' branch (no partial branch v2).
-    try {
-      const { error: notifErr } = await supabase
-        .from('notifications')
-        .insert({
-          user_id: mission.user_id,
-          type:    'mission_complete',
-          title:   'Mission complete',
-          body:    `Your "${truncateTitle(mission.title)}" results are ready.`,
-          link:    `/dashboard/${missionId}`,
-        });
-      if (notifErr) {
-        logger.warn('Mission run: notification insert failed', { missionId, err: notifErr.message });
+    //
+    // Pass 49 — SUPPRESSED when the terminal write was lost. A zombie run
+    // must not tell a customer "your results are ready" about a mission
+    // that somebody else already resolved (and whose row does NOT contain
+    // this run's insights, because the scoped write above no-opped).
+    if (terminalWriteLost) {
+      logger.error('Mission run: suppressing customer notification + completion email (terminal write lost)', {
+        missionId, userId: mission.user_id,
+      });
+    } else {
+      try {
+        const { error: notifErr } = await supabase
+          .from('notifications')
+          .insert({
+            user_id: mission.user_id,
+            type:    'mission_complete',
+            title:   'Mission complete',
+            body:    `Your "${truncateTitle(mission.title)}" results are ready.`,
+            link:    `/dashboard/${missionId}`,
+          });
+        if (notifErr) {
+          logger.warn('Mission run: notification insert failed', { missionId, err: notifErr.message });
+        }
+      } catch (notifThrow) {
+        logger.warn('Mission run: notification insert threw', { missionId, err: notifThrow.message });
       }
-    } catch (notifThrow) {
-      logger.warn('Mission run: notification insert threw', { missionId, err: notifThrow.message });
-    }
 
-    // Email completion.
-    try {
-      const { data: { user } } = await supabase.auth.admin.getUserById(mission.user_id);
-      if (user?.email) {
-        await emailService.sendMissionCompletedEmail?.({
-          to: user.email,
-          name: user.user_metadata?.name || user.email.split('@')[0],
-          missionStatement: mission.title || 'Your research mission',
-          totalResponses: qualifiedRespondent,
-          missionId,
-          headline: insights?.executive_summary?.slice(0, 200) || '',
-        });
+      // Email completion.
+      try {
+        const { data: { user } } = await supabase.auth.admin.getUserById(mission.user_id);
+        if (user?.email) {
+          await emailService.sendMissionCompletedEmail?.({
+            to: user.email,
+            name: user.user_metadata?.name || user.email.split('@')[0],
+            missionStatement: mission.title || 'Your research mission',
+            totalResponses: qualifiedRespondent,
+            missionId,
+            headline: insights?.executive_summary?.slice(0, 200) || '',
+          });
+        }
+      } catch (mailErr) {
+        logger.warn('Mission run: email send failed', { missionId, err: mailErr.message });
       }
-    } catch (mailErr) {
-      logger.warn('Mission run: email send failed', { missionId, err: mailErr.message });
-    }
+    } // end if (!terminalWriteLost) — notification + completion email
   } catch (err) {
     logger.error('Mission run: fatal', { missionId, err: err.message, stack: err.stack });
     const failureReason = String(err && err.message ? err.message : 'Unknown error').slice(0, 500);
@@ -888,11 +955,26 @@ async function runMission(missionId, opts = {}) {
     //    No refund was ever actually issued by this path; customers
     //    were being PROMISED refunds in the failure notification that
     //    nothing ever fulfilled. The promise is the bug.
-    await updateMission(supabase, missionId, {
+    // Pass 49 — status-scoped, same rationale as the completion write
+    // above. An unconditional 'failed' here would overwrite a state that
+    // a reaper, an admin force-complete, or a concurrent run had already
+    // established — including stamping failure_reason and completed_at
+    // over a genuinely completed mission.
+    const { error: failWriteErr, matched: failMatched } = await updateMission(supabase, missionId, {
       status: 'failed',
       failure_reason: failureReason,
       completed_at: new Date().toISOString(),
-    }, { caller: 'runMission: fatal' });
+    }, { caller: 'runMission: fatal', scope: { status: 'processing' } });
+
+    const failWriteLost = !failWriteErr && failMatched === 0;
+    if (failWriteLost) {
+      logger.error('Mission run: FAILURE WRITE LOST — mission is no longer processing; another writer resolved it', {
+        missionId,
+        attempted: 'status=failed',
+        failureReason,
+        note: 'customer failure notification and failure email suppressed',
+      });
+    }
 
     // Admin alert so ops can see hard-failure missions without paging
     // funnel_events. Dedup pattern matches missionRecovery::alertAdmin.
@@ -909,6 +991,11 @@ async function runMission(missionId, opts = {}) {
           paid_amount_cents: mission.paid_amount_cents,
           payment_intent_id: mission.latest_payment_intent_id,
           action_required: 'Customer paid and got nothing — prioritize a manual re-run (admin reanalyze / re-trigger). NO refund per policy.',
+          // Pass 49 — true when the scoped 'failed' write no-opped, i.e.
+          // this run threw but the row had already been resolved by
+          // someone else. Ops should check the CURRENT status before
+          // acting; the mission may already be completed.
+          terminal_write_noop: failWriteLost,
         },
         resolved: false,
       });
@@ -922,44 +1009,55 @@ async function runMission(missionId, opts = {}) {
     // Terms §5.3). The customer gets a support-prioritized re-run,
     // and the copy says exactly that — no money-back promises.
     const notifBody = `Your "${truncateTitle(mission.title)}" hit a snag before completing. Our team has been notified and will prioritize a re-run of your mission. Contact support if you don't hear from us within one business day.`;
-    try {
-      const { error: failNotifErr } = await supabase
-        .from('notifications')
-        .insert({
-          user_id: mission.user_id,
-          type:    'mission_failed',
-          title:   'Mission failed — re-run prioritized',
-          body:    notifBody,
-          link:    mission.goal_type === 'creative_attention'
-            ? `/creative-results/${missionId}`
-            : `/dashboard/${missionId}`,
-        });
-      if (failNotifErr) {
-        logger.warn('Mission run: failure notification insert failed', {
-          missionId, err: failNotifErr.message,
-        });
-      }
-    } catch { /* swallowed; logging-only */ }
+    //
+    // Pass 49 — SUPPRESSED when the scoped 'failed' write no-opped. Telling
+    // a customer their mission failed, when the row says completed because
+    // another writer resolved it, is exactly the zombie-notification bug
+    // this pass exists to close.
+    if (failWriteLost) {
+      logger.error('Mission run: suppressing customer failure notification + failure email (terminal write lost)', {
+        missionId, userId: mission.user_id,
+      });
+    } else {
+      try {
+        const { error: failNotifErr } = await supabase
+          .from('notifications')
+          .insert({
+            user_id: mission.user_id,
+            type:    'mission_failed',
+            title:   'Mission failed — re-run prioritized',
+            body:    notifBody,
+            link:    mission.goal_type === 'creative_attention'
+              ? `/creative-results/${missionId}`
+              : `/dashboard/${missionId}`,
+          });
+        if (failNotifErr) {
+          logger.warn('Mission run: failure notification insert failed', {
+            missionId, err: failNotifErr.message,
+          });
+        }
+      } catch { /* swallowed; logging-only */ }
 
-    // Pass 44 P0 — failure email. sendMissionFailedEmail is the no-refund
-    // rewrite of the old sendMissionFailedRefundEmail, whose template
-    // promised a refund the removed auto-refund block never issued. The
-    // refundAmountUsd/refundFailed arguments went away with that copy.
-    try {
-      const { data: { user } } = await supabase.auth.admin.getUserById(mission.user_id);
-      if (user?.email) {
-        await emailService.sendMissionFailedEmail?.({
-          to: user.email,
-          name: user.user_metadata?.name || user.email.split('@')[0],
-          missionTitle: mission.title || 'Your VETT mission',
-          missionId,
-          // Sanitize the failure reason — strip stack-trace-ish content + cap length.
-          friendlyReason: friendlyFailureReason(failureReason),
-        });
+      // Pass 44 P0 — failure email. sendMissionFailedEmail is the no-refund
+      // rewrite of the old sendMissionFailedRefundEmail, whose template
+      // promised a refund the removed auto-refund block never issued. The
+      // refundAmountUsd/refundFailed arguments went away with that copy.
+      try {
+        const { data: { user } } = await supabase.auth.admin.getUserById(mission.user_id);
+        if (user?.email) {
+          await emailService.sendMissionFailedEmail?.({
+            to: user.email,
+            name: user.user_metadata?.name || user.email.split('@')[0],
+            missionTitle: mission.title || 'Your VETT mission',
+            missionId,
+            // Sanitize the failure reason — strip stack-trace-ish content + cap length.
+            friendlyReason: friendlyFailureReason(failureReason),
+          });
+        }
+      } catch (mailErr) {
+        logger.warn('Mission run: failure email send failed', { missionId, err: mailErr.message });
       }
-    } catch (mailErr) {
-      logger.warn('Mission run: failure email send failed', { missionId, err: mailErr.message });
-    }
+    } // end if (!failWriteLost) — failure notification + failure email
   }
 }
 
