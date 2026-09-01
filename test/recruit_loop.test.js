@@ -38,6 +38,9 @@ jest.mock('../src/services/ai/simulate', () => ({
 const mockUpdateMission = jest.fn().mockResolvedValue({ data: null, error: null });
 jest.mock('../src/db/missionSchema', () => ({
   updateMission: mockUpdateMission,
+  // Pass 49 — heartbeat_at availability latch (migration applied by hand).
+  isHeartbeatColumnMissing: jest.fn(() => false),
+  noteHeartbeatColumnMissing: jest.fn(() => false),
 }));
 
 const { runRecruitmentLoop, MAX_PERSONAS_PER_TARGET } = require('../src/services/ai/recruitLoop');

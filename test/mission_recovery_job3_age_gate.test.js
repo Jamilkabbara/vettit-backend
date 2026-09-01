@@ -18,6 +18,9 @@ jest.mock('../src/jobs/runMission', () => ({ runMission: jest.fn().mockResolvedV
 jest.mock('../src/db/missionSchema', () => ({
   updateMission: jest.fn().mockResolvedValue({}),
   sanitizeMissionPatch: jest.fn((p) => ({ patch: p, rejected: [] })),
+  // Pass 49 — heartbeat_at availability latch (migration applied by hand).
+  isHeartbeatColumnMissing: jest.fn(() => false),
+  noteHeartbeatColumnMissing: jest.fn(() => false),
 }));
 jest.mock('../src/utils/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(),

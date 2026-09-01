@@ -1,0 +1,112 @@
+-- Pass 49 — missions.heartbeat_at: liveness, not wall-clock.
+--
+-- ############################################################
+-- ##  NOT APPLIED. ORDERING DEPENDENCY — READ BEFORE RUNNING ##
+-- ############################################################
+--
+-- This file is additive and CANNOT fail on live data (ADD COLUMN IF NOT
+-- EXISTS of a nullable timestamptz with no default rewrites nothing and
+-- takes only a brief ACCESS EXCLUSIVE lock). The ordering dependency is
+-- not about this file failing — it is about what the APPLICATION does
+-- before and after it.
+--
+-- RECOMMENDED ORDER:
+--   1. apply THIS file
+--   2. deploy the Pass 49 PR 3 application code
+--
+-- The reverse order is SAFE but DEGRADED, by design. Every reader and
+-- writer of this column detects PostgREST 42703 ("column ... does not
+-- exist"), latches a module-level flag, logs once at error level, and
+-- falls back to the pre-heartbeat behaviour:
+--   - src/services/ai/recruitLoop.js writeProgress retries the progress
+--     write without heartbeat_at, so recruited_persona_count keeps
+--     ticking (a silently dropped progress write would break the live
+--     customer counter).
+--   - src/jobs/missionRecovery.js Jobs 1 and 3 re-select without the
+--     column and revert to their pre-Pass-49 started_at age gates.
+-- So a deploy that lands ahead of this migration behaves exactly like
+-- Pass 48 until the column appears. It does NOT self-heal on its own:
+-- the latch is per-process, so restart the app (or wait for the next
+-- Railway deploy) after applying this file.
+--
+-- WHY THE COLUMN
+-- --------------
+-- Both reapers currently reason about started_at, which measures how
+-- long a mission has EXISTED, not whether it is alive:
+--
+--   Job 1 (missionRecovery.js): status='processing' AND started_at <
+--     now() - 6h  =>  write status='failed'. A healthy 1000-respondent
+--     recruit-loop run projects to ~3.4h at a 100% screener pass rate
+--     and ~4.9h at 70% (weighted from live ai_calls latency across all
+--     loop-path missions; the largest real run observed — 300 qualified
+--     respondents in 67.9 min of loop time — projects to 3.8h / 5.4h).
+--     Those are the same order of magnitude as the 6h gate, so the
+--     reaper auto-fails healthy long runs. It is a false-positive
+--     machine on the tier this column exists to unblock.
+--
+--   Job 3 (boot resume sweep): the Pass 48 started_at age gate only
+--     protects the first 15 minutes of a run. A 1000-respondent mission
+--     20 minutes into a healthy 5-hour run is already past it, so every
+--     rolling Railway deploy re-enters it with {resume:true} — the exact
+--     concurrency that produced 785 duplicate rows across 3 missions.
+--
+-- heartbeat_at answers the question both jobs are actually asking: when
+-- did this run last do something? Written from
+-- src/services/ai/recruitLoop.js writeProgress (which already updates
+-- missions once per persona, so it is free) and from a throttled
+-- every-25-personas hook on the legacy batch path in
+-- src/jobs/runMission.js (~40 writes across a 1000-respondent run).
+--
+-- WHY 15 MINUTES
+-- --------------
+-- Measured read-only against production on 2026-09-01:
+--   - Loop-path gap between consecutive ai_calls, n=1432:
+--       p50 5.6s   p95 12.0s   p99 14.9s   MAX 21.8s
+--     15 min is 41x the observed maximum silence between writes.
+--   - Batch-path post-simulation synthesis tail (last response_sim ->
+--     completed_at), the longest stretch with no per-persona progress
+--     hook: max 3.66 min (mission b8f5abce), typical 2.6-3.0 min.
+--     15 min is 4.1x the worst observed tail.
+--   - Longest single LLM call of ANY type, all time: 122.3s
+--     (insight_synth, mission 5a07eaf8). 15 min is 7.4x that.
+--
+-- The one case 15 minutes does NOT cover: the Anthropic SDK is
+-- constructed with no explicit timeout, so it uses the documented
+-- defaults of timeout=10 minutes and maxRetries=2 (verified in
+-- node_modules/@anthropic-ai/sdk 0.20.9). One logical call can therefore
+-- be legitimately silent for ~30 minutes. That is why the two jobs do
+-- NOT share a threshold — see the constants in missionRecovery.js.
+--
+-- NULL HANDLING — STATED EXPLICITLY
+-- ---------------------------------
+-- Every mission in flight when this column lands has heartbeat_at NULL,
+-- and so does any run that died before its first write. A naive
+-- `heartbeat_at < now() - interval '15 minutes'` evaluates to NULL for
+-- those rows, which SQL treats as not-true, so they would silently fall
+-- out of both jobs forever.
+--
+-- The application does the age decision in JS rather than SQL precisely
+-- so this case is explicit. A NULL heartbeat falls back to started_at
+-- with each job's PRE-PASS-49 threshold — that is, unchanged behaviour
+-- for rows we have no liveness evidence about:
+--   Job 1: heartbeat_at IS NULL  =>  auto-fail at started_at + 6h
+--                                    (JOB1_STUCK_AFTER_HOURS, unchanged)
+--   Job 3: heartbeat_at IS NULL  =>  resume at started_at + 15min
+--                                    (JOB3_MIN_STRANDED_AGE_MIN, unchanged)
+-- This is self-limiting: any run started after the deploy writes a
+-- heartbeat within seconds, so the NULL branch only ever covers rows
+-- that predate the deploy or died before checking in even once — and a
+-- run that never checked in once genuinely deserves the conservative
+-- 6h window.
+
+ALTER TABLE public.missions
+  ADD COLUMN IF NOT EXISTS heartbeat_at timestamptz;
+
+COMMENT ON COLUMN public.missions.heartbeat_at IS
+  'Pass 49 — last time the process running this mission checked in. Written per persona by the recruit loop (src/services/ai/recruitLoop.js writeProgress) and every 25 personas on the legacy batch path (src/jobs/runMission.js). The reapers in src/jobs/missionRecovery.js use staleness of THIS column, not started_at, to decide whether a processing mission is dead: started_at measures how long a mission has existed, which on the 1000-respondent tier (a healthy run projects to 3.4-4.9h) made the 6h Job 1 gate a false-positive machine. NULL means the run never checked in — the jobs fall back to started_at with their pre-Pass-49 thresholds.';
+
+-- Partial index: the reapers only ever scan status='processing', which is
+-- a handful of rows, so this is cheap insurance rather than a necessity.
+CREATE INDEX IF NOT EXISTS idx_missions_processing_heartbeat
+  ON public.missions (heartbeat_at)
+  WHERE status = 'processing';
