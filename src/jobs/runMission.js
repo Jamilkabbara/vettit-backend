@@ -31,7 +31,11 @@ const { synthesizeInsights, aggregate } = require('../services/ai/insights');
 const { buildSimMeta } = require('../services/ai/simMeta');
 const { generateTargetingBrief } = require('../services/ai/targetingBrief');
 const { analyzeCreative }       = require('../services/ai/creativeAttention');
-const { updateMission } = require('../db/missionSchema');
+const {
+  updateMission,
+  isHeartbeatColumnMissing,
+  noteHeartbeatColumnMissing,
+} = require('../db/missionSchema');
 // Pass 42 A2 — recruit-until-qualified loop (env-gated). When
 // RECRUIT_LOOP_ENABLED=true the new flow replaces the batch
 // generate+simulate+retry path with a streaming per-persona loop
@@ -115,6 +119,42 @@ async function runMission(missionId, opts = {}) {
       return { skipped: true, reason: 'claim failed — another worker got it' };
     }
   }
+
+  // ─── Pass 49 heartbeat ────────────────────────────────────────────────────
+  // Stamped immediately after the claim (or the resume), so a live run is
+  // NEVER sitting on a NULL heartbeat_at. That matters because the reapers
+  // treat NULL as "this run never checked in" and fall back to the
+  // pre-Pass-49 started_at thresholds; getting the first stamp down here
+  // means the fallback only ever applies to rows that predate the deploy or
+  // to runs that died before reaching this line.
+  //
+  // Deliberately NOT folded into the atomic claim above: that write is
+  // load-bearing for idempotency, and a column that does not exist yet
+  // (the migration is applied by hand) would turn a lost heartbeat into a
+  // lost claim.
+  const stampHeartbeat = async () => {
+    if (isHeartbeatColumnMissing()) return;
+    try {
+      const { error } = await supabase
+        .from('missions')
+        .update({ heartbeat_at: new Date().toISOString() })
+        .eq('id', missionId)
+        // Only a run that still owns the mission may refresh its liveness.
+        // Without this a zombie would keep the row looking alive, which is
+        // the precise opposite of what the column is for.
+        .eq('status', 'processing');
+      if (error && !noteHeartbeatColumnMissing(error, 'runMission: stampHeartbeat')) {
+        logger.warn('Mission run: heartbeat write failed (non-fatal)', {
+          missionId, err: error.message, code: error.code,
+        });
+      }
+    } catch (e) {
+      logger.warn('Mission run: heartbeat write threw (non-fatal)', {
+        missionId, err: e?.message,
+      });
+    }
+  };
+  await stampHeartbeat();
 
   try {
     // ─── Creative Attention bypass ──────────────────────────────────────────
@@ -337,6 +377,13 @@ async function runMission(missionId, opts = {}) {
           // Fire-and-forget: onProgress is synchronous and called from
           // inside a wave, so awaiting here would serialise the simulation.
           checkClaimStillOurs();
+          // Pass 49 — the batch path's heartbeat. The recruit loop gets one
+          // per persona for free (writeProgress already updates missions);
+          // this path has no per-persona write, so it rides the same
+          // every-25 throttle as the progress log: roughly 40 writes across
+          // a 1000-respondent run, ~55s apart at the measured batch rate of
+          // ~2.2s per persona. Comfortably inside the 15-minute threshold.
+          stampHeartbeat();
         }
       },
       { shouldAbort: () => batchClaimRevoked },

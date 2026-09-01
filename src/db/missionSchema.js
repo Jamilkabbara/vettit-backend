@@ -174,6 +174,12 @@ const ALLOWED_COLUMNS = new Set([
   'aggregated_by_question',
   // Pass 46 Phase 3 — deterministic methodology analysis object.
   'analysis',
+  // Pass 49 — liveness stamp for the reapers. MUST be listed here:
+  // sanitizeMissionPatch silently drops anything outside this set with
+  // only a logger.warn, which has already broken two columns after they
+  // shipped (`brand_name`, `category`). See
+  // migrations/pass-49/01_missions_heartbeat_at.sql.
+  'heartbeat_at',
 ]);
 
 /**
@@ -286,4 +292,54 @@ async function updateMission(supabase, missionId, rawPatch, opts = {}) {
   return { data, error, rejected, matched };
 }
 
-module.exports = { ALLOWED_COLUMNS, sanitizeMissionPatch, updateMission };
+// ─── Pass 49 — heartbeat_at availability latch ─────────────────────────────
+//
+// migrations/pass-49/01_missions_heartbeat_at.sql is applied by hand, so
+// the application can legitimately be running against a schema that does
+// not have the column yet. Rather than let that 400 every progress write
+// and every reaper query, the readers and writers detect PostgREST 42703
+// once, latch it, and fall back to pre-Pass-49 behaviour.
+//
+// The latch is per-process and deliberately one-way: it never re-probes.
+// Applying the migration therefore requires an app restart (or the next
+// Railway deploy) to take effect — stated in the migration header too.
+let _heartbeatColumnMissing = false;
+
+/** True once a 42703 on heartbeat_at has been observed in this process. */
+function isHeartbeatColumnMissing() {
+  return _heartbeatColumnMissing;
+}
+
+/**
+ * Inspect a PostgREST error. If it is "column heartbeat_at does not
+ * exist", latch it (logging once, loudly) and return true so the caller
+ * can retry without the column.
+ */
+function noteHeartbeatColumnMissing(error, caller) {
+  if (!error) return false;
+  const code = error.code || '';
+  const msg  = `${error.message || ''} ${error.details || ''}`;
+  const isMissing = (code === '42703' || code === 'PGRST204') && /heartbeat_at/.test(msg);
+  if (!isMissing) return false;
+  if (!_heartbeatColumnMissing) {
+    _heartbeatColumnMissing = true;
+    logger.error('missions.heartbeat_at is MISSING — apply migrations/pass-49/01_missions_heartbeat_at.sql, then restart. Falling back to pre-Pass-49 started_at behaviour until then.', {
+      caller, code, message: error.message,
+    });
+  }
+  return true;
+}
+
+/** Test-only: clear the latch between cases. */
+function _resetHeartbeatColumnLatch() {
+  _heartbeatColumnMissing = false;
+}
+
+module.exports = {
+  ALLOWED_COLUMNS,
+  sanitizeMissionPatch,
+  updateMission,
+  isHeartbeatColumnMissing,
+  noteHeartbeatColumnMissing,
+  _resetHeartbeatColumnLatch,
+};

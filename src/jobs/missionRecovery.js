@@ -47,7 +47,11 @@
 const supabase = require('../db/supabase');
 const stripeService = require('../services/stripe');
 const { runMission } = require('./runMission');
-const { updateMission } = require('../db/missionSchema');
+const {
+  updateMission,
+  isHeartbeatColumnMissing,
+  noteHeartbeatColumnMissing,
+} = require('../db/missionSchema');
 const logger = require('../utils/logger');
 const os = require('os');
 
@@ -61,6 +65,49 @@ const JOB1_INTERVAL_MS_DEFAULT = 10 * 60 * 1000; // 10 min
 // re-enters stranded missions instead of relying on this reaper, so
 // 6h is a true catastrophic-hang backstop, not the primary recovery.
 const JOB1_STUCK_AFTER_HOURS = 6;
+
+// ─── Pass 49 — heartbeat staleness replaces wall-clock ────────────────────
+//
+// started_at measures how long a mission has EXISTED. It says nothing
+// about whether the process running it is alive, which is the question
+// both reapers are actually asking. missions.heartbeat_at (see
+// migrations/pass-49/01_missions_heartbeat_at.sql) is written once per
+// persona by the recruit loop and every 25 personas on the batch path, so
+// its staleness is a direct liveness signal.
+//
+// THRESHOLD, MEASURED (read-only against production, 2026-09-01):
+//   loop-path gap between consecutive ai_calls, n=1432:
+//     p50 5.6s  p95 12.0s  p99 14.9s  MAX 21.8s      -> 15 min = 41x max
+//   batch-path synthesis tail (last response_sim -> completed_at),
+//     the longest stretch with no per-persona hook: max 3.66 min
+//                                                    -> 15 min = 4.1x max
+//   longest single LLM call of any type, all time: 122.3s (insight_synth)
+//                                                    -> 15 min = 7.4x
+const HEARTBEAT_STALE_MIN = Number(process.env.MISSION_HEARTBEAT_STALE_MINUTES || 15);
+
+// WHY JOB 1 DOES NOT SHARE THAT NUMBER.
+//
+// Two independent reasons, both concrete:
+//
+// 1. Boot race. Job 3 (resume sweep) fires at T+20s and Job 1's primer
+//    tick at T+30s, against the SAME rows. If both used 15 min, a mission
+//    Job 3 had just resumed would still look stale to Job 1 ten seconds
+//    later — the resumed run has to generate a persona before its first
+//    heartbeat lands, and persona_gen measures at 7.0s mean / 25.8s p95 /
+//    44.8s max. Job 1's write is the destructive one, so it must not be
+//    able to win that race. The resume path is the recovery; auto-fail is
+//    the last resort.
+//
+// 2. SDK silence. The Anthropic client is constructed with no explicit
+//    timeout, so it uses the documented defaults of timeout=10 min and
+//    maxRetries=2 (verified in node_modules/@anthropic-ai/sdk 0.20.9).
+//    ONE logical call can therefore be legitimately silent for ~30 min.
+//    A 15-minute auto-fail gate would reap a mission whose only problem
+//    is a single call inside its own retry budget. 45 > 30 with margin.
+//
+// This is strictly less aggressive than the 6h it replaces for a run that
+// IS checking in, and strictly more responsive for one that is not.
+const JOB1_HEARTBEAT_STALE_MIN = Number(process.env.JOB1_HEARTBEAT_STALE_MINUTES || 45);
 
 // Pass 48 — Job 3 must not re-enter a mission that is STILL RUNNING.
 // The sweep fires 20s after boot and selects every mission in
@@ -210,6 +257,94 @@ async function alertAdmin(alertType, missionId, payload) {
   }
 }
 
+// ─── Pass 49 — shared liveness helpers ────────────────────────────────────
+
+/**
+ * Select every mission in status='processing', asking for heartbeat_at
+ * unless this process has already learned the column is absent.
+ *
+ * migrations/pass-49/01_missions_heartbeat_at.sql is applied by hand, so
+ * the app can legitimately run against a schema without the column. On
+ * PostgREST 42703 we latch it, log once, and re-select the caller's
+ * original projection — from which point both jobs behave exactly as they
+ * did before Pass 49 (see the NULL fallbacks below).
+ */
+async function selectProcessingMissions(baseCols, caller) {
+  const cols = isHeartbeatColumnMissing() ? baseCols : `${baseCols}, heartbeat_at`;
+  const { data, error } = await supabase
+    .from('missions').select(cols).eq('status', 'processing');
+  if (error && noteHeartbeatColumnMissing(error, `cron:missionRecovery:${caller}`)) {
+    return supabase.from('missions').select(baseCols).eq('status', 'processing');
+  }
+  return { data, error };
+}
+
+/** Minutes since a mission last checked in; null when it never has. */
+function heartbeatAgeMin(m) {
+  if (!m || !m.heartbeat_at) return null;
+  const t = new Date(m.heartbeat_at).getTime();
+  if (!Number.isFinite(t)) return null;
+  return (Date.now() - t) / 60000;
+}
+
+/** Minutes since started_at; null when the claim never stamped it. */
+function startedAgeMin(m) {
+  if (!m || !m.started_at) return null;
+  const t = new Date(m.started_at).getTime();
+  if (!Number.isFinite(t)) return null;
+  return (Date.now() - t) / 60000;
+}
+
+/**
+ * JOB 1 gate — should this processing mission be auto-failed?
+ *
+ * With a heartbeat: stale beyond JOB1_HEARTBEAT_STALE_MIN.
+ * Without one: the PRE-PASS-49 rule, unchanged — started_at older than
+ * JOB1_STUCK_AFTER_HOURS. A run that has never checked in even once tells
+ * us nothing about its own liveness, so it keeps the conservative window.
+ * A processing row with neither stamp has no age at all and is left alone
+ * rather than guessed at.
+ */
+function isReapable(m) {
+  const hb = heartbeatAgeMin(m);
+  if (hb != null) return hb > JOB1_HEARTBEAT_STALE_MIN;
+  const started = startedAgeMin(m);
+  if (started == null) return false;
+  return started > JOB1_STUCK_AFTER_HOURS * 60;
+}
+
+function reapReason(m) {
+  const hb = heartbeatAgeMin(m);
+  return hb != null
+    ? `Mission has not checked in for ${Math.round(hb)} min (>${JOB1_HEARTBEAT_STALE_MIN} min heartbeat threshold) — auto-failed by recovery cron`
+    : `Mission stuck in 'processing' for >${JOB1_STUCK_AFTER_HOURS}h with no heartbeat ever recorded — auto-failed by recovery cron`;
+}
+
+/**
+ * JOB 3 gate — is this processing mission safe to re-enter with
+ * {resume:true}?
+ *
+ * With a heartbeat: silent beyond HEARTBEAT_STALE_MIN. This is the whole
+ * point of Pass 49 for Job 3. The Pass 48 started_at gate only protected
+ * the first 15 minutes of a run, so a 1000-respondent mission 20 minutes
+ * into a healthy 5-hour run was already past it and every rolling Railway
+ * deploy re-entered it — the exact concurrency behind the 785 duplicate
+ * rows. A live run refreshes its heartbeat every persona, so it now stays
+ * protected for its entire duration.
+ *
+ * Without a heartbeat: the PASS-48 rule, unchanged — started_at older
+ * than JOB3_MIN_STRANDED_AGE_MIN, or no started_at at all.
+ */
+function isResumable(m) {
+  const hb = heartbeatAgeMin(m);
+  if (hb != null) return hb > HEARTBEAT_STALE_MIN;
+  const started = startedAgeMin(m);
+  // No started_at on a 'processing' row means the claim never stamped it —
+  // treat as genuinely stranded.
+  if (started == null) return true;
+  return started > JOB3_MIN_STRANDED_AGE_MIN;
+}
+
 // ─── JOB 1 — stuck processing missions ────────────────────────────────────
 
 async function runJob1() {
@@ -226,20 +361,29 @@ async function runJob1() {
     }
 
     try {
-      const cutoff = new Date(Date.now() - JOB1_STUCK_AFTER_HOURS * 3600 * 1000).toISOString();
-      const { data: stuck, error } = await supabase
-        .from('missions')
-        .select('id, status, started_at, created_at, user_id, title')
-        .eq('status', 'processing')
-        .lt('started_at', cutoff);
+      // Pass 49 — the age decision moved out of SQL and into JS. Two
+      // reasons: (a) the NULL-heartbeat fallback needs a different
+      // threshold per job, which is awkward to express as PostgREST
+      // filters and easy to get silently wrong (`heartbeat_at < X` is NULL
+      // for a NULL heartbeat, and SQL treats that as not-true, so those
+      // rows would vanish from the job forever); (b) status='processing'
+      // is a handful of rows, so there is nothing to optimise.
+      const { data: processing, error } = await selectProcessingMissions(
+        'id, status, started_at, created_at, user_id, title', 'job1');
       if (error) throw error;
 
-      if (!stuck || stuck.length === 0) {
-        logger.debug('[cron] job1 tick: 0 stuck processing missions');
+      const stuck = (processing || []).filter((m) => isReapable(m));
+
+      if (stuck.length === 0) {
+        logger.debug('[cron] job1 tick: 0 stuck processing missions', {
+          processingCount: (processing || []).length,
+        });
         return;
       }
 
-      logger.warn('[cron] job1 tick: found stuck processing missions', { count: stuck.length });
+      logger.warn('[cron] job1 tick: found stuck processing missions', {
+        count: stuck.length, of: (processing || []).length,
+      });
 
       for (const m of stuck) {
         // Pass 49 — status-scoped. The SELECT above already filters on
@@ -253,7 +397,7 @@ async function runJob1() {
         // two terminal writes now enforce.
         const { error: reapErr, matched } = await updateMission(supabase, m.id, {
           status:         'failed',
-          failure_reason: `Mission stuck in 'processing' for >${JOB1_STUCK_AFTER_HOURS}h — auto-failed by recovery cron`,
+          failure_reason: reapReason(m),
           completed_at:   new Date().toISOString(),
         }, { caller: 'cron:missionRecovery:job1', scope: { status: 'processing' } });
 
@@ -272,11 +416,14 @@ async function runJob1() {
           user_id:           m.user_id,
           title:             m.title,
           stuck_since:       m.started_at,
+          last_heartbeat_at: m.heartbeat_at || null,
           stuck_after_hours: JOB1_STUCK_AFTER_HOURS,
+          heartbeat_stale_min: JOB1_HEARTBEAT_STALE_MIN,
         });
 
         logger.warn('[cron] job1 auto-failed stuck mission', {
-          missionId: m.id, started_at: m.started_at,
+          missionId: m.id, started_at: m.started_at, heartbeat_at: m.heartbeat_at || null,
+          basis: m.heartbeat_at ? 'heartbeat' : 'started_at (no heartbeat ever written)',
         });
       }
     } finally {
@@ -490,34 +637,30 @@ async function runJob3BootResume() {
       return;
     }
     try {
-      const { data: stranded, error } = await supabase
-        .from('missions')
-        .select('id, title, started_at, recruitment_status')
-        .eq('status', 'processing');
+      const { data: stranded, error } = await selectProcessingMissions(
+        'id, title, started_at, recruitment_status', 'job3');
       if (error) throw error;
       if (!stranded || stranded.length === 0) {
         logger.info('[cron] job3 boot resume: no stranded processing missions');
         return;
       }
-      // Pass 48 — age gate. A mission that started moments ago is almost
-      // certainly still executing (possibly on the pod we are replacing);
-      // resuming it produces a concurrent second run whose responses land
-      // as duplicates. Only re-enter missions old enough that no live run
-      // could plausibly still own them.
-      const cutoffMs = Date.now() - JOB3_MIN_STRANDED_AGE_MIN * 60 * 1000;
+      // Pass 48 age gate, upgraded in Pass 49 from wall-clock to liveness.
+      // A mission whose process is still checking in is still executing
+      // (possibly on the pod we are replacing); resuming it produces a
+      // concurrent second run whose responses land as duplicates. Only
+      // re-enter missions that have gone silent.
       const tooYoung = [];
       const resumable = stranded.filter((m) => {
-        // No started_at on a 'processing' row means the claim never
-        // stamped it — treat as genuinely stranded.
-        if (!m.started_at) return true;
-        const startedMs = new Date(m.started_at).getTime();
-        if (!Number.isFinite(startedMs)) return true;
-        if (startedMs > cutoffMs) { tooYoung.push(m.id); return false; }
-        return true;
+        if (isResumable(m)) return true;
+        tooYoung.push(m.id);
+        return false;
       });
       if (tooYoung.length > 0) {
-        logger.info('[cron] job3 boot resume: skipping recently-started missions (likely still running)', {
-          skipped: tooYoung.length, ids: tooYoung, minAgeMin: JOB3_MIN_STRANDED_AGE_MIN,
+        logger.info('[cron] job3 boot resume: skipping missions that are still checking in', {
+          skipped: tooYoung.length,
+          ids: tooYoung,
+          heartbeatStaleMin: HEARTBEAT_STALE_MIN,
+          noHeartbeatFallbackMinAgeMin: JOB3_MIN_STRANDED_AGE_MIN,
         });
       }
       if (resumable.length === 0) {
@@ -586,6 +729,8 @@ function init(opts = {}) {
     job1IntervalMs,
     job2IntervalMs,
     job1StuckAfterHours: JOB1_STUCK_AFTER_HOURS,
+    job1HeartbeatStaleMin: JOB1_HEARTBEAT_STALE_MIN,
+    job3HeartbeatStaleMin: HEARTBEAT_STALE_MIN,
     job2StuckAfterHours: JOB2_STUCK_AFTER_HOURS,
     primerTickJob1Sec: 30,
     primerTickJob2Sec: 45,
@@ -612,4 +757,9 @@ module.exports = {
   runJob3BootResume,
   reconcileOrphanPendingPayment,
   JOB3_MIN_STRANDED_AGE_MIN,
+  JOB1_STUCK_AFTER_HOURS,
+  HEARTBEAT_STALE_MIN,
+  JOB1_HEARTBEAT_STALE_MIN,
+  isReapable,
+  isResumable,
 };

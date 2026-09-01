@@ -38,7 +38,11 @@
 const logger = require('../../utils/logger');
 const { generatePersonas } = require('./personas');
 const { simulateResponses, passesScreening } = require('./simulate');
-const { updateMission } = require('../../db/missionSchema');
+const {
+  updateMission,
+  isHeartbeatColumnMissing,
+  noteHeartbeatColumnMissing,
+} = require('../../db/missionSchema');
 const { normalizeAnswerForStorage } = require('../../utils/answerValue');
 const fetchAllResponses = require('../../db/fetchAllResponses');
 // Pass 48 — idempotent persistence. A resumed (or concurrently re-entered)
@@ -552,15 +556,47 @@ async function runRecruitmentLoop(mission, supabase) {
  * Throttled progress writer. Single-column UPDATE on a UUID PK is
  * cheap but spamming it on every iteration would still produce
  * thousands of writes per minute for a strict-screener mission.
+ *
+ * Pass 49 — this is also the loop's HEARTBEAT. It already fires once per
+ * persona and already writes to `missions`, so stamping heartbeat_at here
+ * costs nothing: no extra query, no extra round trip, just one more
+ * column in a patch that was going out anyway. That cadence is what makes
+ * the 15-minute staleness threshold defensible — the measured maximum
+ * silence between consecutive loop-path ai_calls in production is 21.8s
+ * (n=1432, p99 14.9s), so 15 min is 41x the worst observed gap.
+ *
+ * If the pass-49 migration has not been applied yet, the write comes back
+ * as PostgREST 42703. Retrying without the column matters: this patch also
+ * carries recruited_persona_count, which drives the customer's live
+ * progress counter, and dropping it silently would be a visible
+ * regression.
  */
 async function writeProgress(supabase, missionId, patch) {
+  const withHeartbeat = isHeartbeatColumnMissing()
+    ? patch
+    : { ...patch, heartbeat_at: new Date().toISOString() };
   try {
-    await supabase
+    const { error } = await supabase
       .from('missions')
-      .update(patch)
+      .update(withHeartbeat)
       .eq('id', missionId);
+    if (error) {
+      if (noteHeartbeatColumnMissing(error, 'recruitLoop: writeProgress')) {
+        const { error: retryErr } = await supabase
+          .from('missions').update(patch).eq('id', missionId);
+        if (retryErr) {
+          logger.warn('Recruitment loop: progress write failed after heartbeat fallback (non-fatal)', {
+            missionId, err: retryErr.message,
+          });
+        }
+        return;
+      }
+      logger.warn('Recruitment loop: progress write failed (non-fatal)', {
+        missionId, err: error.message, code: error.code,
+      });
+    }
   } catch (err) {
-    logger.warn('Recruitment loop: progress write failed (non-fatal)', {
+    logger.warn('Recruitment loop: progress write threw (non-fatal)', {
       missionId, err: err.message,
     });
   }
