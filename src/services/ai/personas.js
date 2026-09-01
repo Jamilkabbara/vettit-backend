@@ -103,32 +103,131 @@ function buildScreenerConstraints(mission, { stricter = false } = {}) {
  *                                            originals.
  * @returns {Promise<Array>} Array of persona objects
  */
+/**
+ * Pass 49 — bounded top-up rounds when de-duplication leaves us short.
+ * Bounded so a model that keeps re-emitting the same ids cannot spin.
+ */
+const MAX_TOPUP_ROUNDS = 3;
+
+/** Id-space stride between top-up rounds, to keep replacement ids clear. */
+const PERSONA_ID_ROUND_STRIDE = 1000;
+
 async function generatePersonas(mission, count, options = {}) {
   const BATCH_SIZE = 10;
-  const batches = Math.ceil(count / BATCH_SIZE);
+  const CONCURRENCY = 5;
   const targeting = mission.targeting || {};
   const startOffset = Number(options.startOffset) || 0;
-  const allPersonas = [];
+  const missionId = mission.id;
+
+  // Pass 49 — persona ids are ASSIGNED BY THE MODEL, not by us. The prompt
+  // asks for "sequential starting from P<startIndex+1>" and even shows
+  // "id": "P001" in its example schema, so a batch can (and does) ignore the
+  // offset and re-emit an id another batch already produced. The 5 batches in
+  // a wave run in parallel and cannot see each other's output.
+  //
+  // Observed on a fresh 60-respondent run (e8c8f1e1, 2026-08-31): a batch
+  // parse failed and retried, generation reported 61 for count=60, and two
+  // DIFFERENT simulated people carried the same persona_id. Before the
+  // pass-48 unique index that silently persisted as one persona_id holding
+  // two profiles and two sets of answers — corrupting every distribution
+  // computed off the table. With the index it became a short count instead:
+  // 12 rows skipped, analysis.n=59 against respondent_count=60. A customer
+  // paid for 60 and received 59.
+  //
+  // Same failure the recruit loop already guards (recruitLoop.js ~L286
+  // "generated a persona_id already persisted; discarding"). This is the
+  // batch path's equivalent: drop the collision, then top up so the
+  // requested count is still delivered.
+  //
+  // Why DROP rather than RENUMBER the colliding persona: a re-emitted id is
+  // ambiguous evidence. It can mean two distinct people that happened to
+  // collide (renumbering would be right) or the model re-emitting the SAME
+  // person twice (renumbering would silently clone a respondent into the
+  // sample and inflate n). Dropping is correct under both readings; the
+  // top-up pays for the replacement.
+  const seen = new Set();
+  const excluded = options.excludeIds;
+  for (const id of (excluded instanceof Set ? excluded : Array.isArray(excluded) ? excluded : [])) {
+    if (id) seen.add(String(id));
+  }
+  const kept = [];
+  let droppedDuplicate = 0;
+  let droppedNoId = 0;
+
+  const absorb = (batch) => {
+    for (const persona of (batch || [])) {
+      if (kept.length >= count) break; // never return more than requested
+      const rawId = persona && (persona.persona_id || persona.id);
+      if (!rawId) { droppedNoId += 1; continue; }
+      const key = String(rawId);
+      if (seen.has(key)) { droppedDuplicate += 1; continue; }
+      seen.add(key);
+      kept.push(persona);
+    }
+  };
+
+  // One generation round: `need` personas, ids starting at `offset`.
+  const runRound = async (need, offset) => {
+    const batches = Math.ceil(need / BATCH_SIZE);
+    for (let i = 0; i < batches; i += CONCURRENCY) {
+      const wave = [];
+      for (let j = i; j < Math.min(i + CONCURRENCY, batches); j += 1) {
+        const batchCount = Math.min(BATCH_SIZE, need - j * BATCH_SIZE);
+        const startIndex = offset + j * BATCH_SIZE;
+        wave.push(generatePersonaBatch(mission, targeting, batchCount, startIndex, options));
+      }
+      const results = await Promise.all(wave);
+      for (const batch of results) absorb(batch);
+    }
+  };
 
   logger.info('Persona generation starting', {
-    missionId: mission.id, count, batches, stricter: !!options.stricter, startOffset,
+    missionId, count, batches: Math.ceil(count / BATCH_SIZE),
+    stricter: !!options.stricter, startOffset, excludedIds: seen.size,
   });
 
-  // Launch batches in parallel (capped concurrency of 5 to avoid rate limits)
-  const CONCURRENCY = 5;
-  for (let i = 0; i < batches; i += CONCURRENCY) {
-    const wave = [];
-    for (let j = i; j < Math.min(i + CONCURRENCY, batches); j++) {
-      const batchCount = Math.min(BATCH_SIZE, count - j * BATCH_SIZE);
-      const startIndex = startOffset + j * BATCH_SIZE;
-      wave.push(generatePersonaBatch(mission, targeting, batchCount, startIndex, options));
-    }
-    const results = await Promise.all(wave);
-    for (const batch of results) allPersonas.push(...batch);
+  await runRound(count, startOffset);
+
+  // ── Top up ────────────────────────────────────────────────────────────
+  // Shortfall here means duplicate ids were dropped, or a batch was dropped
+  // entirely after its parse retry. Either way the customer paid for `count`
+  // distinct respondents, so ask for the difference. Each round starts its
+  // ids well clear of everything used so far to make another collision
+  // unlikely; the dedupe above is what makes it IMPOSSIBLE rather than
+  // unlikely, so a round that still collides simply tops up again.
+  let topUpRounds = 0;
+  let nextOffset = startOffset + count;
+  while (kept.length < count && topUpRounds < MAX_TOPUP_ROUNDS) {
+    topUpRounds += 1;
+    const need = count - kept.length;
+    nextOffset += PERSONA_ID_ROUND_STRIDE;
+    logger.warn('Persona generation: short after de-duplication, topping up', {
+      missionId, need, have: kept.length, requested: count,
+      droppedDuplicate, droppedNoId, topUpRound: topUpRounds, nextOffset,
+    });
+    await runRound(need, nextOffset);
   }
 
-  logger.info('Persona generation complete', { missionId: mission.id, generated: allPersonas.length });
-  return allPersonas.slice(0, count);
+  if (kept.length < count) {
+    // FAIL LOUD in the log. Do not throw: a short persona set still produces
+    // a usable (smaller) report, and throwing here would fail a paid mission
+    // outright. runMission's own accounting reports the real delivered n.
+    logger.error('Persona generation: still short after top-up rounds', {
+      missionId, requested: count, generated: kept.length,
+      droppedDuplicate, droppedNoId, topUpRounds,
+    });
+  }
+
+  logger.info('Persona generation complete', {
+    missionId,
+    generated: kept.length,
+    requested: count,
+    uniqueIds: new Set(kept.map((p) => String(p.persona_id || p.id))).size,
+    droppedDuplicate,
+    droppedNoId,
+    topUpRounds,
+  });
+  return kept;
 }
 
 async function generatePersonaBatch(mission, targeting, batchCount, startIndex, options = {}) {

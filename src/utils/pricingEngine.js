@@ -229,6 +229,82 @@ function getVolumeTier(count) {
   return VOLUME_TIERS.find(t => c <= t.maxCount) || VOLUME_TIERS[VOLUME_TIERS.length - 1];
 }
 
+/**
+ * ── V1 tier-boundary price inversion fix ────────────────────────────────────
+ *
+ * V1 prices the respondent ladders as a pure `count × tier.ratePerResp`. The
+ * bracket rate DROPS at every tier boundary, so the total could go DOWN as the
+ * respondent count went UP:
+ *
+ *   default ladder:  1,000 × $0.90 (Scale)      = $900.00
+ *                    1,005 × $0.40 (Enterprise) = $402.00   ← $498.00 CHEAPER
+ *                                                             for 5 MORE people
+ *
+ * That is reachable from the setup slider (min 5, max 5,000, step 5) by
+ * dragging one notch to the right — not just via a hand-crafted API call.
+ * Every boundary on the default AND brand-lift ladders inverted the same way.
+ *
+ * FIX (option (a) of the three weighed): floor each tier at the maximum price
+ * payable in the tier BELOW it. Price is then monotonic non-decreasing in
+ * respondent count, and — critically — no anchor/preset count gets more
+ * expensive. The floor only lifts the "dip" band immediately after a boundary
+ * back up to the boundary price it just fell off; the boundary counts
+ * themselves (5/10/50/250/1,000/5,000 and 50/200/500/2,000) are untouched,
+ * because within a tier `count × rate` is already increasing and reaches its
+ * own ceiling exactly at maxCount.
+ *
+ * NOT option (b) ("charge the tier's packagePrice when count × rate falls
+ * below it"): a tier's packagePrice is its price at the TOP of the tier
+ * (e.g. Confidence = $99 at n=50), so flooring at it collapses the whole
+ * bracket flat and would raise 11–49 respondents to $99. That raises real
+ * purchase points; the previous-ceiling floor does not.
+ *
+ * Creative Attention is unaffected — it charges a flat packagePrice per tier
+ * (19/39/69/129/299), which is already monotonic in count.
+ *
+ * PRICING_V2 is untouched by this: the V2 branch is a flat per-bracket package
+ * price and never multiplies a rate by a count.
+ */
+const TIER_PRICE_FLOORS = new WeakMap();
+
+/** Per-tier price floors for a ladder: floors[i] = max price payable in tiers < i. */
+function getTierPriceFloors(ladder) {
+  const cached = TIER_PRICE_FLOORS.get(ladder);
+  if (cached) return cached;
+  const floors = [];
+  let running = 0;
+  for (const t of ladder) {
+    floors.push(running);
+    // The open-ended top tier has maxCount Infinity and no ceiling to carry.
+    if (Number.isFinite(t.maxCount) && typeof t.ratePerResp === 'number') {
+      running = Math.max(running, t.maxCount * t.ratePerResp);
+    }
+  }
+  TIER_PRICE_FLOORS.set(ladder, floors);
+  return floors;
+}
+
+/** The price floor a given tier inherits from the tier below it (0 if unknown). */
+function tierPriceFloor(ladder, tier) {
+  if (!Array.isArray(ladder) || !tier) return 0;
+  const idx = ladder.indexOf(tier);
+  if (idx < 0) return 0;
+  return getTierPriceFloors(ladder)[idx] || 0;
+}
+
+/**
+ * Monotonic base price for a respondent-count ladder.
+ * base(n) = max(n × tierRate, ceiling price of the tier below)
+ * @param {Array}  ladder  the goal's tier ladder (VOLUME_TIERS / BRAND_LIFT_TIERS)
+ * @param {Object} tier    the resolved tier object (may be null)
+ * @param {number} count   respondent count
+ * @param {number} rate    the per-respondent rate the caller resolved
+ */
+function respondentLadderBase(ladder, tier, count, rate) {
+  const n = Math.max(0, Number(count) || 0);
+  return round2(Math.max(n * rate, tierPriceFloor(ladder, tier)));
+}
+
 const EXTRA_QUESTION_PRICE = 20; // $ per question beyond the 5th
 const FREE_QUESTIONS        = 5;
 
@@ -332,7 +408,9 @@ function calculateMissionPrice({
     ratePerResp = isCreative ? null : (tier?.ratePerResp || VOLUME_TIERS[0].ratePerResp);
     base = isCreative
       ? (tier?.packagePrice || CREATIVE_ATTENTION_TIERS[0].packagePrice)
-      : respondentCount * ratePerResp;
+      // Monotonic: never cheaper than the top of the tier below (see
+      // respondentLadderBase — V1 tier-boundary inversion fix).
+      : respondentLadderBase(getPricingForGoalType(goalType), tier, respondentCount, ratePerResp);
     volumeTier = tier || (isCreative ? CREATIVE_ATTENTION_TIERS[0] : VOLUME_TIERS[0]);
   }
 
@@ -582,6 +660,9 @@ module.exports = {
   getActiveTierTable,
   // Default-ladder helper kept for backwards compat
   getVolumeTier,
+  // V1 monotonicity helpers (tier-boundary price inversion fix)
+  tierPriceFloor,
+  respondentLadderBase,
   // Country-tier (legacy, no longer affects price; retained for analytics)
   resolveHighestTier,
   getCountryTier,
