@@ -29,7 +29,7 @@
  */
 
 const PptxGenJS = require('pptxgenjs');
-const { BRAND } = require('./shared');
+const { BRAND, METHODOLOGY_URL } = require('./shared');
 const { buildCanonicalReport } = require('../report/buildReport');
 const { buildRenderModel } = require('../report/reportRenderModel');
 // PR 3 — shared hotspot normalizer. attention_hotspots is EITHER an array of
@@ -884,9 +884,20 @@ function buildPPTX(pack, res) {
     const slide = pptx.addSlide();
     addDarkBackground(slide);
     addSectionHeader(slide, '· METHODOLOGY', 'How to read this report');
+    // Disclaimer box y 1.65 + h 5.0 bottoms out at 6.65. The link line below
+    // starts at 6.75 and is 0.30 tall, so it ends at 7.05 — a 0.10" gap before
+    // the addDarkBackground slide footer band ("VETT · vettit.ai", y 7.15 to
+    // 7.45). Same clearance the narration box uses, so nothing collides.
     slide.addText(model.disclaimer, {
       x: 0.5, y: 1.65, w: 12.3, h: 5, fontSize: 13, color: hex(BRAND.text2), fontFace: FONT, valign: 'top', autoFit: true,
     });
+    slide.addText(
+      [
+        { text: 'How every figure here is produced, and the sample sizes each metric requires:  ', options: { color: hex(BRAND.text3) } },
+        { text: METHODOLOGY_URL, options: { color: hex(BRAND.lime), hyperlink: { url: METHODOLOGY_URL } } },
+      ],
+      { x: 0.5, y: 6.75, w: 12.3, h: 0.3, fontSize: 10, fontFace: FONT, valign: 'top' },
+    );
   }
 
   // ── Stream to response ────────────────────────────────────

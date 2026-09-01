@@ -26,7 +26,7 @@
  */
 
 const ExcelJS = require('exceljs');
-const { BRAND } = require('./shared');
+const { BRAND, METHODOLOGY_URL } = require('./shared');
 const { buildCanonicalReport } = require('../report/buildReport');
 const { buildRenderModel } = require('../report/reportRenderModel');
 const { sanitizeDashesString } = require('../../utils/textSanitize');
@@ -440,6 +440,20 @@ function buildXLSX(pack, res) {
     dis.value = model.disclaimer;
     dis.font = { name: 'Calibri', size: 10, color: { argb: argb(BRAND.text3) }, italic: true };
     dis.alignment = { vertical: 'top', wrapText: true };
+
+    // Methodology link BESIDE the disclaimer (never in place of it): the four
+    // merged disclaimer rows end at row+3, so the link goes on row+5 with one
+    // blank row of separation.
+    row += 5;
+    rep.mergeCells(`A${row}:F${row}`);
+    const link = rep.getCell(`A${row}`);
+    link.value = {
+      text: `How every figure in this report is produced, and the sample sizes each metric requires: ${METHODOLOGY_URL}`,
+      hyperlink: METHODOLOGY_URL,
+      tooltip: 'VETT methodology',
+    };
+    link.font = { name: 'Calibri', size: 10, color: { argb: argb(BRAND.lime) }, underline: true };
+    link.alignment = { vertical: 'top', wrapText: true };
   }
 
   // ── SHEET: PERSONAS (§5 — who responded, n-gated) ──
