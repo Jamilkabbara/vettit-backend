@@ -61,7 +61,9 @@ router.post('/generate-survey', optionalAuthenticate, async (req, res, next) => 
 // call itself failed — so "never classified" stays distinguishable from
 // "genuinely other" and callers never persist a category they didn't earn.
 //
-// Frontend aborts after 800 ms, so we use Haiku (fast + cheap) and cap
+// Frontend aborts after CLARIFY_TIMEOUT_MS (15s since Pass 6A; the old
+// 800 ms note here was stale and measured p50 is ~2.6s), so we use Haiku
+// (fast + cheap) and cap
 // max_tokens tightly. Invalid JSON → 400; empty array is legitimate
 // (brief is already complete). If the brief looks like gibberish we
 // return 400 so the UI shows a "please elaborate" hint.

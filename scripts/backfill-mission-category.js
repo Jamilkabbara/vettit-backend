@@ -75,6 +75,32 @@ const anthropic = () => (_anthropic || (_anthropic = require('../src/services/ai
 
 // ─── knobs ───────────────────────────────────────────────────────────────────
 
+/**
+ * The column being overwritten used to hold the USER'S OWN free text
+ * ("premium subscription coffee", "QR code for restaurants in Syria"). The
+ * setup page now writes that text to target_audience.category_raw, but only
+ * for NEW missions. Production held 15 pre-existing rows, every one with
+ * category_raw null, so a naive overwrite would destroy the only copy.
+ *
+ * Returns the patch needed to keep it: the taxonomy key on `category`, plus
+ * the old text moved to category_raw when there is something worth keeping
+ * and nothing already there. Never clobbers an existing category_raw, and
+ * never invents one for a row whose category was already a taxonomy key.
+ */
+function buildPatch(mission, category) {
+  const patch = { category };
+  const old = typeof mission.category === 'string' ? mission.category.trim() : '';
+  if (!old || isMissionCategory(old)) return patch;      // nothing to preserve
+  const ta = (mission.target_audience && typeof mission.target_audience === 'object')
+    ? mission.target_audience : {};
+  const existingRaw = typeof ta.category_raw === 'string' ? ta.category_raw.trim() : '';
+  if (existingRaw) return patch;                          // already preserved
+  // Merge, never replace: target_audience carries clarify answers, targeting
+  // and other keys that must survive.
+  patch.target_audience = { ...ta, category_raw: old };
+  return patch;
+}
+
 /** Anchored title-prefix markers for internal probe/harness/audit missions. */
 const EXCLUSION_RULES = [
   { name: 'un-gate test', test: (t) => t.startsWith('[UN-GATE TEST]') },
@@ -109,7 +135,9 @@ const PREVIEW_AI = APPLY ? null : argVal('--preview-ai');
 
 /** Page through every mission with a deterministic sort. Never unbounded. */
 async function fetchAllMissions(db) {
-  const cols = 'id,title,brief,brand_name,category,goal_type,status,created_at';
+  // target_audience is read so an existing free-text category can be preserved
+  // into target_audience.category_raw before this script overwrites the column.
+  const cols = 'id,title,brief,brand_name,category,goal_type,status,created_at,target_audience';
   let from = 0;
   const out = [];
   for (;;) {
@@ -298,6 +326,18 @@ const short = (s, n) => (String(s || '').length > n ? `${String(s).slice(0, n - 
         console.log(`  ${m.id.slice(0, 8)}  ${short(m.title, 54).padEnd(56)} → ${cat === null ? '(failed — would stay NULL)' : cat}`);
       }
     }
+    // Show the free text that would otherwise be destroyed, BEFORE --execute.
+    const wouldPreserve = candidates
+      .map((m) => ({ m, patch: buildPatch(m, 'other') }))
+      .filter((x) => x.patch.target_audience);
+    if (wouldPreserve.length) {
+      console.log(`\nFREE TEXT that would be preserved into target_audience.category_raw (${wouldPreserve.length}):`);
+      for (const { m, patch } of wouldPreserve) {
+        console.log(`  ${m.id.slice(0, 8)}  ${JSON.stringify(patch.target_audience.category_raw)}`);
+      }
+    } else {
+      console.log('\nNo pre-existing free-text category would be overwritten.');
+    }
     console.log(`\nDRY RUN — ${candidates.length} mission(s) would be classified and written. Nothing was read-modified, no AI calls were made${PREVIEW_AI ? ' beyond the explicit preview sample' : ''}.`);
     console.log('Re-run with --execute (OWNER ONLY) to write.');
     process.exit(0);
@@ -312,23 +352,26 @@ const short = (s, n) => (String(s || '').length > n ? `${String(s).slice(0, n - 
   }
 
   console.log('\nClassifying + writing...');
-  let written = 0; let failed = 0; const tally = {};
+  let written = 0; let failed = 0; let preserved = 0; const tally = {};
   for (const m of candidates) {
     const category = await classify(m);
     if (category === null) { failed += 1; continue; }
     // Persisted columns MUST go through sanitizeMissionPatch or they are
     // silently dropped — updateMission() wraps it.
-    const { error, rejected } = await updateMission(db, m.id, { category }, {
+    const patch = buildPatch(m, category);
+    const { error, rejected } = await updateMission(db, m.id, patch, {
       caller: 'backfill-mission-category',
     });
     if (rejected && rejected.length) throw new Error(`ABORT: sanitizeMissionPatch rejected ${rejected.join(',')} — column not in the allow-list.`);
     if (error) { failed += 1; console.log(`    ! write failed ${m.id.slice(0, 8)}: ${error.message}`); continue; }
     tally[category] = (tally[category] || 0) + 1;
     written += 1;
-    console.log(`  ${m.id.slice(0, 8)} → ${category}`);
+    if (patch.target_audience) preserved += 1;
+    console.log(`  ${m.id.slice(0, 8)} → ${category}`
+      + (patch.target_audience ? `   (kept "${patch.target_audience.category_raw}" in category_raw)` : ''));
   }
 
-  console.log(`\nWROTE ${written} · FAILED ${failed}`);
+  console.log(`\nWROTE ${written} · FAILED ${failed} · FREE TEXT PRESERVED ${preserved}`);
   console.log('Distribution:');
   for (const [k, v] of Object.entries(tally).sort((a, b) => b[1] - a[1])) console.log(`  ${k.padEnd(30)} ${v}`);
 
