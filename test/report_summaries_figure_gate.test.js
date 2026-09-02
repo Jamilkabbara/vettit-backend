@@ -75,6 +75,35 @@ describe('per-question narrative gate', () => {
   });
 });
 
+describe('FAIL SAFE: an advisory finding must not rewrite the deliverable', () => {
+  const AP = FIXTURES.find((f) => f.mission_id_prefix === '0a494ef7');
+  const TRUE_SENTENCE = 'All 300 respondents confirmed their organisation regularly commissions '
+    + 'or uses market research, making this a fully qualified sample of active buyers.';
+
+  test('mission 0a494ef7 q1: the true sentence is cached as ai, untouched', async () => {
+    const report = { ...AP.report, survey: AP.report.survey.filter((q) => q.id === 'q1') };
+    mockCalls({ perQuestion: { q1: TRUE_SENTENCE } });
+    const out = await generateReportSummaries(report, { missionId: 'test' });
+    const pq = out.per_question_insights.find((p) => p.question_id === 'q1');
+    expect(pq.insight).toBe(TRUE_SENTENCE);
+    expect(pq.source).toBe('ai');
+  });
+
+  test('an advisory-only violation keeps the model line rather than substituting', async () => {
+    // bdae4d45 q3 genuinely says "21 of 60" where the true count is 16 - but
+    // that is an underivable_count, which is advisory. It must be LOGGED and
+    // KEPT, not swapped for the deterministic line.
+    const BD = FIXTURES.find((f) => f.mission_id_prefix === 'bdae4d45');
+    const report = { ...BD.report, survey: BD.report.survey.filter((q) => q.id === 'q3') };
+    const line = BD.report.survey.find((q) => q.id === 'q3').insight;
+    mockCalls({ perQuestion: { q3: line } });
+    const out = await generateReportSummaries(report, { missionId: 'test' });
+    const pq = out.per_question_insights.find((p) => p.question_id === 'q3');
+    expect(pq.insight).toBe(line);
+    expect(pq.source).toBe('ai');
+  });
+});
+
 describe('prevention: the prompt now carries the percentages', () => {
   test('the per-question call is handed distribution_pct and a base, and told not to derive', async () => {
     mockCalls({ perQuestion: {} });

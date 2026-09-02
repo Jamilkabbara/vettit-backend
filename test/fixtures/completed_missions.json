@@ -2,13 +2,16 @@
  {
   "mission_id_prefix": "3fc15087",
   "goal_type": "market_entry",
+  "raw_response_rows": 560,
+  "raw_distinct_personas": 80,
+  "respondent_count_column": 80,
   "analysis": {
    "n": 80,
    "reason": null,
    "markets": [
     {
      "n": 40,
-     "wtp": "SAR 29\u201338",
+     "wtp": "SAR 29–38",
      "market": "SA",
      "signal": "go",
      "barriers": [
@@ -22,7 +25,7 @@
       },
       {
        "pct": 67.5,
-       "label": "Low awareness of the brand \u2014 I have never heard of it before"
+       "label": "Low awareness of the brand — I have never heard of it before"
       },
       {
        "pct": 55,
@@ -53,7 +56,7 @@
       },
       {
        "pct": 25,
-       "label": "None of the above \u2014 I do not currently buy these types of products"
+       "label": "None of the above — I do not currently buy these types of products"
       },
       {
        "pct": 12.5,
@@ -70,7 +73,7 @@
     },
     {
      "n": 40,
-     "wtp": "EGP 151\u2013200 per meal (premium)",
+     "wtp": "EGP 151–200 per meal (premium)",
      "market": "EG",
      "signal": "caution",
      "barriers": [
@@ -84,7 +87,7 @@
       },
       {
        "pct": 60,
-       "label": "Low awareness of the brand \u2014 I have never heard of it before"
+       "label": "Low awareness of the brand — I have never heard of it before"
       },
       {
        "pct": 60,
@@ -115,7 +118,7 @@
       },
       {
        "pct": 37.5,
-       "label": "None of the above \u2014 I do not currently buy these types of products"
+       "label": "None of the above — I do not currently buy these types of products"
       },
       {
        "pct": 5,
@@ -164,11 +167,11 @@
      },
      {
       "label": "SA",
-      "value": "demand 62/100 \u00b7 intent 82.5% \u00b7 go"
+      "value": "demand 62/100 · intent 82.5% · go"
      },
      {
       "label": "EG",
-      "value": "demand 51/100 \u00b7 intent 67.5% \u00b7 caution"
+      "value": "demand 51/100 · intent 67.5% · caution"
      },
      {
       "label": "Top adoption barrier",
@@ -394,11 +397,11 @@
      ],
      "data": {
       "distribution": {
+       "Probably would buy": 57,
        "Probably would NOT buy": 16,
        "Definitely would NOT buy": 3,
-       "Might or might not": 1,
        "Definitely would buy": 3,
-       "Probably would buy": 57
+       "Might or might not": 1
       },
       "n": 80
      },
@@ -419,10 +422,10 @@
      "data": {
       "distribution": {
        "SAR 21-28 / EGP 111-150 per meal (mid-range)": 23,
-       "I would not pay for this product at any price": 4,
        "SAR 39-50 / EGP 201-270 per meal (super-premium)": 10,
+       "SAR 15-20 / EGP 80-110 per meal (budget tier)": 8,
        "SAR 29-38 / EGP 151-200 per meal (premium)": 35,
-       "SAR 15-20 / EGP 80-110 per meal (budget tier)": 8
+       "I would not pay for this product at any price": 4
       },
       "n": 80
      },
@@ -446,14 +449,14 @@
      ],
      "data": {
       "distribution": {
-       "Uncertainty about halal certification or religious compliance": 59,
        "Lack of trust in plant-based ingredients or unfamiliar food technology": 63,
-       "Concerns about nutritional adequacy compared to meat-based meals": 43,
        "Cultural preference for home-cooked or traditionally prepared meals": 30,
-       "Strong existing local competition offering similar or cheaper options": 22,
-       "Low awareness of the brand, I have never heard of it before": 51,
+       "Concerns about nutritional adequacy compared to meat-based meals": 43,
        "Price is too high relative to local income levels": 32,
+       "Uncertainty about halal certification or religious compliance": 59,
        "Limited availability in local supermarkets or online delivery platforms": 41,
+       "Low awareness of the brand, I have never heard of it before": 51,
+       "Strong existing local competition offering similar or cheaper options": 22,
        "Shorter shelf life of chilled products compared to frozen alternatives": 5,
        "Brand awareness, I have never heard of it before": 1,
        "Concerns about Egypt's food system and transparency": 1
@@ -483,14 +486,14 @@
      ],
      "data": {
       "distribution": {
+       "Kiri / Almarai chilled meal ranges (Saudi Arabia)": 3,
+       "Local restaurant meal-delivery services (e.g. HungerStation, Talabat, Otlob)": 44,
+       "None of the above, I do not currently buy these types of products": 25,
        "Puck / Arla chilled food products (Saudi Arabia/Egypt)": 33,
        "International brands via Carrefour / Lulu Hypermarket / Noon": 50,
-       "None of the above, I do not currently buy these types of products": 25,
-       "Local restaurant meal-delivery services (e.g. HungerStation, Talabat, Otlob)": 44,
-       "Domty prepared foods (Egypt)": 2,
-       "Kiri / Almarai chilled meal ranges (Saudi Arabia)": 3,
-       "Plant Club (Saudi Arabia)": 5,
        "Sunbulah Group ready meals (Saudi Arabia)": 2,
+       "Plant Club (Saudi Arabia)": 5,
+       "Domty prepared foods (Egypt)": 2,
        "Juhayna Food Industries chilled products (Egypt)": 1
       },
       "n_respondents": 80,
@@ -555,6 +558,9 @@
  {
   "mission_id_prefix": "34c57e35",
   "goal_type": "pricing",
+  "raw_response_rows": 65,
+  "raw_distinct_personas": 5,
+  "respondent_count_column": 5,
   "analysis": {
    "n": 5,
    "currency": "USD",
@@ -1462,8 +1468,8 @@
      ],
      "data": {
       "distribution": {
-       "Probably would NOT buy": 2,
-       "Might buy": 3
+       "Might buy": 3,
+       "Probably would NOT buy": 2
       },
       "n": 5
      },
@@ -1483,8 +1489,8 @@
      ],
      "data": {
       "distribution": {
-       "Definitely would NOT buy": 2,
-       "Probably would NOT buy": 3
+       "Probably would NOT buy": 3,
+       "Definitely would NOT buy": 2
       },
       "n": 5
      },
@@ -1539,6 +1545,9 @@
  {
   "mission_id_prefix": "30e1de33",
   "goal_type": "satisfaction",
+  "raw_response_rows": 50,
+  "raw_distinct_personas": 5,
+  "respondent_count_column": 5,
   "analysis": {
    "n": 5,
    "ces": {
@@ -2059,8 +2068,8 @@
       "distribution": {
        "App crashed or froze during ordering": 3,
        "Food was incorrect or missing items": 3,
-       "Order arrived late": 1,
        "Restaurants go offline unexpectedly mid-order": 1,
+       "Order arrived late": 1,
        "Difficulty tracking my order in real time": 1
       },
       "n_respondents": 5,
@@ -2074,6 +2083,9 @@
  {
   "mission_id_prefix": "e18c9802",
   "goal_type": "validate",
+  "raw_response_rows": 26,
+  "raw_distinct_personas": 10,
+  "respondent_count_column": 10,
   "analysis": {
    "n": 10,
    "norms": null,
@@ -2162,8 +2174,8 @@
      ],
      "data": {
       "distribution": {
-       "Yes, I own one cat": 4,
-       "Yes, I own multiple cats": 6
+       "Yes, I own multiple cats": 6,
+       "Yes, I own one cat": 4
       },
       "n": 10
      },
@@ -2247,9 +2259,9 @@
      "data": {
       "distribution": {
        "24/7 live camera monitoring": 4,
-       "Veterinary support on-site": 3,
        "Personalized play and care sessions": 2,
-       "Flexible pickup and drop-off times": 4
+       "Flexible pickup and drop-off times": 4,
+       "Veterinary support on-site": 3
       },
       "n_respondents": 4,
       "n": 4
@@ -2262,6 +2274,9 @@
  {
   "mission_id_prefix": "23389bb1",
   "goal_type": "marketing",
+  "raw_response_rows": 50,
+  "raw_distinct_personas": 10,
+  "respondent_count_column": 10,
   "analysis": {
    "norms": null,
    "funnel": {
@@ -2367,8 +2382,8 @@
      "data": {
       "distribution": {
        "Maybe, I am considering it": 8,
-       "No, I am not interested in having pets": 1,
-       "Yes, I am actively looking to get a pet": 1
+       "Yes, I am actively looking to get a pet": 1,
+       "No, I am not interested in having pets": 1
       },
       "n": 10
      },
@@ -2412,10 +2427,10 @@
      ],
      "data": {
       "distribution": {
+       "The cat's appearance and breed": 4,
        "Health and vaccination records": 9,
        "Temperament and behavior": 9,
-       "Adoption process and support provided": 7,
-       "The cat's appearance and breed": 4
+       "Adoption process and support provided": 7
       },
       "n_respondents": 10,
       "n": 10
@@ -2436,8 +2451,8 @@
      ],
      "data": {
       "distribution": {
-       "Agree": 7,
        "Strongly Disagree": 1,
+       "Agree": 7,
        "Strongly Agree": 1,
        "Neutral": 1
       },
@@ -2464,6 +2479,9 @@
  {
   "mission_id_prefix": "077b6e23",
   "goal_type": "validate",
+  "raw_response_rows": 50,
+  "raw_distinct_personas": 10,
+  "respondent_count_column": 10,
   "analysis": {
    "n": 10,
    "norms": null,
@@ -2647,6 +2665,9 @@
  {
   "mission_id_prefix": "bdae4d45",
   "goal_type": "audience_profiling",
+  "raw_response_rows": 720,
+  "raw_distinct_personas": 60,
+  "respondent_count_column": 60,
   "analysis": {
    "n": 60,
    "reason": null,
@@ -2655,7 +2676,7 @@
     {
      "n": 32,
      "id": "seg_2",
-     "name": "Status-seekers \u00b7 early adopters",
+     "name": "Status-seekers · early adopters",
      "media": [
       {
        "top": [
@@ -2742,7 +2763,7 @@
         },
         {
          "pct": 9.375,
-         "label": "Every 2\u20133 months"
+         "label": "Every 2–3 months"
         }
        ],
        "question": "How often do you purchase men's grooming products?"
@@ -2755,11 +2776,11 @@
         },
         {
          "pct": 28.125,
-         "label": "AED 300\u2013499"
+         "label": "AED 300–499"
         },
         {
          "pct": 18.75,
-         "label": "AED 150\u2013299"
+         "label": "AED 150–299"
         }
        ],
        "question": "How much do you typically spend on men's grooming products per month (in AED)?"
@@ -2787,7 +2808,7 @@
     {
      "n": 28,
      "id": "seg_1",
-     "name": "Understated \u00b7 pragmatists",
+     "name": "Understated · pragmatists",
      "media": [
       {
        "top": [
@@ -2866,7 +2887,7 @@
        "top": [
         {
          "pct": 75,
-         "label": "Every 4\u20136 months"
+         "label": "Every 4–6 months"
         },
         {
          "pct": 21.4286,
@@ -2874,7 +2895,7 @@
         },
         {
          "pct": 3.5714,
-         "label": "Every 2\u20133 months"
+         "label": "Every 2–3 months"
         }
        ],
        "question": "How often do you purchase men's grooming products?"
@@ -2887,11 +2908,11 @@
         },
         {
          "pct": 28.5714,
-         "label": "AED 150\u2013299"
+         "label": "AED 150–299"
         },
         {
          "pct": 21.4286,
-         "label": "AED 50\u2013149"
+         "label": "AED 50–149"
         }
        ],
        "question": "How much do you typically spend on men's grooming products per month (in AED)?"
@@ -2997,7 +3018,7 @@
        },
        {
         "pct": 36.6667,
-        "label": "Every 4\u20136 months"
+        "label": "Every 4–6 months"
        },
        {
         "pct": 18.3333,
@@ -3010,7 +3031,7 @@
       "top": [
        {
         "pct": 23.3333,
-        "label": "AED 150\u2013299"
+        "label": "AED 150–299"
        },
        {
         "pct": 21.6667,
@@ -3097,14 +3118,14 @@
      },
      {
       "label": "Primary segment",
-      "value": "Status-seekers \u00b7 early adopters (53.3%)"
+      "value": "Status-seekers · early adopters (53.3%)"
      },
      {
-      "label": "Segment: Status-seekers \u00b7 early adopters",
+      "label": "Segment: Status-seekers · early adopters",
       "value": "53.3% (n=32)"
      },
      {
-      "label": "Segment: Understated \u00b7 pragmatists",
+      "label": "Segment: Understated · pragmatists",
       "value": "46.7% (n=28)"
      },
      {
@@ -3123,7 +3144,7 @@
       {
        "n": 32,
        "id": "seg_2",
-       "name": "Status-seekers \u00b7 early adopters",
+       "name": "Status-seekers · early adopters",
        "media": [
         {
          "top": [
@@ -3255,7 +3276,7 @@
       {
        "n": 28,
        "id": "seg_1",
-       "name": "Understated \u00b7 pragmatists",
+       "name": "Understated · pragmatists",
        "media": [
         {
          "top": [
@@ -3546,7 +3567,7 @@
    },
    "key_findings": [
     {
-     "label": "Primary segment size (Status-seekers \u00b7 early adopters)",
+     "label": "Primary segment size (Status-seekers · early adopters)",
      "trend": "positive",
      "value": "53.3% (n=32)"
     },
@@ -3740,9 +3761,9 @@
      "data": {
       "distribution": {
        "About once a month": 37,
-       "More than once a month": 8,
+       "Every 4-6 months": 10,
        "Every 2-3 months": 5,
-       "Every 4-6 months": 10
+       "More than once a month": 8
       },
       "n": 60
      },
@@ -3762,11 +3783,11 @@
      ],
      "data": {
       "distribution": {
-       "AED 150-299": 26,
-       "AED 300-499": 10,
        "AED 50-149": 14,
+       "AED 150-299": 26,
        "AED 500 or more": 7,
-       "Less than AED 50": 3
+       "Less than AED 50": 3,
+       "AED 300-499": 10
       },
       "n": 60
      },
@@ -3781,7 +3802,7 @@
       "Gillette",
       "Nivea Men",
       "Dove Men+Care",
-      "L'Or\u00e9al Men Expert",
+      "L'Oréal Men Expert",
       "Bulldog Skincare",
       "Grooming Lounge",
       "Harry's",
@@ -3792,17 +3813,17 @@
      ],
      "data": {
       "distribution": {
-       "Gillette": 36,
        "Nivea Men": 50,
-       "L'Or\u00e9al Men Expert": 29,
-       "Bulldog Skincare": 23,
-       "Harry's": 9,
-       "Other": 10,
-       "Beardo": 8,
-       "Noon / Amazon (own-label or multi-brand)": 33,
        "Dove Men+Care": 32,
+       "L'Oréal Men Expert": 29,
+       "Bulldog Skincare": 23,
        "The Man Company": 19,
-       "Grooming Lounge": 8
+       "Noon / Amazon (own-label or multi-brand)": 33,
+       "Gillette": 36,
+       "Grooming Lounge": 8,
+       "Beardo": 8,
+       "Other": 10,
+       "Harry's": 9
       },
       "n_respondents": 60,
       "n": 60
@@ -3830,18 +3851,18 @@
      ],
      "data": {
       "distribution": {
-       "Instagram": 38,
        "YouTube": 56,
-       "TikTok": 19,
        "Facebook": 15,
-       "LinkedIn": 28,
-       "WhatsApp": 1,
        "MBC TV (broadcast)": 14,
        "Dubai TV / Abu Dhabi TV": 8,
+       "Instagram": 38,
+       "LinkedIn": 28,
+       "TikTok": 19,
+       "Snapchat": 3,
        "Twitter / X": 1,
        "Netflix": 2,
-       "Reddit": 1,
-       "Snapchat": 3
+       "WhatsApp": 1,
+       "Reddit": 1
       },
       "n_respondents": 60,
       "n": 60
@@ -3864,13 +3885,13 @@
      ],
      "data": {
       "distribution": {
-       "Product quality and effectiveness": 53,
+       "Affordable price or value for money": 19,
        "Ability to discover new or exclusive products": 24,
+       "Personalised recommendations for my skin or hair type": 16,
+       "Product quality and effectiveness": 53,
        "Convenience of home delivery or auto-replenishment": 29,
        "Trusted or well-known brand name": 27,
-       "Affordable price or value for money": 19,
        "Natural, organic, or sustainable ingredients": 9,
-       "Personalised recommendations for my skin or hair type": 16,
        "Convenient home delivery or auto-replenishment": 1
       },
       "n_respondents": 60,
@@ -3884,9 +3905,12 @@
  {
   "mission_id_prefix": "0a494ef7",
   "goal_type": "audience_profiling",
+  "raw_response_rows": 2400,
+  "raw_distinct_personas": 300,
+  "respondent_count_column": 5,
   "analysis": {
    "n": 300,
-   "reason": "Fewer than two attitudinal dimensions were measured \u2014 an aggregate profile is shown.",
+   "reason": "Fewer than two attitudinal dimensions were measured — an aggregate profile is shown.",
    "posture": "aggregate",
    "segments": null,
    "aggregate": {
@@ -3931,7 +3955,7 @@
   "report": {
    "header": {
     "sample": {
-     "n": 126,
+     "n": 300,
      "qualified": 300,
      "delivered": 5,
      "posture": "indicative",
@@ -4027,9 +4051,9 @@
      ],
      "data": {
       "distribution": {
-       "Yes, we regularly commission or use market research": 126
+       "Yes, we regularly commission or use market research": 300
       },
-      "n": 126
+      "n": 300
      },
      "insight": "All 300 respondents confirmed their organisation regularly commissions or uses market research, making this a fully qualified sample of active buyers."
     },
@@ -4044,18 +4068,18 @@
       "scale_max": 7,
       "distribution": {
        "1": 0,
-       "2": 11,
-       "3": 101,
+       "2": 34,
+       "3": 233,
        "4": 0,
        "5": 0,
-       "6": 13,
-       "7": 0
+       "6": 31,
+       "7": 2
       },
       "average": 3.22,
-      "n": 125,
-      "ci_low": 3.05,
-      "ci_high": 3.4,
-      "stddev": 0.99
+      "n": 300,
+      "ci_low": 3.1,
+      "ci_high": 3.34,
+      "stddev": 1.05
      },
      "insight": "Price comparison is not a strong habit among these buyers: the average score is 3.22 out of 7, and 233 of 300 respondents landed at the midpoint (3), suggesting most are neither systematic price-shoppers nor indifferent to cost."
     },
@@ -4063,24 +4087,27 @@
      "id": "q3",
      "number": 3,
      "text": "I am eager to adopt new market research methodologies and innovative data collection approaches before others in my industry do.",
-     "renderer": "scale_1_7",
+     "renderer": "scale_generic",
      "options": [],
      "data": {
       "scale_min": 1,
-      "scale_max": 7,
+      "scale_max": 10,
       "distribution": {
        "1": 0,
-       "2": 3,
-       "3": 5,
-       "4": 87,
-       "5": 1,
-       "6": 13,
-       "7": 16
+       "2": 5,
+       "3": 13,
+       "4": 212,
+       "5": 2,
+       "6": 28,
+       "7": 38,
+       "8": 2,
+       "9": 0,
+       "10": 0
       },
-      "average": 4.51,
-      "n": 125,
-      "ci_low": 4.3,
-      "ci_high": 4.72,
+      "average": 4.52,
+      "n": 300,
+      "ci_low": 4.39,
+      "ci_high": 4.66,
       "stddev": 1.21
      },
      "insight": "Appetite for new methodologies is moderate, with an average of 4.52 out of 10 and 212 of 300 respondents scoring exactly 4, indicating the majority sit just below the midpoint and are cautious rather than eager early adopters."
@@ -4096,21 +4123,21 @@
       "scale_max": 10,
       "distribution": {
        "1": 0,
-       "2": 8,
-       "3": 14,
-       "4": 69,
-       "5": 10,
-       "6": 4,
-       "7": 18,
-       "8": 2,
+       "2": 14,
+       "3": 37,
+       "4": 175,
+       "5": 18,
+       "6": 9,
+       "7": 41,
+       "8": 6,
        "9": 0,
        "10": 0
       },
-      "average": 4.4,
-      "n": 125,
-      "ci_low": 4.15,
-      "ci_high": 4.65,
-      "stddev": 1.41
+      "average": 4.39,
+      "n": 300,
+      "ci_low": 4.24,
+      "ci_high": 4.55,
+      "stddev": 1.38
      },
      "insight": "Provider loyalty is similarly lukewarm, averaging 4.39 out of 10, with 175 of 300 respondents scoring 4, meaning most organisations do not strongly prefer sticking with a familiar supplier over exploring alternatives."
     },
@@ -4127,19 +4154,19 @@
        "1": 0,
        "2": 0,
        "3": 0,
-       "4": 16,
-       "5": 79,
+       "4": 28,
+       "5": 201,
        "6": 0,
-       "7": 2,
-       "8": 26,
-       "9": 2,
+       "7": 3,
+       "8": 62,
+       "9": 6,
        "10": 0
       },
-      "average": 5.59,
-      "n": 125,
-      "ci_low": 5.34,
-      "ci_high": 5.84,
-      "stddev": 1.41
+      "average": 5.63,
+      "n": 300,
+      "ci_low": 5.47,
+      "ci_high": 5.78,
+      "stddev": 1.39
      },
      "insight": "Speed and ease of project management clearly outweigh price as a priority: the average is 5.63 out of 10, and 201 of 300 respondents scored 5, with a further 62 scoring 8, showing consistent preference for efficiency over cost minimisation."
     },
@@ -4155,20 +4182,20 @@
       "distribution": {
        "1": 0,
        "2": 0,
-       "3": 5,
-       "4": 90,
-       "5": 0,
-       "6": 4,
-       "7": 24,
-       "8": 2,
+       "3": 12,
+       "4": 215,
+       "5": 2,
+       "6": 6,
+       "7": 58,
+       "8": 7,
        "9": 0,
        "10": 0
       },
-      "average": 4.66,
-      "n": 125,
-      "ci_low": 4.43,
-      "ci_high": 4.89,
-      "stddev": 1.31
+      "average": 4.68,
+      "n": 300,
+      "ci_low": 4.53,
+      "ci_high": 4.83,
+      "stddev": 1.34
      },
      "insight": "Respondents moderately agree that their research partners reflect on their own organisation's credibility, scoring an average of 4.68 out of 10, with 215 of 300 at score 4 and 58 at score 7, pointing to a quiet but real reputational consideration in vendor selection."
     },
@@ -4186,19 +4213,20 @@
      ],
      "data": {
       "distribution": {
-       "Nielsen": 33,
-       "Kantar": 45,
-       "YouGov": 18,
-       "Local/regional boutique research firms": 43,
-       "In-house research team only": 22,
-       "Ipsos": 29,
-       "Qualtrics": 4,
-       "Once a month": 12,
-       "Every few months (quarterly)": 59,
-       "More than once a month": 5,
-       "Toluna": 4
+       "More than once a month": 11,
+       "Nielsen": 71,
+       "Kantar": 97,
+       "Toluna": 8,
+       "In-house research team only": 41,
+       "Ipsos": 53,
+       "Local/regional boutique research firms": 93,
+       "Every few months (quarterly)": 164,
+       "YouGov": 47,
+       "Once a month": 23,
+       "Dynata": 1,
+       "Qualtrics": 5
       },
-      "n": 125
+      "n": 300
      },
      "insight": "Quarterly commissioning dominates research cadence: 164 of the 300 respondents commission research every few months, while only 11 do so more than once a month, and 23 do so monthly, confirming that most buying decisions are periodic rather than continuous."
     },
@@ -4221,20 +4249,20 @@
      ],
      "data": {
       "distribution": {
-       "Ipsos": 73,
-       "Nielsen": 64,
-       "Kantar": 113,
-       "YouGov": 85,
-       "In-house research team only": 69,
-       "Local/regional boutique research firms": 110,
-       "Qualtrics": 6,
-       "Toluna": 16,
-       "SurveyMonkey": 2,
-       "GfK": 1,
-       "Dynata": 4
+       "Ipsos": 184,
+       "Nielsen": 173,
+       "Kantar": 278,
+       "Local/regional boutique research firms": 276,
+       "YouGov": 204,
+       "In-house research team only": 154,
+       "Dynata": 9,
+       "Toluna": 40,
+       "GfK": 2,
+       "Qualtrics": 10,
+       "SurveyMonkey": 4
       },
-      "n_respondents": 124,
-      "n": 124
+      "n_respondents": 300,
+      "n": 300
      },
      "insight": "Kantar (278 organisations) and local or regional boutique firms (276) are the most widely used providers in the past 12 months, well ahead of YouGov (204), Ipsos (184), and Nielsen (173), showing that buyers combine global brands with local specialists rather than consolidating around a single provider."
     }
@@ -4244,6 +4272,9 @@
  {
   "mission_id_prefix": "b34795da",
   "goal_type": "brand_lift",
+  "raw_response_rows": 60,
+  "raw_distinct_personas": 5,
+  "respondent_count_column": 5,
   "analysis": {
    "cells": {
     "control": {
@@ -4878,8 +4909,8 @@
      ],
      "data": {
       "distribution": {
-       "I use traditional banking but am open to digital alternatives": 3,
-       "I currently use a digital bank or neobank": 2
+       "I currently use a digital bank or neobank": 2,
+       "I use traditional banking but am open to digital alternatives": 3
       },
       "n": 5
      },
@@ -4913,10 +4944,10 @@
      ],
      "data": {
       "distribution": {
-       "NovaBank": 3,
-       "Liv. by Emirates NBD": 2,
        "Wio Bank": 2,
        "Mashreq Neo": 1,
+       "NovaBank": 3,
+       "Liv. by Emirates NBD": 2,
        "None of the above": 1
       },
       "n_respondents": 5,
@@ -4952,10 +4983,10 @@
      ],
      "data": {
       "distribution": {
-       "NovaBank": 4,
        "Wio Bank": 3,
        "Mashreq Neo": 3,
        "Liv. by Emirates NBD": 5,
+       "NovaBank": 4,
        "Zand Bank": 1
       },
       "n_respondents": 5,
@@ -5038,11 +5069,11 @@
      ],
      "data": {
       "distribution": {
-       "A fully digital, app-first banking experience": 2,
+       "None of the above": 2,
        "Fast and easy account opening with no paperwork": 3,
        "Competitive rates and low fees for UAE residents": 2,
-       "Built for the modern UAE lifestyle": 2,
-       "None of the above": 2
+       "A fully digital, app-first banking experience": 2,
+       "Built for the modern UAE lifestyle": 2
       },
       "n_respondents": 5,
       "n": 5
@@ -5178,6 +5209,9 @@
  {
   "mission_id_prefix": "9998fe9d",
   "goal_type": "roadmap",
+  "raw_response_rows": 15,
+  "raw_distinct_personas": 5,
+  "respondent_count_column": 5,
   "analysis": {
    "n": 5,
    "kano": null,
@@ -5294,6 +5328,9 @@
  {
   "mission_id_prefix": "4515fed5",
   "goal_type": "competitor",
+  "raw_response_rows": 55,
+  "raw_distinct_personas": 5,
+  "respondent_count_column": 5,
   "analysis": {
    "n": 5,
    "wom": {
@@ -5334,7 +5371,7 @@
       "Environmentally conscious": 0,
       "Offers promotions and discounts": 0,
       "Wide availability across the UAE": 0,
-      "Reliable \u2014 rides arrive on time": 20
+      "Reliable — rides arrive on time": 20
      },
      "awareness_pct": {
       "pct": 60,
@@ -6095,6 +6132,9 @@
  {
   "mission_id_prefix": "ded496c4",
   "goal_type": "competitor",
+  "raw_response_rows": 65,
+  "raw_distinct_personas": 5,
+  "respondent_count_column": 5,
   "analysis": {
    "n": 5,
    "wom": {
@@ -6114,70 +6154,70 @@
    "gaps": [
     {
      "gap": -100,
-     "attribute": "Trustworthy brand \u2014 I feel confident using this service",
+     "attribute": "Trustworthy brand — I feel confident using this service",
      "focal_mean": 0,
      "best_competitor": "Careem",
      "best_competitor_mean": 100
     },
     {
      "gap": -80,
-     "attribute": "High-quality drivers \u2014 professional, courteous, and safe",
+     "attribute": "High-quality drivers — professional, courteous, and safe",
      "focal_mean": 20,
      "best_competitor": "Careem",
      "best_competitor_mean": 100
     },
     {
      "gap": -80,
-     "attribute": "Reliable \u2014 rides arrive on time and as expected",
+     "attribute": "Reliable — rides arrive on time and as expected",
      "focal_mean": 20,
      "best_competitor": "Careem",
      "best_competitor_mean": 100
     },
     {
      "gap": -80,
-     "attribute": "Wide availability \u2014 easy to find a ride whenever needed",
+     "attribute": "Wide availability — easy to find a ride whenever needed",
      "focal_mean": 20,
      "best_competitor": "Careem",
      "best_competitor_mean": 100
     },
     {
      "gap": -60,
-     "attribute": "Affordable \u2014 offers competitive and fair pricing",
+     "attribute": "Affordable — offers competitive and fair pricing",
      "focal_mean": 0,
      "best_competitor": "Careem",
      "best_competitor_mean": 60
     },
     {
      "gap": -60,
-     "attribute": "Safe \u2014 makes me feel secure during my journey",
+     "attribute": "Safe — makes me feel secure during my journey",
      "focal_mean": 20,
      "best_competitor": "Uber",
      "best_competitor_mean": 80
     },
     {
      "gap": -60,
-     "attribute": "Transparent pricing \u2014 clear fares with no hidden charges",
+     "attribute": "Transparent pricing — clear fares with no hidden charges",
      "focal_mean": 0,
      "best_competitor": "Uber",
      "best_competitor_mean": 60
     },
     {
      "gap": -40,
-     "attribute": "Easy to use \u2014 simple and intuitive app experience",
+     "attribute": "Easy to use — simple and intuitive app experience",
      "focal_mean": 60,
      "best_competitor": "Careem",
      "best_competitor_mean": 100
     },
     {
      "gap": 0,
-     "attribute": "Good customer support \u2014 resolves issues quickly",
+     "attribute": "Good customer support — resolves issues quickly",
      "focal_mean": 0,
      "best_competitor": "Careem",
      "best_competitor_mean": 0
     },
     {
      "gap": 0,
-     "attribute": "Innovative \u2014 regularly introduces useful new features",
+     "attribute": "Innovative — regularly introduces useful new features",
      "focal_mean": 0,
      "best_competitor": "Careem",
      "best_competitor_mean": 0
@@ -6201,16 +6241,16 @@
      "brand_id": "Our Brand",
      "is_focal": true,
      "attributes": {
-      "Safe \u2014 makes me feel secure during my journey": 20,
-      "Good customer support \u2014 resolves issues quickly": 0,
-      "Reliable \u2014 rides arrive on time and as expected": 20,
-      "Affordable \u2014 offers competitive and fair pricing": 0,
-      "Easy to use \u2014 simple and intuitive app experience": 60,
-      "Innovative \u2014 regularly introduces useful new features": 0,
-      "Trustworthy brand \u2014 I feel confident using this service": 0,
-      "Wide availability \u2014 easy to find a ride whenever needed": 20,
-      "High-quality drivers \u2014 professional, courteous, and safe": 20,
-      "Transparent pricing \u2014 clear fares with no hidden charges": 0
+      "Safe — makes me feel secure during my journey": 20,
+      "Good customer support — resolves issues quickly": 0,
+      "Reliable — rides arrive on time and as expected": 20,
+      "Affordable — offers competitive and fair pricing": 0,
+      "Easy to use — simple and intuitive app experience": 60,
+      "Innovative — regularly introduces useful new features": 0,
+      "Trustworthy brand — I feel confident using this service": 0,
+      "Wide availability — easy to find a ride whenever needed": 20,
+      "High-quality drivers — professional, courteous, and safe": 20,
+      "Transparent pricing — clear fares with no hidden charges": 0
      },
      "awareness_pct": {
       "pct": 100,
@@ -6240,16 +6280,16 @@
      "brand_id": "Careem",
      "is_focal": false,
      "attributes": {
-      "Safe \u2014 makes me feel secure during my journey": 40,
-      "Good customer support \u2014 resolves issues quickly": 0,
-      "Reliable \u2014 rides arrive on time and as expected": 100,
-      "Affordable \u2014 offers competitive and fair pricing": 60,
-      "Easy to use \u2014 simple and intuitive app experience": 100,
-      "Innovative \u2014 regularly introduces useful new features": 0,
-      "Trustworthy brand \u2014 I feel confident using this service": 100,
-      "Wide availability \u2014 easy to find a ride whenever needed": 100,
-      "High-quality drivers \u2014 professional, courteous, and safe": 100,
-      "Transparent pricing \u2014 clear fares with no hidden charges": 20
+      "Safe — makes me feel secure during my journey": 40,
+      "Good customer support — resolves issues quickly": 0,
+      "Reliable — rides arrive on time and as expected": 100,
+      "Affordable — offers competitive and fair pricing": 60,
+      "Easy to use — simple and intuitive app experience": 100,
+      "Innovative — regularly introduces useful new features": 0,
+      "Trustworthy brand — I feel confident using this service": 100,
+      "Wide availability — easy to find a ride whenever needed": 100,
+      "High-quality drivers — professional, courteous, and safe": 100,
+      "Transparent pricing — clear fares with no hidden charges": 20
      },
      "awareness_pct": {
       "pct": 100,
@@ -6279,16 +6319,16 @@
      "brand_id": "Uber",
      "is_focal": false,
      "attributes": {
-      "Safe \u2014 makes me feel secure during my journey": 80,
-      "Good customer support \u2014 resolves issues quickly": 0,
-      "Reliable \u2014 rides arrive on time and as expected": 80,
-      "Affordable \u2014 offers competitive and fair pricing": 40,
-      "Easy to use \u2014 simple and intuitive app experience": 100,
-      "Innovative \u2014 regularly introduces useful new features": 0,
-      "Trustworthy brand \u2014 I feel confident using this service": 80,
-      "Wide availability \u2014 easy to find a ride whenever needed": 100,
-      "High-quality drivers \u2014 professional, courteous, and safe": 80,
-      "Transparent pricing \u2014 clear fares with no hidden charges": 60
+      "Safe — makes me feel secure during my journey": 80,
+      "Good customer support — resolves issues quickly": 0,
+      "Reliable — rides arrive on time and as expected": 80,
+      "Affordable — offers competitive and fair pricing": 40,
+      "Easy to use — simple and intuitive app experience": 100,
+      "Innovative — regularly introduces useful new features": 0,
+      "Trustworthy brand — I feel confident using this service": 80,
+      "Wide availability — easy to find a ride whenever needed": 100,
+      "High-quality drivers — professional, courteous, and safe": 80,
+      "Transparent pricing — clear fares with no hidden charges": 60
      },
      "awareness_pct": {
       "pct": 100,
@@ -6757,8 +6797,8 @@
      ],
      "data": {
       "distribution": {
-       "Uber": 4,
-       "Careem": 1
+       "Careem": 1,
+       "Uber": 4
       },
       "n": 5
      },
@@ -6877,11 +6917,11 @@
      "data": {
       "distribution": {
        "Reliable, rides arrive on time and as expected": 5,
-       "Affordable, offers competitive and fair pricing": 3,
        "High-quality drivers, professional, courteous, and safe": 5,
        "Easy to use, simple and intuitive app experience": 5,
        "Wide availability, easy to find a ride whenever needed": 5,
        "Trustworthy brand, I feel confident using this service": 5,
+       "Affordable, offers competitive and fair pricing": 3,
        "Safe, makes me feel secure during my journey": 2,
        "Transparent pricing, clear fares with no hidden charges": 1
       },
@@ -6911,13 +6951,13 @@
      "data": {
       "distribution": {
        "Reliable, rides arrive on time and as expected": 4,
-       "Affordable, offers competitive and fair pricing": 2,
        "High-quality drivers, professional, courteous, and safe": 4,
        "Easy to use, simple and intuitive app experience": 5,
        "Wide availability, easy to find a ride whenever needed": 5,
-       "Transparent pricing, clear fares with no hidden charges": 3,
        "Safe, makes me feel secure during my journey": 4,
-       "Trustworthy brand, I feel confident using this service": 4
+       "Trustworthy brand, I feel confident using this service": 4,
+       "Affordable, offers competitive and fair pricing": 2,
+       "Transparent pricing, clear fares with no hidden charges": 3
       },
       "n_respondents": 5,
       "n": 5,
@@ -6986,8 +7026,8 @@
      ],
      "data": {
       "distribution": {
-       "No, not at all": 3,
-       "No, but I've thought about them": 2
+       "No, but I've thought about them": 2,
+       "No, not at all": 3
       },
       "n": 5
      },
@@ -6999,6 +7039,9 @@
  {
   "mission_id_prefix": "86d4b8c6",
   "goal_type": "compare",
+  "raw_response_rows": 65,
+  "raw_distinct_personas": 5,
+  "respondent_count_column": 5,
   "analysis": {
    "n": 5,
    "concepts": [
@@ -7703,15 +7746,567 @@
      "options": [],
      "data": {
       "distribution": {
-       "With the wizard, I can see what I am setting up and change things if they are wrong. With the AI, I am trusting a machine I do not understand, and my bank data is too sensitive for that. I need to be in control.": 1,
-       "Because I need to know what is happening with my money, not just trust that some AI got it right. The wizard lets me build things step by step so I stay in control. I have family to protect and I can't afford to give my bank access to something I don't understand.": 1,
+       "Because the automatic part solves the real problem that stopped me from using my last app. I don't want to spend time logging transactions, I want the app to just show me where my money goes. I'm still a bit worried about security, but if your bank connection is as safe as the banks say it is, then this is what I actually need.": 1,
        "I stopped using my last finance app because I got tired of manually entering everything every week. The AI concept removes that friction entirely, which is the main reason I haven't tried another app since. Of course I need to trust how it categorizes things, but if it works well, this is what I should have had two years ago.": 1,
+       "With the wizard, I can see what I am setting up and change things if they are wrong. With the AI, I am trusting a machine I do not understand, and my bank data is too sensitive for that. I need to be in control.": 1,
        "It solves the real problem from my last app, which is doing all that manual work. The guided wizard just makes the setup easier but you still have to do the hard part later. If the company can prove the security is solid, the AI approach saves me time every month, not just on day one.": 1,
-       "Because the automatic part solves the real problem that stopped me from using my last app. I don't want to spend time logging transactions, I want the app to just show me where my money goes. I'm still a bit worried about security, but if your bank connection is as safe as the banks say it is, then this is what I actually need.": 1
+       "Because I need to know what is happening with my money, not just trust that some AI got it right. The wizard lets me build things step by step so I stay in control. I have family to protect and I can't afford to give my bank access to something I don't understand.": 1
       },
       "n": 5
      },
      "insight": "The three AI Builder choosers each articulated the same core logic: manual entry is why they stopped using their last app, and the AI removes that friction at a recurring, not just onboarding, level. The two Wizard choosers both cited protecting dependents and needing to audit every step. This is a values split (efficiency vs. control) as much as a feature preference."
+    }
+   ]
+  }
+ },
+ {
+  "mission_id_prefix": "b8f5abce",
+  "goal_type": "market_entry",
+  "raw_response_rows": 560,
+  "raw_distinct_personas": 80,
+  "respondent_count_column": 80,
+  "analysis": {
+   "n": 80,
+   "reason": null,
+   "markets": [
+    {
+     "n": 40,
+     "wtp": null,
+     "market": "SA",
+     "signal": "go",
+     "barriers": [
+      {
+       "pct": 92.5,
+       "label": "Unsure whether the taste will suit local palates"
+      },
+      {
+       "pct": 90,
+       "label": "Lack of trust in the brand — it is not well known locally"
+      },
+      {
+       "pct": 87.5,
+       "label": "Uncertainty about halal certification or religious compliance of plant-based ingredients"
+      },
+      {
+       "pct": 65,
+       "label": "Concerns about limited availability or inconsistent cold-chain delivery to local stores"
+      },
+      {
+       "pct": 40,
+       "label": "Cultural preference for home-cooked or traditional Arabic and Egyptian meals"
+      },
+      {
+       "pct": 35,
+       "label": "Price feels too high compared to traditional alternatives"
+      }
+     ],
+     "appeal_mean": 5.5,
+     "competitors": [
+      {
+       "pct": 87.5,
+       "label": "Carrefour Market chilled ready-meals (Saudi Arabia / Egypt)"
+      },
+      {
+       "pct": 57.5,
+       "label": "Healthy ME (Saudi Arabia — local healthy meal prep brand)"
+      },
+      {
+       "pct": 52.5,
+       "label": "Freshii or local salad-and-bowl concepts (Saudi Arabia)"
+      },
+      {
+       "pct": 47.5,
+       "label": "Lulu Hypermarket own-brand chilled meals (Saudi Arabia / Egypt)"
+      },
+      {
+       "pct": 45,
+       "label": "Kcal Brands (Saudi Arabia — calorie-controlled ready meals)"
+      },
+      {
+       "pct": 17.5,
+       "label": "Local home-cook delivery services via Instagram or WhatsApp"
+      }
+     ],
+     "directional": false,
+     "demand_index": 68,
+     "purchase_intent_pct": 90
+    },
+    {
+     "n": 40,
+     "wtp": null,
+     "market": "EG",
+     "signal": "caution",
+     "barriers": [
+      {
+       "pct": 95,
+       "label": "Lack of trust in the brand — it is not well known locally"
+      },
+      {
+       "pct": 77.5,
+       "label": "Unsure whether the taste will suit local palates"
+      },
+      {
+       "pct": 75,
+       "label": "Uncertainty about halal certification or religious compliance of plant-based ingredients"
+      },
+      {
+       "pct": 67.5,
+       "label": "Cultural preference for home-cooked or traditional Arabic and Egyptian meals"
+      },
+      {
+       "pct": 60,
+       "label": "Price feels too high compared to traditional alternatives"
+      },
+      {
+       "pct": 52.5,
+       "label": "Concerns about limited availability or inconsistent cold-chain delivery to local stores"
+      }
+     ],
+     "appeal_mean": 5,
+     "competitors": [
+      {
+       "pct": 77.5,
+       "label": "Carrefour Market chilled ready-meals (Saudi Arabia / Egypt)"
+      },
+      {
+       "pct": 65,
+       "label": "Local home-cook delivery services via Instagram or WhatsApp"
+      },
+      {
+       "pct": 32.5,
+       "label": "Lulu Hypermarket own-brand chilled meals (Saudi Arabia / Egypt)"
+      },
+      {
+       "pct": 17.5,
+       "label": "None of the above — I do not currently use any of these"
+      },
+      {
+       "pct": 17.5,
+       "label": "Diet Center ready-meals (Saudi Arabia / Egypt)"
+      },
+      {
+       "pct": 15,
+       "label": "Otlob / Talabat ready-meal or grocery delivery (Egypt / Saudi Arabia)"
+      }
+     ],
+     "directional": false,
+     "demand_index": 55,
+     "purchase_intent_pct": 67.5
+    }
+   ],
+   "computed_at": "2026-06-24T11:21:37.679Z",
+   "methodology": "market_entry",
+   "top_barrier": "Lack of trust in the brand — it is not well known locally",
+   "analysis_version": 1,
+   "best_demand_index": 68,
+   "recommended_market": "SA"
+  },
+  "report": {
+   "header": {
+    "sample": {
+     "n": 80,
+     "qualified": 80,
+     "delivered": 80,
+     "posture": "indicative",
+     "completed_at": "2026-06-24T11:25:14.96+00:00",
+     "mission_id": "b8f5abce-0d21-450f-8c65-47c682b80bf4"
+    },
+    "methodology": "market_entry"
+   },
+   "headline": {
+    "metric": "Recommended market",
+    "value": "SA",
+    "all": [
+     {
+      "label": "Recommended market",
+      "value": "SA"
+     },
+     {
+      "label": "Best demand index (0-100)",
+      "value": "68"
+     },
+     {
+      "label": "SA",
+      "value": "demand 68/100 · intent 90% · go"
+     },
+     {
+      "label": "EG",
+      "value": "demand 55/100 · intent 67.5% · caution"
+     },
+     {
+      "label": "Top adoption barrier",
+      "value": "Lack of trust in the brand, it is not well known locally"
+     }
+    ]
+   },
+   "centerpiece": {
+    "methodology": "market_entry",
+    "data": {
+     "n": 80,
+     "reason": null,
+     "markets": [
+      {
+       "n": 40,
+       "wtp": null,
+       "market": "SA",
+       "signal": "go",
+       "barriers": [
+        {
+         "pct": 92.5,
+         "label": "Unsure whether the taste will suit local palates"
+        },
+        {
+         "pct": 90,
+         "label": "Lack of trust in the brand, it is not well known locally"
+        },
+        {
+         "pct": 87.5,
+         "label": "Uncertainty about halal certification or religious compliance of plant-based ingredients"
+        },
+        {
+         "pct": 65,
+         "label": "Concerns about limited availability or inconsistent cold-chain delivery to local stores"
+        },
+        {
+         "pct": 40,
+         "label": "Cultural preference for home-cooked or traditional Arabic and Egyptian meals"
+        },
+        {
+         "pct": 35,
+         "label": "Price feels too high compared to traditional alternatives"
+        }
+       ],
+       "appeal_mean": 5.5,
+       "competitors": [
+        {
+         "pct": 87.5,
+         "label": "Carrefour Market chilled ready-meals (Saudi Arabia / Egypt)"
+        },
+        {
+         "pct": 57.5,
+         "label": "Healthy ME (Saudi Arabia, local healthy meal prep brand)"
+        },
+        {
+         "pct": 52.5,
+         "label": "Freshii or local salad-and-bowl concepts (Saudi Arabia)"
+        },
+        {
+         "pct": 47.5,
+         "label": "Lulu Hypermarket own-brand chilled meals (Saudi Arabia / Egypt)"
+        },
+        {
+         "pct": 45,
+         "label": "Kcal Brands (Saudi Arabia, calorie-controlled ready meals)"
+        },
+        {
+         "pct": 17.5,
+         "label": "Local home-cook delivery services via Instagram or WhatsApp"
+        }
+       ],
+       "directional": false,
+       "demand_index": 68,
+       "purchase_intent_pct": 90
+      },
+      {
+       "n": 40,
+       "wtp": null,
+       "market": "EG",
+       "signal": "caution",
+       "barriers": [
+        {
+         "pct": 95,
+         "label": "Lack of trust in the brand, it is not well known locally"
+        },
+        {
+         "pct": 77.5,
+         "label": "Unsure whether the taste will suit local palates"
+        },
+        {
+         "pct": 75,
+         "label": "Uncertainty about halal certification or religious compliance of plant-based ingredients"
+        },
+        {
+         "pct": 67.5,
+         "label": "Cultural preference for home-cooked or traditional Arabic and Egyptian meals"
+        },
+        {
+         "pct": 60,
+         "label": "Price feels too high compared to traditional alternatives"
+        },
+        {
+         "pct": 52.5,
+         "label": "Concerns about limited availability or inconsistent cold-chain delivery to local stores"
+        }
+       ],
+       "appeal_mean": 5,
+       "competitors": [
+        {
+         "pct": 77.5,
+         "label": "Carrefour Market chilled ready-meals (Saudi Arabia / Egypt)"
+        },
+        {
+         "pct": 65,
+         "label": "Local home-cook delivery services via Instagram or WhatsApp"
+        },
+        {
+         "pct": 32.5,
+         "label": "Lulu Hypermarket own-brand chilled meals (Saudi Arabia / Egypt)"
+        },
+        {
+         "pct": 17.5,
+         "label": "None of the above, I do not currently use any of these"
+        },
+        {
+         "pct": 17.5,
+         "label": "Diet Center ready-meals (Saudi Arabia / Egypt)"
+        },
+        {
+         "pct": 15,
+         "label": "Otlob / Talabat ready-meal or grocery delivery (Egypt / Saudi Arabia)"
+        }
+       ],
+       "directional": false,
+       "demand_index": 55,
+       "purchase_intent_pct": 67.5
+      }
+     ],
+     "computed_at": "2026-06-24T11:21:37.679Z",
+     "methodology": "market_entry",
+     "top_barrier": "Lack of trust in the brand, it is not well known locally",
+     "analysis_version": 1,
+     "best_demand_index": 68,
+     "recommended_market": "SA"
+    }
+   },
+   "key_findings": [
+    {
+     "label": "SA Demand Index",
+     "trend": "positive",
+     "value": "68"
+    },
+    {
+     "label": "SA Purchase Intent",
+     "trend": "positive",
+     "value": "90%"
+    },
+    {
+     "label": "Top Adoption Barrier, Brand Trust (EG)",
+     "trend": "negative",
+     "value": "95%"
+    }
+   ],
+   "survey": [
+    {
+     "id": "q1",
+     "number": 1,
+     "text": "In the past 3 months, have you purchased any chilled or refrigerated ready-meals, meal kits, or prepared food products from a supermarket or grocery store in your country (Saudi Arabia or Egypt)?",
+     "renderer": "screener",
+     "options": [
+      "Yes, I have purchased these regularly (at least once a month)",
+      "Yes, I have purchased these occasionally (a few times in the past 3 months)",
+      "No, I have not purchased these recently",
+      "I do not purchase ready-meals or prepared foods at all"
+     ],
+     "data": {
+      "distribution": {
+       "Yes, I have purchased these regularly (at least once a month)": 13,
+       "Yes, I have purchased these occasionally (a few times in the past 3 months)": 57,
+       "No, I have not purchased these recently": 10
+      },
+      "n": 80
+     },
+     "insight": "The vast majority of respondents are already active buyers of chilled or refrigerated prepared foods, 57% purchase occasionally and 13% purchase regularly, meaning only 10% have not bought these products recently."
+    },
+    {
+     "id": "q2",
+     "number": 2,
+     "text": "We are describing a premium chilled plant-based ready-meal line, restaurant-quality meals made entirely from plant ingredients, ready to serve in 15 minutes, sold in supermarkets in Saudi Arabia and Egypt. How appealing does this concept sound to you personally, on a scale of 1 to 7 where 1 = Not at all appealing and 7 = Extremely appealing?",
+     "renderer": "scale_1_7",
+     "options": [],
+     "data": {
+      "scale_min": 1,
+      "scale_max": 7,
+      "distribution": {
+       "1": 0,
+       "2": 5,
+       "3": 5,
+       "4": 6,
+       "5": 13,
+       "6": 51,
+       "7": 0
+      },
+      "average": 5.25,
+      "n": 80,
+      "ci_low": 4.98,
+      "ci_high": 5.52,
+      "stddev": 1.22
+     },
+     "insight": "The concept scores an average of 5.25 out of 7, and 51 out of 80 respondents rated it a 6, indicating strong but not peak enthusiasm, most find it clearly appealing without committing to the highest score."
+    },
+    {
+     "id": "q3",
+     "number": 3,
+     "text": "If premium chilled plant-based ready-meals (restaurant-quality, 15-minute prep) were available in your local supermarkets in Saudi Arabia / Egypt, how likely would you be to buy them?",
+     "renderer": "single_select",
+     "options": [
+      "Definitely would buy",
+      "Probably would buy",
+      "Might or might not",
+      "Probably would NOT buy",
+      "Definitely would NOT buy"
+     ],
+     "data": {
+      "distribution": {
+       "Probably would buy": 60,
+       "Probably would NOT buy": 9,
+       "Definitely would buy": 3,
+       "Might or might not": 6,
+       "Definitely would NOT buy": 2
+      },
+      "n": 80
+     },
+     "insight": "63% of respondents said they would 'Probably' or 'Definitely' buy the product (60% + 3%), while only 11% leaned toward not buying, suggesting clear majority purchase intent."
+    },
+    {
+     "id": "q4",
+     "number": 4,
+     "text": "What is the maximum price per single serving you would be willing to pay for a premium chilled plant-based ready-meal (restaurant-quality, 15-minute prep) in your local currency? Please select the highest price you would find acceptable. (Saudi Arabia: SAR | Egypt: EGP)",
+     "renderer": "single_select",
+     "options": [
+      "Saudi Arabia: up to SAR 15 per meal / Egypt: up to EGP 75 per meal",
+      "Saudi Arabia: SAR 16-25 per meal / Egypt: EGP 76-130 per meal",
+      "Saudi Arabia: SAR 26-35 per meal / Egypt: EGP 131-185 per meal",
+      "Saudi Arabia: SAR 36-45 per meal / Egypt: EGP 186-240 per meal",
+      "Saudi Arabia: more than SAR 45 per meal / Egypt: more than EGP 240 per meal"
+     ],
+     "data": {
+      "distribution": {
+       "Saudi Arabia: SAR 26-35 per meal / Egypt: EGP 131-185 per meal": 45,
+       "Saudi Arabia: up to SAR 15 per meal / Egypt: up to EGP 75 per meal": 13,
+       "Saudi Arabia: SAR 36-45 per meal / Egypt: EGP 186-240 per meal": 8,
+       "Saudi Arabia: SAR 16-25 per meal / Egypt: EGP 76-130 per meal": 14
+      },
+      "n": 80
+     },
+     "insight": "The single largest price bracket chosen was SAR 26-35 / EGP 131-185 per meal, selected by 34 respondents, making it the dominant willingness-to-pay threshold and suggesting a mid-premium price point is most broadly acceptable."
+    },
+    {
+     "id": "q5",
+     "number": 5,
+     "text": "What would make you hesitate before purchasing premium chilled plant-based ready-meals in Saudi Arabia or Egypt? Please select all that apply.",
+     "renderer": "multi_select",
+     "options": [
+      "Uncertainty about halal certification or religious compliance of plant-based ingredients",
+      "Lack of trust in the brand, it is not well known locally",
+      "Cultural preference for home-cooked or traditional Arabic and Egyptian meals",
+      "Concerns about limited availability or inconsistent cold-chain delivery to local stores",
+      "Strong existing competition from affordable local ready-meal or fast-food options",
+      "Low awareness of what plant-based eating means or its benefits",
+      "Price feels too high compared to traditional alternatives",
+      "Unsure whether the taste will suit local palates"
+     ],
+     "data": {
+      "distribution": {
+       "Uncertainty about halal certification or religious compliance of plant-based ingredients": 65,
+       "Lack of trust in the brand, it is not well known locally": 74,
+       "Cultural preference for home-cooked or traditional Arabic and Egyptian meals": 43,
+       "Unsure whether the taste will suit local palates": 68,
+       "Concerns about limited availability or inconsistent cold-chain delivery to local stores": 47,
+       "Price feels too high compared to traditional alternatives": 38,
+       "Low awareness of what plant-based eating means or its benefits": 7,
+       "Strong existing competition from affordable local ready-meal or fast-food options": 4
+      },
+      "n_respondents": 80,
+      "n": 80
+     },
+     "insight": "Brand trust is the top barrier, 74 respondents cited lack of local brand recognition, closely followed by taste uncertainty (68) and halal certification concerns (65), meaning credibility and cultural fit are bigger obstacles than price (38)."
+    },
+    {
+     "id": "q6",
+     "number": 6,
+     "text": "Which of the following brands or services do you currently use to buy ready-meals, prepared food, or meal solutions in Saudi Arabia or Egypt? Please select all that apply.",
+     "renderer": "multi_select",
+     "options": [
+      "Lulu Hypermarket own-brand chilled meals (Saudi Arabia / Egypt)",
+      "Otlob / Talabat ready-meal or grocery delivery (Egypt / Saudi Arabia)",
+      "Carrefour Market chilled ready-meals (Saudi Arabia / Egypt)",
+      "Healthy ME (Saudi Arabia, local healthy meal prep brand)",
+      "Kcal Brands (Saudi Arabia, calorie-controlled ready meals)",
+      "Diet Center ready-meals (Saudi Arabia / Egypt)",
+      "Cookd Egypt (Egypt, local meal kit and ready-meal delivery)",
+      "Freshii or local salad-and-bowl concepts (Saudi Arabia)",
+      "Local home-cook delivery services via Instagram or WhatsApp",
+      "None of the above, I do not currently use any of these"
+     ],
+     "data": {
+      "distribution": {
+       "Lulu Hypermarket own-brand chilled meals (Saudi Arabia / Egypt)": 32,
+       "None of the above, I do not currently use any of these": 10,
+       "Carrefour Market chilled ready-meals (Saudi Arabia / Egypt)": 66,
+       "Healthy ME (Saudi Arabia, local healthy meal prep brand)": 24,
+       "Freshii or local salad-and-bowl concepts (Saudi Arabia)": 26,
+       "Diet Center ready-meals (Saudi Arabia / Egypt)": 7,
+       "Local home-cook delivery services via Instagram or WhatsApp": 33,
+       "Otlob / Talabat ready-meal or grocery delivery (Egypt / Saudi Arabia)": 10,
+       "Kcal Brands (Saudi Arabia, calorie-controlled ready meals)": 18,
+       "Danube Hypermarket own-brand chilled meals (Saudi Arabia)": 1,
+       "Cookd Egypt (Egypt, local meal kit and ready-meal delivery)": 2
+      },
+      "n_respondents": 80,
+      "n": 80
+     },
+     "insight": "Carrefour Market chilled ready-meals is the dominant touchpoint with 66 respondents currently using it, while local home-cook delivery via Instagram or WhatsApp (33) and Lulu Hypermarket own-brand meals (32) round out the top three, revealing the competitive and distribution landscape the product must navigate."
+    },
+    {
+     "id": "q7",
+     "number": 7,
+     "text": "In your own words, what changes or adaptations would premium chilled plant-based ready-meals need to make in order to truly fit your lifestyle, taste preferences, and shopping habits in Saudi Arabia or Egypt? (For example: specific cuisines, portion sizes, packaging, certifications, or distribution channels.)",
+     "renderer": "open_text_verbatims",
+     "options": [],
+     "data": {
+      "verbatims": [],
+      "n": 80,
+      "themes": [
+       {
+        "pct": 100,
+        "count": 30,
+        "label": "Halal Certification Imperative",
+        "sentiment": "neutral"
+       },
+       {
+        "pct": 93,
+        "count": 28,
+        "label": "Local & Regional Flavors",
+        "sentiment": "positive"
+       },
+       {
+        "pct": 80,
+        "count": 24,
+        "label": "Reliable Cold-Chain Distribution",
+        "sentiment": "negative"
+       },
+       {
+        "pct": 40,
+        "count": 12,
+        "label": "Accessible & Justified Pricing",
+        "sentiment": "negative"
+       },
+       {
+        "pct": 40,
+        "count": 12,
+        "label": "Family & Portion Sizing",
+        "sentiment": "neutral"
+       },
+       {
+        "pct": 27,
+        "count": 8,
+        "label": "Premium & Sustainable Packaging",
+        "sentiment": "positive"
+       }
+      ],
+      "verbatim_count": 30
+     },
+     "insight": "Respondents provided 30 open-text answers detailing desired adaptations; the verbatim responses should be reviewed directly for recurring themes around cuisine types, certifications, portion sizes, and retail channels rather than summarized from aggregate counts."
     }
    ]
   }
