@@ -1,0 +1,550 @@
+{
+ "mission_id_prefix": "191455e8",
+ "goal_type": "brand_lift",
+ "analysis_as_shipped": {
+  "cells": {
+   "control": {
+    "n": 2
+   },
+   "exposed": {
+    "n": 3
+   },
+   "not_applicable": {
+    "n": 0
+   }
+  },
+  "funnel": [
+   {
+    "text": "In your own words, which digital banks or neobanks have you seen or heard advertising for recently in the UAE?",
+    "type": null,
+    "reason": "unsupported_type_text",
+    "control": {
+     "n": 2
+    },
+    "exposed": {
+     "n": 3
+    },
+    "lift_abs": null,
+    "question_id": "q2",
+    "funnel_stage": "unaided_ad_recall",
+    "kpi_category": "ad_recall",
+    "lift_rel_pct": null,
+    "significance": null
+   },
+   {
+    "text": "Which of the following digital banks or neobanks do you recall seeing or hearing an advertisement for recently? Select all that apply.",
+    "type": null,
+    "reason": "no_brand_anchor",
+    "control": {
+     "n": 2
+    },
+    "exposed": {
+     "n": 3
+    },
+    "lift_abs": null,
+    "question_id": "q3",
+    "funnel_stage": "aided_ad_recall",
+    "kpi_category": "ad_recall",
+    "lift_rel_pct": null,
+    "significance": null
+   },
+   {
+    "text": "Which digital banks or neobanks are you aware of, even if you have not used them? Please type any names that come to mind.",
+    "type": null,
+    "reason": "unsupported_type_text",
+    "control": {
+     "n": 2
+    },
+    "exposed": {
+     "n": 3
+    },
+    "lift_abs": null,
+    "question_id": "q4",
+    "funnel_stage": "unaided_brand_awareness",
+    "kpi_category": "awareness",
+    "lift_rel_pct": null,
+    "significance": null
+   },
+   {
+    "text": "Which of the following digital banks or neobanks are you aware of? Select all that apply.",
+    "type": null,
+    "reason": "no_brand_anchor",
+    "control": {
+     "n": 2
+    },
+    "exposed": {
+     "n": 3
+    },
+    "lift_abs": null,
+    "question_id": "q5",
+    "funnel_stage": "aided_brand_awareness",
+    "kpi_category": "awareness",
+    "lift_rel_pct": null,
+    "significance": null
+   },
+   {
+    "text": "How familiar are you with NovaBank as a digital banking option in the UAE?",
+    "type": "mean",
+    "reason": "empty_cell",
+    "control": {
+     "n": 0
+    },
+    "exposed": {
+     "n": 1,
+     "mean": 3,
+     "ci_low": 3,
+     "stddev": 0,
+     "ci_high": 3
+    },
+    "lift_abs": null,
+    "question_id": "q6",
+    "funnel_stage": "brand_familiarity",
+    "kpi_category": "awareness",
+    "lift_rel_pct": null,
+    "significance": null
+   },
+   {
+    "text": "Overall, how favorable is your impression of NovaBank?",
+    "type": "mean",
+    "reason": "empty_cell",
+    "control": {
+     "n": 0
+    },
+    "exposed": {
+     "n": 1,
+     "mean": 4,
+     "ci_low": 4,
+     "stddev": 0,
+     "ci_high": 4
+    },
+    "lift_abs": null,
+    "question_id": "q7",
+    "funnel_stage": "brand_favorability",
+    "kpi_category": "perception",
+    "lift_rel_pct": null,
+    "significance": null
+   },
+   {
+    "text": "Which of the following messages, if any, do you associate with NovaBank? Select all that apply.",
+    "type": null,
+    "reason": "no_positive_definition",
+    "control": {
+     "n": 2
+    },
+    "exposed": {
+     "n": 3
+    },
+    "lift_abs": null,
+    "question_id": "q8",
+    "funnel_stage": "message_association",
+    "kpi_category": "perception",
+    "lift_rel_pct": null,
+    "significance": null
+   },
+   {
+    "text": "How likely are you to consider NovaBank as your primary or secondary banking option in the next 3 months?",
+    "type": "mean",
+    "reason": "empty_cell",
+    "control": {
+     "n": 0
+    },
+    "exposed": {
+     "n": 1,
+     "mean": 4,
+     "ci_low": 4,
+     "stddev": 0,
+     "ci_high": 4
+    },
+    "lift_abs": null,
+    "question_id": "q9",
+    "funnel_stage": "brand_consideration",
+    "kpi_category": "consideration",
+    "lift_rel_pct": null,
+    "significance": null
+   },
+   {
+    "text": "How likely are you to open an account with NovaBank in the next 3 months?",
+    "type": "mean",
+    "reason": "empty_cell",
+    "control": {
+     "n": 0
+    },
+    "exposed": {
+     "n": 1,
+     "mean": 3,
+     "ci_low": 3,
+     "stddev": 0,
+     "ci_high": 3
+    },
+    "lift_abs": null,
+    "question_id": "q10",
+    "funnel_stage": "purchase_intent",
+    "kpi_category": "intent",
+    "lift_rel_pct": null,
+    "significance": null
+   },
+   {
+    "text": "On a scale of 0 to 10, how likely are you to recommend NovaBank to a friend or colleague in the UAE?",
+    "type": "mean",
+    "control": {
+     "n": 2,
+     "mean": 4.5,
+     "ci_low": 3.52,
+     "stddev": 0.7071,
+     "ci_high": 5.48
+    },
+    "exposed": {
+     "n": 3,
+     "mean": 7,
+     "ci_low": 7,
+     "stddev": 0,
+     "ci_high": 7
+    },
+    "lift_abs": 2.5,
+    "question_id": "q11",
+    "funnel_stage": "nps",
+    "kpi_category": "advocacy",
+    "lift_rel_pct": 55.5556,
+    "significance": {
+     "p": 0,
+     "z": 5,
+     "sig90": true,
+     "sig95": true
+    }
+   },
+   {
+    "text": "Do you recall seeing a NovaBank advertisement on Instagram recently?",
+    "type": null,
+    "reason": "no_positive_definition",
+    "control": {
+     "n": 2
+    },
+    "exposed": {
+     "n": 3
+    },
+    "lift_abs": null,
+    "question_id": "q12",
+    "funnel_stage": "channel_specific_recall",
+    "kpi_category": "ad_recall",
+    "lift_rel_pct": null,
+    "significance": null
+   },
+   {
+    "text": "Do you recall seeing a NovaBank advertisement on YouTube recently?",
+    "type": null,
+    "reason": "no_positive_definition",
+    "control": {
+     "n": 2
+    },
+    "exposed": {
+     "n": 3
+    },
+    "lift_abs": null,
+    "question_id": "q13",
+    "funnel_stage": "channel_specific_recall",
+    "kpi_category": "ad_recall",
+    "lift_rel_pct": null,
+    "significance": null
+   },
+   {
+    "text": "Do you recall seeing a NovaBank advertisement on TikTok recently?",
+    "type": null,
+    "reason": "no_positive_definition",
+    "control": {
+     "n": 2
+    },
+    "exposed": {
+     "n": 3
+    },
+    "lift_abs": null,
+    "question_id": "q14",
+    "funnel_stage": "channel_specific_recall",
+    "kpi_category": "ad_recall",
+    "lift_rel_pct": null,
+    "significance": null
+   }
+  ],
+  "summary": {
+   "biggest_lift": {
+    "lift_abs": 2.5,
+    "question_id": "q11"
+   },
+   "stages_sig95": 1,
+   "stages_lifted": 1
+  },
+  "methodology": "brand_lift"
+ },
+ "analysis_after_min_cell_floor": {
+  "methodology": "brand_lift",
+  "cells": {
+   "exposed": {
+    "n": 3
+   },
+   "control": {
+    "n": 2
+   },
+   "not_applicable": {
+    "n": 0
+   }
+  },
+  "funnel": [
+   {
+    "question_id": "q2",
+    "text": "In your own words, which digital banks or neobanks have you seen or heard advertising for recently in the UAE?",
+    "funnel_stage": "unaided_ad_recall",
+    "kpi_category": "ad_recall",
+    "type": null,
+    "exposed": {
+     "n": 3
+    },
+    "control": {
+     "n": 2
+    },
+    "lift_abs": null,
+    "lift_rel_pct": null,
+    "significance": null,
+    "reason": "unsupported_type_text"
+   },
+   {
+    "question_id": "q3",
+    "text": "Which of the following digital banks or neobanks do you recall seeing or hearing an advertisement for recently? Select all that apply.",
+    "funnel_stage": "aided_ad_recall",
+    "kpi_category": "ad_recall",
+    "type": null,
+    "exposed": {
+     "n": 3
+    },
+    "control": {
+     "n": 2
+    },
+    "lift_abs": null,
+    "lift_rel_pct": null,
+    "significance": null,
+    "reason": "no_brand_anchor"
+   },
+   {
+    "question_id": "q4",
+    "text": "Which digital banks or neobanks are you aware of, even if you have not used them? Please type any names that come to mind.",
+    "funnel_stage": "unaided_brand_awareness",
+    "kpi_category": "awareness",
+    "type": null,
+    "exposed": {
+     "n": 3
+    },
+    "control": {
+     "n": 2
+    },
+    "lift_abs": null,
+    "lift_rel_pct": null,
+    "significance": null,
+    "reason": "unsupported_type_text"
+   },
+   {
+    "question_id": "q5",
+    "text": "Which of the following digital banks or neobanks are you aware of? Select all that apply.",
+    "funnel_stage": "aided_brand_awareness",
+    "kpi_category": "awareness",
+    "type": null,
+    "exposed": {
+     "n": 3
+    },
+    "control": {
+     "n": 2
+    },
+    "lift_abs": null,
+    "lift_rel_pct": null,
+    "significance": null,
+    "reason": "no_brand_anchor"
+   },
+   {
+    "question_id": "q6",
+    "text": "How familiar are you with NovaBank as a digital banking option in the UAE?",
+    "funnel_stage": "brand_familiarity",
+    "kpi_category": "awareness",
+    "type": "mean",
+    "exposed": {
+     "mean": 3,
+     "stddev": 0,
+     "n": 1,
+     "ci_low": 3,
+     "ci_high": 3
+    },
+    "control": {
+     "n": 0
+    },
+    "lift_abs": null,
+    "lift_rel_pct": null,
+    "significance": null,
+    "reason": "empty_cell"
+   },
+   {
+    "question_id": "q7",
+    "text": "Overall, how favorable is your impression of NovaBank?",
+    "funnel_stage": "brand_favorability",
+    "kpi_category": "perception",
+    "type": "mean",
+    "exposed": {
+     "mean": 4,
+     "stddev": 0,
+     "n": 1,
+     "ci_low": 4,
+     "ci_high": 4
+    },
+    "control": {
+     "n": 0
+    },
+    "lift_abs": null,
+    "lift_rel_pct": null,
+    "significance": null,
+    "reason": "empty_cell"
+   },
+   {
+    "question_id": "q8",
+    "text": "Which of the following messages, if any, do you associate with NovaBank? Select all that apply.",
+    "funnel_stage": "message_association",
+    "kpi_category": "perception",
+    "type": null,
+    "exposed": {
+     "n": 3
+    },
+    "control": {
+     "n": 2
+    },
+    "lift_abs": null,
+    "lift_rel_pct": null,
+    "significance": null,
+    "reason": "no_positive_definition"
+   },
+   {
+    "question_id": "q9",
+    "text": "How likely are you to consider NovaBank as your primary or secondary banking option in the next 3 months?",
+    "funnel_stage": "brand_consideration",
+    "kpi_category": "consideration",
+    "type": "mean",
+    "exposed": {
+     "mean": 4,
+     "stddev": 0,
+     "n": 1,
+     "ci_low": 4,
+     "ci_high": 4
+    },
+    "control": {
+     "n": 0
+    },
+    "lift_abs": null,
+    "lift_rel_pct": null,
+    "significance": null,
+    "reason": "empty_cell"
+   },
+   {
+    "question_id": "q10",
+    "text": "How likely are you to open an account with NovaBank in the next 3 months?",
+    "funnel_stage": "purchase_intent",
+    "kpi_category": "intent",
+    "type": "mean",
+    "exposed": {
+     "mean": 3,
+     "stddev": 0,
+     "n": 1,
+     "ci_low": 3,
+     "ci_high": 3
+    },
+    "control": {
+     "n": 0
+    },
+    "lift_abs": null,
+    "lift_rel_pct": null,
+    "significance": null,
+    "reason": "empty_cell"
+   },
+   {
+    "question_id": "q11",
+    "text": "On a scale of 0 to 10, how likely are you to recommend NovaBank to a friend or colleague in the UAE?",
+    "funnel_stage": "nps",
+    "kpi_category": "advocacy",
+    "type": "mean",
+    "exposed": {
+     "mean": 7,
+     "stddev": 0,
+     "n": 3,
+     "ci_low": 7,
+     "ci_high": 7
+    },
+    "control": {
+     "mean": 4.5,
+     "stddev": 0.7071,
+     "n": 2,
+     "ci_low": 3.52,
+     "ci_high": 5.48
+    },
+    "lift_abs": 2.5,
+    "lift_rel_pct": 55.5556,
+    "significance": null,
+    "reason": "below_min_cell_n",
+    "min_cell_n": 10
+   },
+   {
+    "question_id": "q12",
+    "text": "Do you recall seeing a NovaBank advertisement on Instagram recently?",
+    "funnel_stage": "channel_specific_recall",
+    "kpi_category": "ad_recall",
+    "type": null,
+    "exposed": {
+     "n": 3
+    },
+    "control": {
+     "n": 2
+    },
+    "lift_abs": null,
+    "lift_rel_pct": null,
+    "significance": null,
+    "reason": "no_positive_definition"
+   },
+   {
+    "question_id": "q13",
+    "text": "Do you recall seeing a NovaBank advertisement on YouTube recently?",
+    "funnel_stage": "channel_specific_recall",
+    "kpi_category": "ad_recall",
+    "type": null,
+    "exposed": {
+     "n": 3
+    },
+    "control": {
+     "n": 2
+    },
+    "lift_abs": null,
+    "lift_rel_pct": null,
+    "significance": null,
+    "reason": "no_positive_definition"
+   },
+   {
+    "question_id": "q14",
+    "text": "Do you recall seeing a NovaBank advertisement on TikTok recently?",
+    "funnel_stage": "channel_specific_recall",
+    "kpi_category": "ad_recall",
+    "type": null,
+    "exposed": {
+     "n": 3
+    },
+    "control": {
+     "n": 2
+    },
+    "lift_abs": null,
+    "lift_rel_pct": null,
+    "significance": null,
+    "reason": "no_positive_definition"
+   }
+  ],
+  "summary": {
+   "stages_lifted": 1,
+   "stages_sig95": 0,
+   "stages_tested": 0,
+   "stages_untested": 5,
+   "biggest_lift": {
+    "question_id": "q11",
+    "lift_abs": 2.5
+   }
+  },
+  "min_cell_n": 10
+ }
+}

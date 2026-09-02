@@ -26,6 +26,8 @@
 const { callClaude } = require('./anthropic');
 const { clusterOpenEndThemes } = require('./openEndThemes');
 const { WRITING_STYLE } = require('./writingStyle');
+const { checkNarrativeFigures, distributionPercentages } = require('../report/narrativeFigures');
+const { computedFigureUniverse, tileValueDerivable } = require('../report/tileFigures');
 const logger = require('../../utils/logger');
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -272,11 +274,33 @@ function referencesData(insight, q) {
   });
 }
 
+/**
+ * The per-question payload the narrator sees.
+ *
+ * BEFORE: `distribution` carried RAW COUNTS and, for single_select, no `n` at
+ * all - so the model was asked to "cite a figure" with no denominator in scope.
+ * It printed the counts with a "%" glued on. Mission 3fc15087 q3 (n=80, "Probably
+ * would buy" = 57) came back as "57% say they probably would buy" (truth 71%).
+ *
+ * NOW: the percentages are COMPUTED HERE and handed over pre-formatted, next to
+ * an explicit `base`. The model never has to divide, so it never has to divide
+ * wrong. Counts stay alongside so "57 of 80" phrasing is still available.
+ */
 function compactQuestionForPrompt(q) {
   const d = q.data || {};
   const out = { id: q.id, number: q.number, text: q.text, renderer: q.renderer };
   if (d.average != null) { out.average = d.average; out.scale = `${d.scale_min}-${d.scale_max}`; out.n = d.n; }
-  if (d.distribution) out.distribution = d.distribution;
+  if (d.distribution) {
+    out.distribution_counts = d.distribution;
+    const p = distributionPercentages(d, q.renderer);
+    if (p) {
+      // `base` is the ONLY denominator any percentage about this question may
+      // use; distribution_pct is that division already done.
+      out.base_respondents = p.base;
+      out.distribution_pct = p.pct;
+      if (out.n == null) out.n = p.base;
+    }
+  }
   if (d.per_attribute) out.attributes = d.per_attribute.map((a) => ({ a: a.attribute, avg: a.average }));
   if (d.best) out.best = d.best;
   if (d.worst) out.worst = d.worst;
@@ -337,15 +361,41 @@ async function generateReportSummaries(report, opts = {}) {
     if (txt && txt.length > 40 && !/unavailable|apolog|as an ai/i.test(txt)) { execSummary = txt; execSource = 'ai'; }
     // KPIs — keep AI's only if shaped right (label+value); else deterministic floor.
     if (Array.isArray(obj.kpis)) {
+      // A KPI here becomes report.key_findings, which the results page renders as
+      // the hero stat tiles. Previously the only check was "label and value are
+      // non-empty", so a model-authored figure landed straight in a 46px numeral
+      // (measured: 10 of 223 stored tile values across 66 completed missions
+      // carry a number the server never computed - an invented target sample of
+      // 50, an invented "AED ~217", an invented "38% (10 of 26 collected)").
+      // Every FIGURE in a tile must exist in the computed data; wording is free.
+      const universe = computedFigureUniverse(report, report.centerpiece && report.centerpiece.data);
       const cleaned = obj.kpis
         .filter((k) => k && k.label && k.value != null && String(k.value).trim())
-        .slice(0, 4)
         .map((k) => ({
           label: clampSentence(k.label),
           value: clampSentence(String(k.value)),
           trend: ['positive', 'negative', 'neutral'].includes(k.trend) ? k.trend : 'neutral',
-        }));
-      if (cleaned.length) kpis = cleaned;
+        }))
+        .filter((k) => {
+          const v = tileValueDerivable(k.value, universe);
+          if (v.derivable) return true;
+          logger.warn('reportSummaries: KPI tile rejected; figure not in computed data', {
+            missionId: opts.missionId, label: k.label, value: k.value, undrivable: v.undrivable,
+          });
+          return false;
+        })
+        .slice(0, 4);
+      // Backfill from the deterministic (analysis-derived) tiles so dropping a
+      // fabricated tile never leaves the hero strip short.
+      if (cleaned.length) {
+        const seen = new Set(cleaned.map((k) => k.label.toLowerCase()));
+        for (const d of deterministicKpis(report)) {
+          if (cleaned.length >= 3) break;
+          if (seen.has(String(d.label).toLowerCase())) continue;
+          cleaned.push(d);
+        }
+        kpis = cleaned;
+      }
     }
     // Recommendations — keep AI's only if non-empty, non-hedged sentences.
     if (Array.isArray(obj.recommendations)) {
@@ -371,15 +421,35 @@ async function generateReportSummaries(report, opts = {}) {
         systemPrompt: SYS,
         maxTokens: budget,
         messages: [{ role: 'user', content:
-          `For EACH question below, write a 1-2 sentence "what this means" grounded only in that question's numbers (cite a figure). Return JSON mapping question id to the sentence: {"<id>":"...", ...}\n\n${JSON.stringify(compact)}` }],
+          `For EACH question below, write a 1-2 sentence "what this means" grounded only in that question's numbers (cite a figure). Return JSON mapping question id to the sentence: {"<id>":"...", ...}\n\n` +
+        `FIGURE RULE - this is not stylistic, it is the correctness contract:\n` +
+        `- "distribution_counts" are HEADCOUNTS. "distribution_pct" are PERCENTAGES, already computed for you against "base_respondents".\n` +
+        `- To state a percentage, COPY one from distribution_pct. Never compute, derive, estimate or re-round one, and NEVER write a count from distribution_counts with a % sign after it.\n` +
+        `- To state a headcount, COPY one from distribution_counts, and pair it only with base_respondents ("57 of 80").\n` +
+        `- To combine options (e.g. top-two-box), you may add their percentages from distribution_pct; do not convert counts.\n` +
+        `- If the figure you want is not in the data, say what the data does show instead. Do not supply the missing number.\n\n${JSON.stringify(compact)}` }],
       });
       const obj = extractJSONObject(res.text) || {};
       for (const q of survey) {
         const cand = typeof obj[q.id] === 'string' ? clampSentence(obj[q.id]) : '';
-        if (cand && cand.length > 12 && !/unavailable|apolog|as an ai/i.test(cand) && referencesData(cand, q)) {
-          detPerQ.set(q.id, cand);
-          perQSource.set(q.id, 'ai');
+        if (!cand || cand.length <= 12 || /unavailable|apolog|as an ai/i.test(cand)) continue;
+        if (!referencesData(cand, q)) continue;
+        // Outbound assert. referencesData() only proves the sentence MENTIONS
+        // something from the question - it cannot tell a right figure from a
+        // wrong one, and because dataTokens() admits the raw counts it actively
+        // waves through a count wearing a % sign. Check the arithmetic before
+        // the sentence is cached and rendered on a paid deliverable.
+        const fig = checkNarrativeFigures(cand, q);
+        if (fig.checked && !fig.ok) {
+          logger.warn('reportSummaries: narrative figure rejected; keeping computed line', {
+            missionId: opts.missionId,
+            qid: q.id,
+            violations: fig.violations.map((v) => `${v.rule}:${v.claim}`),
+          });
+          continue; // deterministic line stays; it is grounded by construction
         }
+        detPerQ.set(q.id, cand);
+        perQSource.set(q.id, 'ai');
       }
     } catch (e) {
       logger.warn('reportSummaries: per-question LLM failed; using computed', { missionId: opts.missionId, err: e.message });
@@ -420,4 +490,6 @@ module.exports = {
   deterministicKpis,
   deterministicRecommendations,
   referencesData,
+  // exported for the narrative-figure guard tests
+  compactQuestionForPrompt,
 };

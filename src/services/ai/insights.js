@@ -9,6 +9,7 @@ const { WRITING_STYLE } = require('./writingStyle');
 const logger = require('../../utils/logger');
 const { computePersonas } = require('../analysis/personas');
 const { isSkip } = require('../../utils/answerValue');
+const { sigLabel } = require('../exports/analysisHeadlines');
 
 // Pass 22 Bug 22.13 — narrative 4-paragraph executive summary replaces the
 // 3-5-sentence under-750-char shape. Pass 22 Bug 22.16 — contradictions array
@@ -149,7 +150,12 @@ function buildComputedSummary(analysis, mission) {
         parts.push(`Brand lift measured across an exposed cell (n=${ex ?? '?'}) versus a control cell (n=${co ?? '?'}).`);
         if (big) {
           const pts = big.type === 'mean' ? `${big.lift_abs}` : `${Math.round(big.lift_abs * 100)} pts`;
-          const sig = big.significance?.sig95 ? 'significant at 95%' : big.significance?.sig90 ? 'significant at 90%' : 'directional';
+          // Pass 51 - a refused test is not a weak test. Before this, a null
+          // significance (below the brandLift.js minimum cell floor) fell
+          // through to 'directional' and the narrator asserted a completed
+          // weak finding about a 3-vs-2 split. Shared with the exporters and
+          // the web render model so all three word the refusal identically.
+          const sig = sigLabel(big.significance, big.reason);
           parts.push(`The largest movement was on "${big.text || big.funnel_stage}" (+${pts}, ${sig}).`);
         }
         break;
