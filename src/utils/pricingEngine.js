@@ -84,17 +84,17 @@ const VOLUME_TIERS = [
   { id: 'sniff_test', name: 'Sniff Test', anchorCount: 5,    maxCount: 5,    ratePerResp: 1.80, packagePrice: 9    },
   { id: 'validate',   name: 'Validate',   anchorCount: 10,   maxCount: 10,   ratePerResp: 3.50, packagePrice: 35   },
   { id: 'confidence', name: 'Confidence', anchorCount: 50,   maxCount: 50,   ratePerResp: 1.98, packagePrice: 99   },
-  { id: 'deep_dive',  name: 'Deep Dive',  anchorCount: 250,  maxCount: 250,  ratePerResp: 1.20, packagePrice: 299  },
-  { id: 'scale',      name: 'Scale',      anchorCount: 1000, maxCount: 1000, ratePerResp: 0.90, packagePrice: 899  },
-  { id: 'enterprise', name: 'Enterprise', anchorCount: 5000, maxCount: Infinity, ratePerResp: 0.40, packagePrice: 1990 },
+  { id: 'deep_dive',  name: 'Deep Dive',  anchorCount: 250,  maxCount: 250,  ratePerResp: 1.20, packagePrice: 300  },
+  { id: 'scale',      name: 'Scale',      anchorCount: 1000, maxCount: 1000, ratePerResp: 0.90, packagePrice: 900  },
+  { id: 'enterprise', name: 'Enterprise', anchorCount: 5000, maxCount: Infinity, ratePerResp: 0.40, packagePrice: 2000 },
 ];
 
 /** Brand Lift — minimum statistical sample sizes (no Sniff Test / Validate). */
 const BRAND_LIFT_TIERS = [
   { id: 'pulse',      name: 'Pulse',      anchorCount: 50,   maxCount: 50,   ratePerResp: 1.98, packagePrice: 99,   minRespondents: 50 },
-  { id: 'tracker',    name: 'Tracker',    anchorCount: 200,  maxCount: 200,  ratePerResp: 1.50, packagePrice: 299,  minRespondents: 50 },
-  { id: 'wave',       name: 'Wave',       anchorCount: 500,  maxCount: 500,  ratePerResp: 1.20, packagePrice: 599,  minRespondents: 50 },
-  { id: 'enterprise', name: 'Enterprise', anchorCount: 2000, maxCount: Infinity, ratePerResp: 0.75, packagePrice: 1499, minRespondents: 50 },
+  { id: 'tracker',    name: 'Tracker',    anchorCount: 200,  maxCount: 200,  ratePerResp: 1.50, packagePrice: 300,  minRespondents: 50 },
+  { id: 'wave',       name: 'Wave',       anchorCount: 500,  maxCount: 500,  ratePerResp: 1.20, packagePrice: 600,  minRespondents: 50 },
+  { id: 'enterprise', name: 'Enterprise', anchorCount: 2000, maxCount: Infinity, ratePerResp: 0.75, packagePrice: 1500, minRespondents: 50 },
 ];
 
 /**
@@ -169,12 +169,24 @@ function getActiveTierTable() {
     const cheapest = tiers.find((t) => t.priceCents != null);
     return { version: 'v2', flagActive: true, startingFromCents: cheapest ? cheapest.priceCents : null, tiers };
   }
-  // V1: project the live VOLUME_TIERS into the same shape (rate×anchor = packagePrice).
-  const tiers = VOLUME_TIERS.map((t) => ({
-    id: t.id, name: t.name, respondents: t.anchorCount,
-    priceCents: Math.round(t.packagePrice * 100), priceUsd: t.packagePrice,
-    fromLabel: `$${t.packagePrice}`, custom: false,
-  }));
+  // V1: project the live VOLUME_TIERS into the same shape.
+  //
+  // The displayed price is DERIVED by calling the same function the charge
+  // path calls (respondentLadderBase), not read off the tier's packagePrice
+  // literal. Reading the same module is not the same as reading the same
+  // value: packagePrice was a hand-maintained second copy of the price and it
+  // drifted, so this endpoint published $299/$899/$1990 while checkout
+  // charged $300/$900/$2000 for the same three tiers. There is now one
+  // expression, so a rate or bracket change moves display and charge together.
+  const tiers = VOLUME_TIERS.map((t) => {
+    const priceUsd   = respondentLadderBase(VOLUME_TIERS, t, t.anchorCount, t.ratePerResp);
+    const priceCents = Math.round(priceUsd * 100);
+    return {
+      id: t.id, name: t.name, respondents: t.anchorCount,
+      priceCents, priceUsd,
+      fromLabel: `$${formatUsd(priceUsd)}`, custom: false,
+    };
+  });
   return { version: 'v1', flagActive: false, startingFromCents: tiers[0].priceCents, tiers };
 }
 
@@ -303,6 +315,19 @@ function tierPriceFloor(ladder, tier) {
 function respondentLadderBase(ladder, tier, count, rate) {
   const n = Math.max(0, Number(count) || 0);
   return round2(Math.max(n * rate, tierPriceFloor(ladder, tier)));
+}
+
+/**
+ * Display helper for fromLabel. Whole dollars render bare with thousands
+ * separators ("2,000"); fractional amounts keep 2dp. fromLabel is rendered
+ * verbatim into the public /terms price table, so it has to read as money.
+ * Deterministic on purpose — no toLocaleString, no host-locale dependency.
+ */
+function formatUsd(v) {
+  const whole = Number.isInteger(v) ? String(v) : v.toFixed(2);
+  const [int, frac] = whole.split('.');
+  const grouped = int.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return frac ? `${grouped}.${frac}` : grouped;
 }
 
 const EXTRA_QUESTION_PRICE = 20; // $ per question beyond the 5th

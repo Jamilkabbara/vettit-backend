@@ -319,7 +319,7 @@ Return ONLY JSON (no prose, no markdown fences):
     "Specific actionable recommendation 2",
     "Specific actionable recommendation 3"
   ],
-  "vs_benchmark": "One sentence: how this creative compares to category benchmarks",
+  "vs_benchmark": "One sentence, attention-seconds only (see CRITICAL below)",
   "best_platform_fit": [
     {
       "platform": "Platform/medium name",
@@ -399,6 +399,22 @@ CRITICAL — attention block:
 - attention_decay_curve:
     Static image: ONE entry at second=0 (the first-contact value).
     Video: bucketed every 1s up to mission duration (cap 30 entries).
+
+CRITICAL — vs_benchmark:
+The ONLY published norms you have are the channel active-attention seconds
+listed above. They are the only figures you may describe as a norm, an
+average, or a benchmark.
+- Do NOT invent a category average on any other scale. There is no published
+  norm for engagement score, brand clarity, message clarity, emotional
+  intensity, resonance, or any 0-100 score. Writing "the luxury fashion
+  category averages 65-72 engagement" invents a statistic that does not
+  exist and it goes to a paying customer as fact.
+- Do NOT name an industry or vertical norm ("luxury fashion", "QSR", "auto")
+  unless it appears verbatim in the published norms above. None do.
+- Say "above/below the published attention norm for <channel>" and cite the
+  seconds, or say the creative is not benchmarked on that dimension.
+- If you cannot make an attention-seconds comparison, return the empty
+  string. An empty vs_benchmark is correct; an invented norm is not.
 
 CRITICAL — channel_benchmarks:
 - Always include all 5 channels above. Use the published norms verbatim
