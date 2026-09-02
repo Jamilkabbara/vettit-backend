@@ -406,4 +406,12 @@ function brandLiftStageTable(analysis) {
   return rows;
 }
 
-module.exports = { analysisHeadlines, brandLiftStageTable };
+module.exports = {
+  analysisHeadlines,
+  brandLiftStageTable,
+  // Pass 51 - exported so the web render model and the narrator share ONE
+  // definition of what a null significance means. Three private copies is
+  // how 'not tested' silently became 'directional' on two surfaces.
+  sigLabel,
+  SIG_REFUSAL_LABELS,
+};

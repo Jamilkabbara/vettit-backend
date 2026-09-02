@@ -21,6 +21,11 @@
  */
 
 const { sanitizeDashesDeep } = require('../../utils/textSanitize');
+// Pass 51 - ONE definition of what a significance block means, shared with the
+// exporters. A local copy here mapped `significance: null` to 'directional',
+// i.e. "we tested it and it came back weak" - a claim the analysis object
+// explicitly declines to make once brandLift.js refuses a below-floor cell.
+const { sigLabel } = require('../exports/analysisHeadlines');
 
 /** Integer percent of a part over a total (0 when total is 0). Mirrors web pct(). */
 function pct(n, total) {
@@ -355,7 +360,7 @@ function buildCenterpieceRaw(centerpiece) {
           control: f.control?.rate != null ? `${Math.round(f.control.rate * 100)}%` : 'n/a',
           abs: `${f.lift_abs >= 0 ? '+' : ''}${Math.round(f.lift_abs * 100)} pp`,
           rel,
-          significance: sigLabel(f.significance),
+          significance: sigLabel(f.significance, f.reason),
           n: `${f.exposed?.n ?? '?'} / ${f.control?.n ?? '?'}`,
         });
       } else if (f.type === 'mean') {
@@ -365,7 +370,7 @@ function buildCenterpieceRaw(centerpiece) {
           control: f.control?.mean != null ? String(f.control.mean) : 'n/a',
           abs: `${f.lift_abs >= 0 ? '+' : ''}${f.lift_abs}`,
           rel,
-          significance: sigLabel(f.significance),
+          significance: sigLabel(f.significance, f.reason),
           n: `${f.exposed?.n ?? '?'} / ${f.control?.n ?? '?'}`,
         });
       }
@@ -580,11 +585,5 @@ function buildCenterpieceRaw(centerpiece) {
   return null;
 }
 
-function sigLabel(sig) {
-  if (!sig) return 'directional';
-  if (sig.sig95) return 'significant at 95%';
-  if (sig.sig90) return 'significant at 90%';
-  return 'directional';
-}
 
 module.exports = { buildRenderModel, shapeSurveyBody, pct };
