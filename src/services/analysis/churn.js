@@ -41,6 +41,7 @@
 
 const {
   byQuestion, distribution, ratingStats, round4, personaCount, num, isSkip,
+  resolveBoxSet, offScaleCount, auditZeroBox,
 } = require('./shared');
 
 // ── Local helpers (each Phase 3 module is self-contained; only shared.js
@@ -187,16 +188,36 @@ function computeChurn(rows, questions, mission) {
     const wbSingle = wbQs.find((q) => q.type === 'single') || null;
     const wbMulti = wbQs.find((q) => q.type === 'multi') || null;
 
-    // winnable_pct = share of the affirmative option "Yes" (claudeAI.js:1753
-    // options ["Yes","Maybe","No"]); matched normalized. Base n = scalar answers.
+    // winnable_pct = share of the affirmative option. The canonical q6 scale
+    // (claudeAI.js:1832) is ["Yes","Maybe","No"] — ordered MOST→LEAST winnable,
+    // so the affirmative is the HEAD of a 3-option list and is now read
+    // POSITIONALLY rather than by matching the literal string 'yes'. Base n =
+    // scalar answers; 'Maybe' and 'No' stay in the base, as before.
+    const WINBACK_AFFIRMATIVE_FALLBACK = ['Yes'];
     const winback = safe(() => {
       const ans = scalarAnswered(rowsFor(wbSingle));
       if (ans.length === 0) return null;
-      const yes = ans.filter((r) => norm(r.answer) === 'yes').length;
+      const box = resolveBoxSet({
+        question: wbSingle,
+        tag: { key: 'churn_stage', value: 'win_back' },
+        type: 'single',
+        size: 1,
+        expectedLength: 3,
+        from: 'head',
+        fallbackLabels: WINBACK_AFFIRMATIVE_FALLBACK,
+      });
+      const yes = ans.filter((r) => box.set.has(norm(r.answer))).length;
+      const offScale = offScaleCount(ans.map((r) => r.answer), box.optionSet);
       return {
         winnable_pct: round4((yes / ans.length) * 100),
         n: ans.length,
         distribution: distribution(ans),
+        scale_basis: box.basis,
+        off_scale_n: offScale,
+        zero_box_flag: auditZeroBox({
+          metric: 'churn_winnable', questionId: wbSingle && wbSingle.id,
+          count: yes, base: ans.length, basis: box.basis, offScale,
+        }),
       };
     });
     // Pass 46 addition beyond the minimum emit shape: q7 triggers — the

@@ -41,13 +41,22 @@ const {
   ratingStats,
   round4,
   isSkip,
+  norm,
+  resolveBoxSet,
+  offScaleCount,
+  auditZeroBox,
 } = require('./shared');
 
-/** Options whose text contains 'yes' (case-insensitive) count as affirmative. */
+/**
+ * Pass 51 — affirmative-option fallback, used only when a question is not the
+ * canonical shape. Options whose text contains 'yes' count as affirmative.
+ * This used to be the ONLY rule; it is now the backstop behind positional
+ * resolution (see positiveRateBlock).
+ */
 function yesLikeOptions(options) {
   return (options || [])
-    .map((o) => String(o).toLowerCase())
-    .filter((o) => o.includes('yes'));
+    .map((o) => String(o))
+    .filter((o) => o.toLowerCase().includes('yes'));
 }
 
 /** Scalar answer for single-choice rows; stray arrays use their first element. */
@@ -68,22 +77,65 @@ function scalarAnswer(answer) {
  * metadata, falls back to the answer text containing 'yes'.
  * @returns {{n:number, positive_rate:number}|null} null when no usable answers
  */
-function positiveRateBlock(entries) {
+function positiveRateBlock(entries, stageTag) {
   let n = 0;
   let positive = 0;
+  let offScale = 0;
+  let sawOptions = false;
+  const bases = new Set();
+  let questionId = null;
   for (const { q, rows } of entries) {
-    const yes = yesLikeOptions(q.options);
+    // Pass 51 — every canonical Yes-anchored battery question in this
+    // methodology is a 3-option single whose AFFIRMATIVE IS THE FIRST OPTION:
+    //   q4  aided recall  ["Yes","No","Not sure"]     (claudeAI.js:1329)
+    //   q12 message match ["Yes","Somewhat","No"]     (claudeAI.js:1337)
+    //   q13 sharing       ["Yes","Maybe","No"]        (claudeAI.js:1338)
+    // so the affirmative is read POSITIONALLY, guarded on funnel_stage + type
+    // + option count. Anything off that shape falls back to the historic
+    // 'contains yes' rule rather than trusting an order we cannot vouch for.
+    const box = resolveBoxSet({
+      question: q,
+      tag: stageTag ? { key: 'funnel_stage', value: stageTag } : null,
+      type: 'single',
+      size: 1,
+      expectedLength: 3,
+      from: 'head',
+      fallbackLabels: yesLikeOptions(q.options),
+    });
+    bases.add(box.basis);
+    if (box.optionSet) sawOptions = true;
+    if (questionId === null) questionId = q.id ?? q.question_id ?? null;
+    const answers = [];
     for (const r of rows) {
       const a = scalarAnswer(r.answer);
       if (a === null) continue;
       n += 1;
-      const low = a.toLowerCase();
-      const hit = yes.length > 0 ? yes.includes(low) : low.includes('yes');
+      answers.push(a);
+      // With no options metadata at all there is nothing positional or literal
+      // to match, so the last-resort answer-text rule stands.
+      const hit = box.set.size > 0 ? box.set.has(norm(a)) : norm(a).includes('yes');
       if (hit) positive += 1;
     }
+    const off = offScaleCount(answers, box.optionSet);
+    if (off != null) offScale += off;
   }
   if (n === 0) return null;
-  return { n, positive_rate: round4(positive / n) };
+  const offTotal = sawOptions ? offScale : null;
+  const basis = bases.size === 1 ? [...bases][0] : 'mixed';
+  return {
+    n,
+    positive_rate: round4(positive / n),
+    scale_basis: basis,
+    off_scale_n: offTotal,
+    zero_box_flag: auditZeroBox({
+      metric: `marketing_${stageTag || 'positive'}_rate`,
+      questionId,
+      count: positive,
+      base: n,
+      basis,
+      offScale: offTotal,
+    }),
+  };
 }
 
 /** Pool the response rows of every question in a stage entry list. */
@@ -135,7 +187,7 @@ function computeMarketing(rows, questions, mission) {
 
   // ── recall (aided): the funnel_stage="recall" question with type="single"
   // (q4 "Have you seen this ad before?" options ["Yes","No","Not sure"]).
-  const recallAided = positiveRateBlock(stage('recall', (q) => q.type !== 'text'));
+  const recallAided = positiveRateBlock(stage('recall', (q) => q.type !== 'text'), 'recall');
 
   // ── attribution: funnel_stage="attribution" free text ("Whose ad is
   // this?"). Correct = answer contains mission.brand_name (case-insensitive
@@ -184,8 +236,8 @@ function computeMarketing(rows, questions, mission) {
       emotional,
       // funnel_stage="message_match" single ["Yes","Somewhat","No"] — only
       // generated when intended_message was supplied; null otherwise.
-      message_match: positiveRateBlock(stage('message_match', (q) => q.type !== 'text')),
-      sharing: positiveRateBlock(stage('sharing', (q) => q.type !== 'text')),
+      message_match: positiveRateBlock(stage('message_match', (q) => q.type !== 'text'), 'message_match'),
+      sharing: positiveRateBlock(stage('sharing', (q) => q.type !== 'text'), 'sharing'),
     },
     // Pass 46 Phase 3 — no benchmark DB yet; Phase 4 copy labels these
     // unbenchmarked. Kept as an explicit null so the shape is stable.

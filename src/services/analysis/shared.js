@@ -10,6 +10,7 @@
  */
 
 const { isSkip } = require('../../utils/answerValue');
+const logger = require('../../utils/logger');
 
 /** Numeric coercion that treats '', null, undefined, NaN as null. */
 function num(v) {
@@ -167,6 +168,148 @@ function personaCount(rows) {
   return new Set((rows || []).map((r) => r.persona_id).filter(Boolean)).size;
 }
 
+
+// ── Ordered-scale resolution (Pass 51) ────────────────────────────────────
+//
+// Six analysis modules used to re-derive meaning by string-matching ENGLISH
+// option labels ('Satisfied', 'Definitely would buy', answer === 'yes', an
+// option .includes('yes')). The generators emit exactly those labels today, so
+// nothing is currently mis-scored — but the coupling is silent. If a prompt is
+// reworded, localised, or a model paraphrases, the off-scale answers stay in
+// the DENOMINATOR while never counting as top-box, and the module reports a
+// confident 0.0% against a full, healthy-looking n. Kano and Gabor-Granger
+// fail loudly in the same situation (they null the block out); this family
+// failed silently and wrongly.
+//
+// The template is compare.js:207-211, which scores positional top-2 against
+// the question's OWN options array and guards on opts.length === 5. Positional
+// order is only meaningful when the question really is the canonical scale, so
+// resolveBoxSet checks three things before trusting position: the question
+// carries the expected methodology tag, it has the expected type, and its
+// options array has the expected length. Anything else falls back to the
+// literal labels that were hard-coded before — same numbers as today, but the
+// basis is now recorded rather than assumed.
+
+/** Normalize a label or answer for comparison (matches simulate.js:142). */
+function norm(v) {
+  return String(v ?? '').trim().toLowerCase();
+}
+
+/** Non-empty option labels, in the order the generator emitted them. */
+function cleanOptions(options) {
+  if (!Array.isArray(options)) return [];
+  return options.filter((o) => o !== null && o !== undefined && String(o).trim() !== '');
+}
+
+/**
+ * Resolve the set of answers that count as "top box" for an ordered-scale
+ * question, preferring position over prose.
+ *
+ * @param {object}   spec
+ * @param {object}   spec.question       the mission question
+ * @param {object}   spec.tag            {key, value} methodology tag the question MUST carry
+ * @param {string|Array<string>} spec.type  the question type(s) position is valid for
+ * @param {number}   spec.size           how many boxes (2 for top-2, 1 for a Yes head)
+ * @param {number}   spec.expectedLength the canonical option count
+ * @param {'head'|'tail'} spec.from      which end is MOST positive — 'head' when
+ *                                       options run most→least positive
+ *                                       ("Definitely would buy" first), 'tail'
+ *                                       when they run least→most ("Very
+ *                                       satisfied" last). Getting this wrong
+ *                                       inverts the metric, so it is required.
+ * @param {Array<string>} spec.fallbackLabels literal labels used when the shape
+ *                                       is not the canonical scale.
+ * @returns {{set:Set<string>, basis:string, labels:Array<string>, optionSet:Set<string>|null}}
+ */
+function resolveBoxSet({ question, tag, type, size, expectedLength, from, fallbackLabels = [] }) {
+  const q = question || {};
+  const opts = cleanOptions(q.options);
+  const optionSet = opts.length > 0 ? new Set(opts.map(norm)) : null;
+
+  const tagOk = !tag || norm(q[tag.key]) === norm(tag.value);
+  const types = type == null ? null : (Array.isArray(type) ? type : [type]);
+  const typeOk = !types || types.some((t) => norm(q.type) === norm(t));
+  const lenOk = opts.length === expectedLength;
+
+  if (tagOk && typeOk && lenOk) {
+    const picked = from === 'tail' ? opts.slice(opts.length - size) : opts.slice(0, size);
+    return {
+      set: new Set(picked.map(norm)),
+      basis: 'positional',
+      labels: picked.map((o) => String(o)),
+      optionSet,
+    };
+  }
+  return {
+    set: new Set(fallbackLabels.map(norm)),
+    basis: opts.length > 0 ? 'label_fallback' : 'label_only',
+    labels: fallbackLabels.map((o) => String(o)),
+    optionSet,
+  };
+}
+
+/**
+ * How many answers do not appear in the question's own options list? This is
+ * the drift detector: off-scale answers are exactly the ones that sit in a
+ * top-box denominator while being unable to reach the numerator. Returns null
+ * when the question carries no options metadata (nothing to check against).
+ * The answers are NOT dropped from the base — removing them would change
+ * today's numbers; stating them does not.
+ */
+function offScaleCount(answers, optionSet) {
+  if (!optionSet || optionSet.size === 0) return null;
+  let off = 0;
+  for (const a of answers || []) {
+    if (!optionSet.has(norm(a))) off += 1;
+  }
+  return off;
+}
+
+/** A base below this is legitimately allowed to produce a zero top box. */
+const ZERO_BOX_HEALTHY_BASE = 10;
+
+/**
+ * Loud-fail assertion for the silent-0% failure mode.
+ *
+ * A top box of EXACTLY zero against a healthy base is far more often a scoring
+ * bug than a finding, and it is indistinguishable from a real 0% once it
+ * reaches a chart. This surfaces it — a machine-readable flag on the emitted
+ * block plus a warn log — rather than letting it be reported as fact. It
+ * deliberately does NOT suppress the number: the renderer decides whether to
+ * withhold, and a genuine 0% stays visible with its caveat attached.
+ *
+ * It stays quiet on the one combination that makes a zero trustworthy:
+ * positional scoring (the box came from the question's own options) with every
+ * answer on that option list.
+ *
+ * @returns {object|null} the flag to attach, or null when nothing is suspicious
+ */
+function auditZeroBox({ metric, questionId, count, base, basis, offScale }) {
+  if (count !== 0) return null;
+  if (!(base >= ZERO_BOX_HEALTHY_BASE)) return null;
+  // A zero is a genuine FINDING only when we know we read the right scale:
+  // the box came from the question's own options (positional) AND every answer
+  // was on that option list. Any other combination means the zero could just as
+  // easily be a scoring artefact, so it gets surfaced.
+  if (basis === 'positional' && offScale === 0) return null;
+  const flag = {
+    reason: 'zero_top_box_against_healthy_base',
+    metric: metric || null,
+    question_id: questionId ?? null,
+    base,
+    scale_basis: basis || null,
+    off_scale_n: offScale ?? null,
+    // off_scale_n > 0 is the smoking gun: answers fell outside the question's
+    // own option list, so they sat in the denominator unable to reach the
+    // numerator. A null off_scale_n means the question carried no options at
+    // all and the zero is simply unverifiable.
+    likely_label_drift: offScale != null && offScale > 0,
+    unverifiable: offScale == null,
+  };
+  logger.warn('analysis: top-box of 0 against a healthy base — verify scale labels', flag);
+  return flag;
+}
+
 module.exports = {
   isSkip,
   num,
@@ -179,4 +322,10 @@ module.exports = {
   shares,
   round4,
   personaCount,
+  norm,
+  cleanOptions,
+  resolveBoxSet,
+  offScaleCount,
+  auditZeroBox,
+  ZERO_BOX_HEALTHY_BASE,
 };
