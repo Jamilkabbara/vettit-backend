@@ -40,6 +40,7 @@
 
 const {
   byQuestion, distribution, ratingStats, round4, personaCount, num, isSkip,
+  resolveBoxSet, offScaleCount, auditZeroBox,
 } = require('./shared');
 
 // ── Local helpers (each Phase 3 module is self-contained; only shared.js
@@ -128,19 +129,44 @@ function computeValidate(rows, questions, mission) {
       believability: safe(() => stageStats(rowsFor(stageQ('believability')), 1, 7)),
     };
 
-    // Intent top-2-box — exact labels from claudeAI.js:1065, matched
-    // normalized. Base n = scalar answers; off-scale labels stay in the
-    // base (and the distribution) but never count as top-2.
-    const INTENT_TOP2 = ['Definitely would buy', 'Probably would buy'];
+    // Intent top-2-box. Scored POSITIONALLY off the question's own options —
+    // the canonical q6 scale (claudeAI.js:1071) runs MOST→LEAST positive
+    // (["Definitely would buy","Probably would buy","Might or might not",
+    //   "Probably would NOT buy","Definitely would NOT buy"]), so the top-2 box
+    // is the HEAD of the array. This is compare.js:207-211's rule, with the
+    // funnel_stage + type + length guard made explicit. The literals below are
+    // now only the fallback shape.
+    //
+    // Base n = scalar answers; off-scale labels stay in the base (and the
+    // distribution) but never count as top-2 — which is exactly why off_scale_n
+    // is now reported: those answers are the ones that can silently drag the
+    // top-2 to 0% while n still looks healthy.
+    const INTENT_TOP2_FALLBACK = ['Definitely would buy', 'Probably would buy'];
     const intent = safe(() => {
-      const ans = scalarAnswered(rowsFor(stageQ('intent')));
+      const q = stageQ('intent');
+      const ans = scalarAnswered(rowsFor(q));
       if (ans.length === 0) return null;
-      const top2Set = new Set(INTENT_TOP2.map(norm));
-      const top2 = ans.filter((r) => top2Set.has(norm(r.answer))).length;
+      const box = resolveBoxSet({
+        question: q,
+        tag: { key: 'funnel_stage', value: 'intent' },
+        type: 'single',
+        size: 2,
+        expectedLength: 5,
+        from: 'head',
+        fallbackLabels: INTENT_TOP2_FALLBACK,
+      });
+      const top2 = ans.filter((r) => box.set.has(norm(r.answer))).length;
+      const offScale = offScaleCount(ans.map((r) => r.answer), box.optionSet);
       return {
         top2_pct: round4((top2 / ans.length) * 100),
         n: ans.length,
         distribution: distribution(ans),
+        scale_basis: box.basis,
+        off_scale_n: offScale,
+        zero_box_flag: auditZeroBox({
+          metric: 'concept_intent_top2', questionId: q && q.id,
+          count: top2, base: ans.length, basis: box.basis, offScale,
+        }),
       };
     });
 

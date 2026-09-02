@@ -38,6 +38,10 @@ const {
   personaCount,
   num,
   isSkip,
+  norm,
+  cleanOptions,
+  offScaleCount,
+  auditZeroBox,
 } = require('./shared');
 
 // Pass 46 Phase 3 — multi-select brand-contains math only applies to the
@@ -175,9 +179,26 @@ function isLiftQuestion(q) {
     && q.funnel_stage !== 'screener';
 }
 
-/** Options whose text contains 'yes' (case-insensitive) count as affirmative. */
+/**
+ * Options whose text contains 'yes' (case-insensitive) count as affirmative.
+ *
+ * Pass 51 — the other five modules in this family moved to POSITIONAL scoring
+ * against the question's own options. brand_lift deliberately does NOT, and
+ * the reason is the metadata contract: BRAND_LIFT_SURVEY_GEN_SYSTEM pins the
+ * TYPE of every stage but never the option text or order for the affirmative
+ * singles — brand_consideration is specified only as 'rating (1-5) or "single"
+ * yes/no', and the JSON skeleton shows placeholder options ["Option A",
+ * "Option B"]. There is no canonical ordered scale here to read a position
+ * off, so assuming options[0] is the affirmative would be inventing a contract
+ * rather than honouring one. (compare.js guards positional scoring on a known
+ * shape for exactly this reason.)
+ *
+ * What DOES change: this module now reports how the positive was resolved and
+ * how many answers fell outside the question's own option list, and it fails
+ * loudly on a zero against a healthy base instead of silently.
+ */
 function yesLikeOptions(options) {
-  return (options || [])
+  return cleanOptions(options)
     .map((o) => String(o).toLowerCase())
     .filter((o) => o.includes('yes'));
 }
@@ -199,17 +220,28 @@ function scalarAnswer(answer) {
  */
 function countYes(rows, options) {
   const yes = yesLikeOptions(options);
+  const opts = cleanOptions(options);
+  const optionSet = opts.length > 0 ? new Set(opts.map(norm)) : null;
   let n = 0;
   let positive = 0;
+  const answers = [];
   for (const r of rows || []) {
     const a = scalarAnswer(r.answer);
     if (a === null) continue;
     n += 1;
+    answers.push(a);
     const low = a.toLowerCase();
     const hit = yes.length > 0 ? yes.includes(low) : low.includes('yes');
     if (hit) positive += 1;
   }
-  return { n, positive };
+  return {
+    n,
+    positive,
+    // 'label' when the affirmative came from a Yes-like option, 'answer_text'
+    // when there was no options metadata and we matched the answer itself.
+    basis: yes.length > 0 ? 'label' : 'answer_text',
+    off_scale: offScaleCount(answers, optionSet),
+  };
 }
 
 /**
@@ -323,12 +355,36 @@ function funnelEntry(q, eRows, cRows, brandLower) {
   const c = counter(cRows);
   const exposed = { n: e.n, positive: e.positive, rate: e.n > 0 ? round4(e.positive / e.n) : null };
   const control = { n: c.n, positive: c.positive, rate: c.n > 0 ? round4(c.positive / c.n) : null };
+  // Pass 51 — surface a zero rate against a healthy base rather than charting
+  // it as fact. Only the Yes-anchored path is audited: countBrand is anchored
+  // on mission.brand_name (data, not an English label) and a control cell with
+  // genuinely zero brand mentions is a real, expected brand-lift result.
+  const zeroFlags = cls.kind === 'proportion_yes'
+    ? [
+      auditZeroBox({
+        metric: 'brand_lift_yes_rate_exposed', questionId: base.question_id,
+        count: e.positive, base: e.n, basis: e.basis, offScale: e.off_scale,
+      }),
+      auditZeroBox({
+        metric: 'brand_lift_yes_rate_control', questionId: base.question_id,
+        count: c.positive, base: c.n, basis: c.basis, offScale: c.off_scale,
+      }),
+    ].filter(Boolean)
+    : [];
+  const scaleMeta = cls.kind === 'proportion_yes'
+    ? {
+      scale_basis: e.basis,
+      off_scale_n: (e.off_scale == null && c.off_scale == null)
+        ? null : (e.off_scale || 0) + (c.off_scale || 0),
+      zero_box_flags: zeroFlags.length ? zeroFlags : null,
+    }
+    : {};
   // Pass 46 Phase 3 — a cell with n=0 → significance null + lift null.
   const propRefusal = cellSizeRefusal(e.n, c.n)
     || expectedCountRefusal(e.positive, e.n, c.positive, c.n);
   if (propRefusal === 'empty_cell') {
     return {
-      ...base, type: 'proportion', exposed, control,
+      ...base, type: 'proportion', exposed, control, ...scaleMeta,
       lift_abs: null, lift_rel_pct: null, significance: null, reason: 'empty_cell',
     };
   }
@@ -341,6 +397,7 @@ function funnelEntry(q, eRows, cRows, brandLower) {
     type: 'proportion',
     exposed,
     control,
+    ...scaleMeta,
     lift_abs: round4(p1 - p2),
     lift_rel_pct: p2 > 0 ? round4(((p1 - p2) / p2) * 100) : null,
     significance: propRefusal ? null : twoProportionTest(e.positive, e.n, c.positive, c.n),

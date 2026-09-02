@@ -94,7 +94,12 @@ describe('computeMarketing battery fixture', () => {
   });
 
   test('recall_aided: 3/5 Yes → 0.6 with base n', () => {
-    expect(out.funnel.recall_aided).toEqual({ n: 5, positive_rate: 0.6 });
+    // Pass 51 — rate unchanged; the block now also states HOW the affirmative
+    // was resolved. scale_basis 'positional' proves the guard matched the
+    // canonical 3-option Yes-first shape rather than falling back to labels.
+    expect(out.funnel.recall_aided).toEqual({
+      n: 5, positive_rate: 0.6, scale_basis: 'positional', off_scale_n: 0, zero_box_flag: null,
+    });
   });
 
   test('attribution: 2/4 answers contain the brand → 0.5', () => {
@@ -137,8 +142,12 @@ describe('computeMarketing battery fixture', () => {
   });
 
   test('message_match 2/4 Yes and sharing 3/5 Yes', () => {
-    expect(out.funnel.message_match).toEqual({ n: 4, positive_rate: 0.5 });
-    expect(out.funnel.sharing).toEqual({ n: 5, positive_rate: 0.6 });
+    expect(out.funnel.message_match).toEqual({
+      n: 4, positive_rate: 0.5, scale_basis: 'positional', off_scale_n: 0, zero_box_flag: null,
+    });
+    expect(out.funnel.sharing).toEqual({
+      n: 5, positive_rate: 0.6, scale_basis: 'positional', off_scale_n: 0, zero_box_flag: null,
+    });
   });
 
   test('openEnded: unaided recall capped at 30, message verbatims passed through', () => {
