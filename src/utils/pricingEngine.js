@@ -330,6 +330,125 @@ function formatUsd(v) {
   return frac ? `${grouped}.${frac}` : grouped;
 }
 
+/**
+ * ── The 1,000-2,250 price plateau, and the linear bridge that closes it ─────
+ *
+ * The tier-floor fix above (PR #101) removed a $498 inversion by flooring the
+ * Enterprise bracket at Scale's ceiling of $900. That left a FLAT price:
+ *
+ *   base(n) = max(n × $0.40, $900) = $900   for every n in [1,000 .. 2,250]
+ *
+ * $900 / $0.40 = 2,250, so 1,251 consecutive respondent counts all cost the
+ * same. At the top of the plateau a 2,250-respondent study costs $0.40/resp —
+ * the SAME marginal rate as a 5,000-respondent study, for less than half the
+ * money. Monotonic, but not honest: the buyer who wants 2,250 is handed 1,250
+ * respondents of free inventory, and the buyer who wants 1,050 pays for 2,250.
+ *
+ * FIX: interpolate linearly between the two PINNED anchors of the default
+ * ladder instead of holding a floor.
+ *
+ *   base(n) = existing bracket price          n <= 1,000
+ *           = 900 + (n - 1,000) × 0.275       1,000 < n <= 5,000
+ *           = existing bracket price          n >  5,000
+ *
+ * $0.275 is not a chosen number — it is the ONLY marginal rate that lands on
+ * both pinned anchors:
+ *
+ *   ($2,000 − $900) / (5,000 − 1,000) = $1,100 / 4,000 = $0.275
+ *
+ * so base(1,000) = $900 and base(5,000) = $2,000 are both unchanged, and the
+ * bridge is strictly increasing in between. Every other anchor on the ladder
+ * (5/$9, 10/$35, 50/$99, 100/$120, 250/$300) is outside the band and untouched.
+ * Above 5,000 the Enterprise bracket resumes at n × $0.40, which is $2,000.40
+ * at n = 5,001 — so the join is monotonic on both sides.
+ *
+ * SCOPE: the default (VOLUME_TIERS) ladder only. BRAND_LIFT_TIERS has its own
+ * anchors and its own (smaller) plateau; CREATIVE_ATTENTION_TIERS is flat per
+ * bracket and has no rate to interpolate. Neither is reachable above the
+ * self-serve cap below, so neither is touched here.
+ */
+const BRIDGE_FROM_COUNT = 1000;   // Scale anchor — $900
+const BRIDGE_TO_COUNT   = 5000;   // Enterprise anchor — $2,000
+const BRIDGE_FROM_PRICE = 900;
+const BRIDGE_TO_PRICE   = 2000;
+/** ($2,000 − $900) / (5,000 − 1,000). Kept as a literal so the anchors are auditable. */
+const BRIDGE_RATE_PER_RESP =
+  (BRIDGE_TO_PRICE - BRIDGE_FROM_PRICE) / (BRIDGE_TO_COUNT - BRIDGE_FROM_COUNT); // 0.275
+
+/**
+ * ── The self-serve ceiling ──────────────────────────────────────────────────
+ *
+ * Measured, not guessed. Full derivation lives in the PR body; the short form:
+ *
+ *   Window   The only TOTAL-duration guarantee in the system is
+ *            JOB1_STUCK_AFTER_HOURS = 6h (src/jobs/missionRecovery.js). Pass 49
+ *            replaced the wall clock with a 45-min heartbeat-staleness gate for
+ *            any run that checks in — which imposes no total-duration ceiling at
+ *            all — so 6h is the number that actually bounds a run, and it is the
+ *            rule that has governed every production mission to date (exactly 1
+ *            row in production has ever had heartbeat_at set).
+ *
+ *   Rate     A PAID mission gets an ai_spend_ceiling_usd and therefore takes the
+ *            recruit-loop path (shouldUseRecruitLoop). Measured from ai_calls +
+ *            started_at/completed_at over the 11 loop-path completions with >= 10
+ *            delivered: OLS marginal 11.86 s per delivered respondent; the two
+ *            runs above n=10 bracket it at 10.92 s/resp (n=100) and 14.16 s/resp
+ *            (n=50).
+ *
+ *   Ceiling  21,600 s / 14.16 s per respondent = 1,525 respondents at the WORST
+ *            measured rate.
+ *
+ *   Margin   1,250 sits 18% under that, and finishes in 4.1h at the central rate.
+ *            The margin is not decoration: (a) the largest mission ever DELIVERED
+ *            in production is 100 respondents, so 1,250 is a 12.5x extrapolation;
+ *            (b) both measured large runs had a 100% screener pass rate, while
+ *            the loop is allowed up to MAX_PERSONAS_PER_TARGET = 20 personas per
+ *            qualified respondent, so a real screener multiplies the wall clock;
+ *            (c) synthesis cost grows with n, so a per-respondent rate measured
+ *            at n=100 understates n=1,250.
+ *
+ * Above the cap we CAPTURE THE LEAD, we do not sell: calculateMissionPrice still
+ * returns a real (bridged) base so nothing downstream divides by zero, but flags
+ * customQuote — which the existing fail-closed guards in routes/payments.js and
+ * routes/pricing.js already turn into "contact sales" without a charge.
+ */
+const MAX_SELF_SERVE_RESPONDENTS = Number(process.env.MAX_SELF_SERVE_RESPONDENTS || 1250);
+
+/** Where a customer above the cap is sent. Consumed by the route error payloads. */
+const SELF_SERVE_LEAD_CAPTURE = {
+  endpoint: '/api/crm/lead',   // public, rate-limited (5/hour/IP), dedupes on email
+  cta: 'Request a quote',      // exactly what MissionControlPricing sends as `cta`
+  page: 'mission_control_pricing',
+  message: 'Studies above this size are run as a managed engagement — leave an email and we will scope it with you.',
+};
+
+/**
+ * Base price for the DEFAULT ladder inside the bridge band, or null when the
+ * count is outside it (caller falls back to respondentLadderBase).
+ */
+function defaultLadderBridgeBase(count) {
+  const n = Math.max(0, Number(count) || 0);
+  if (n <= BRIDGE_FROM_COUNT || n > BRIDGE_TO_COUNT) return null;
+  return round2(BRIDGE_FROM_PRICE + (n - BRIDGE_FROM_COUNT) * BRIDGE_RATE_PER_RESP);
+}
+
+/**
+ * Monotonic base for a respondent ladder, with the default ladder's
+ * 1,000 -> 5,000 plateau bridged. Every other ladder is unchanged.
+ */
+function bridgedRespondentBase(ladder, tier, count, rate) {
+  if (ladder === VOLUME_TIERS) {
+    const bridged = defaultLadderBridgeBase(count);
+    if (bridged != null) return bridged;
+  }
+  return respondentLadderBase(ladder, tier, count, rate);
+}
+
+/** True when a respondent count is beyond what the pipeline can honestly deliver. */
+function isAboveSelfServeCap(count) {
+  return (Math.max(0, Number(count) || 0)) > MAX_SELF_SERVE_RESPONDENTS;
+}
+
 const EXTRA_QUESTION_PRICE = 20; // $ per question beyond the 5th
 const FREE_QUESTIONS        = 5;
 
@@ -435,8 +554,15 @@ function calculateMissionPrice({
       ? (tier?.packagePrice || CREATIVE_ATTENTION_TIERS[0].packagePrice)
       // Monotonic: never cheaper than the top of the tier below (see
       // respondentLadderBase — V1 tier-boundary inversion fix).
-      : respondentLadderBase(getPricingForGoalType(goalType), tier, respondentCount, ratePerResp);
+      // Monotonic AND plateau-free: the default ladder interpolates between
+      // its $900/$2,000 anchors across 1,000 < n <= 5,000 (see
+      // bridgedRespondentBase); every other ladder keeps the tier floor.
+      : bridgedRespondentBase(getPricingForGoalType(goalType), tier, respondentCount, ratePerResp);
     volumeTier = tier || (isCreative ? CREATIVE_ATTENTION_TIERS[0] : VOLUME_TIERS[0]);
+    // Above the self-serve cap the price is still computed (so breakdowns and
+    // logs stay sane) but is NOT sellable. routes/payments.js and
+    // routes/pricing.js already fail closed on customQuote.
+    customQuote = isAboveSelfServeCap(respondentCount);
   }
 
   // 2. Extra questions
@@ -522,7 +648,7 @@ function calculateMissionPrice({
     tier:         countryTier,                  // legacy alias = country tier
     countryTier,                                // new explicit name
     volumeTier:   { id: volumeTier.id, name: volumeTier.name, anchorCount: volumeTier.anchorCount, packagePrice: volumeTier.packagePrice },
-    customQuote,  // V2: true when the count lands in the Enterprise (custom) tier — route blocks self-serve checkout
+    customQuote,  // true above MAX_SELF_SERVE_RESPONDENTS (V1) or in the V2 Enterprise tier — routes block self-serve checkout
     ratePerResp,
     countries,
     respondentCount,
@@ -576,6 +702,18 @@ function validateMissionPricing({ goalType, respondentCount, mediaType }) {
       return { valid: false, error: 'Studies beyond 500 respondents require a custom quote, please contact sales.' };
     }
     return { valid: true, tier };
+  }
+  // V1 self-serve ceiling — goal-agnostic, because the constraint is DELIVERY
+  // (wall-clock inside the 6h recovery backstop at the measured recruit-loop
+  // rate), not the price ladder. Fires before any goal-specific gate so a
+  // 3,000-respondent Creative Attention mission is refused for the same reason
+  // a 3,000-respondent validate mission is.
+  if (isAboveSelfServeCap(respondentCount)) {
+    return {
+      valid: false,
+      error: `Studies above ${MAX_SELF_SERVE_RESPONDENTS.toLocaleString('en-US')} respondents are run as a managed engagement, not self-serve — please contact sales.`,
+      leadCapture: SELF_SERVE_LEAD_CAPTURE,
+    };
   }
   if (goalType === 'creative_attention') {
     const validMedia = new Set(['image', 'video', 'bundle', 'series']);
@@ -688,6 +826,15 @@ module.exports = {
   // V1 monotonicity helpers (tier-boundary price inversion fix)
   tierPriceFloor,
   respondentLadderBase,
+  // Plateau bridge + self-serve ceiling
+  bridgedRespondentBase,
+  defaultLadderBridgeBase,
+  isAboveSelfServeCap,
+  MAX_SELF_SERVE_RESPONDENTS,
+  SELF_SERVE_LEAD_CAPTURE,
+  BRIDGE_FROM_COUNT,
+  BRIDGE_TO_COUNT,
+  BRIDGE_RATE_PER_RESP,
   // Country-tier (legacy, no longer affects price; retained for analytics)
   resolveHighestTier,
   getCountryTier,

@@ -4,7 +4,30 @@ const router = express.Router();
 const { authenticate, optionalAuthenticate } = require('../middleware/auth');
 const supabase = require('../db/supabase');
 const fetchAllResponses = require('../db/fetchAllResponses');
-const { calculateMissionPrice, extractCountriesFromMission } = require('../utils/pricingEngine');
+const {
+  calculateMissionPrice,
+  extractCountriesFromMission,
+  MAX_SELF_SERVE_RESPONDENTS,
+  SELF_SERVE_LEAD_CAPTURE,
+} = require('../utils/pricingEngine');
+
+/**
+ * Above the self-serve ceiling we CAPTURE THE LEAD, we do not sell. The 400
+ * carries the destination (POST /api/crm/lead, public + rate-limited) and the
+ * cap itself, so the client can render a real "talk to us" affordance instead
+ * of a dead end. See MAX_SELF_SERVE_RESPONDENTS in utils/pricingEngine.js for
+ * how the number was derived.
+ */
+function aboveSelfServeCapError(respondentCount) {
+  return {
+    error: 'respondent_count_above_self_serve_cap',
+    message: `Self-serve studies run up to ${MAX_SELF_SERVE_RESPONDENTS.toLocaleString('en-US')} respondents. `
+           + `${Number(respondentCount).toLocaleString('en-US')} is a managed engagement. Tell us about it and we will scope it with you.`,
+    maxSelfServeRespondents: MAX_SELF_SERVE_RESPONDENTS,
+    requestedRespondents: Number(respondentCount),
+    leadCapture: SELF_SERVE_LEAD_CAPTURE,
+  };
+}
 const { runMission } = require('../jobs/runMission');
 const { sanitizeMissionPatch, updateMission } = require('../db/missionSchema');
 const { isComingSoon, notAvailableError } = require('../config/comingSoon');
@@ -255,7 +278,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
  *
  * One constant, one predicate, checked on every door that reaches Stripe.
  */
-const MAX_SELF_SERVE_RESPONDENTS = 5000;
+
 
 /**
  * Returns a 400 body when the count is unusable, or null when it is fine.
@@ -264,12 +287,16 @@ const MAX_SELF_SERVE_RESPONDENTS = 5000;
  */
 function invalidRespondentCount(count) {
   if (count === undefined) return null;
-  if (!Number.isInteger(count) || count < 1 || count > MAX_SELF_SERVE_RESPONDENTS) {
+  if (!Number.isInteger(count) || count < 1) {
     return {
       error: 'invalid_respondent_count',
       message: `respondentCount must be an integer between 1 and ${MAX_SELF_SERVE_RESPONDENTS}.`,
     };
   }
+  // Above the ceiling is NOT a validation failure - it is a legitimate request
+  // we cannot deliver self-serve. Distinct error so the client branches to lead
+  // capture instead of showing a form error for asking for too much.
+  if (count > MAX_SELF_SERVE_RESPONDENTS) return aboveSelfServeCapError(count);
   return null;
 }
 

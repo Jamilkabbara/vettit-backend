@@ -106,8 +106,15 @@ describe('V1 price is monotonic non-decreasing in respondent count', () => {
 describe('the specific reported arbitrage windows are closed', () => {
   it('1,000 vs 1,005 respondents (Scale → Enterprise): the $498 hole is gone', () => {
     expect(baseFor('validate', 1000)).toBe(900);
-    // was 1005 × $0.40 = $402.00
-    expect(baseFor('validate', 1005)).toBe(900);
+    // was 1005 × $0.40 = $402.00.
+    //
+    // This line used to read `.toBe(900)`. That did not assert the invariant
+    // this file is named for — it pinned the FLAT $900 plateau that the
+    // previous-ceiling floor created across [1,000 .. 2,250], i.e. it asserted
+    // the defect. The linear bridge (900 + (n-1,000) × 0.275) now charges
+    // $901.38 here. The hole this test exists to close — 1,005 costing LESS
+    // than 1,000 — is still closed, and that is what is asserted.
+    expect(baseFor('validate', 1005)).toBeGreaterThanOrEqual(900);
     expect(baseFor('validate', 1005)).toBeGreaterThanOrEqual(baseFor('validate', 1000));
   });
 
