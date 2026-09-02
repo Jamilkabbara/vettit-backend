@@ -15,7 +15,10 @@
  *      z = 0.2 / 0.219089 ≈ 0.9129 → not significant
  */
 
-const { computeBrandLift, welchZTest } = require('../src/services/analysis/brandLift');
+const {
+  computeBrandLift, welchZTest, MIN_CELL_N, MIN_EXPECTED_COUNT,
+} = require('../src/services/analysis/brandLift');
+const { twoProportionTest } = require('../src/services/analysis/shared');
 
 const mk = (persona, qid, answer, exposure) => ({
   persona_id: persona,
@@ -120,7 +123,7 @@ describe('computeBrandLift headline fixture (10 exposed / 10 control)', () => {
     expect(out.degenerate_reason).toBeUndefined();
   });
 
-  test('q2 proportion: 8/10 vs 4/10 → lift 0.4, z≈1.8257, sig90 only', () => {
+  test('q2 proportion: 8/10 vs 4/10 → lift 0.4; test refused (exp. failures 4 < 5)', () => {
     const e = entry('q2');
     expect(e.type).toBe('proportion');
     expect(e.funnel_stage).toBe('aided_ad_recall');
@@ -130,10 +133,15 @@ describe('computeBrandLift headline fixture (10 exposed / 10 control)', () => {
     expect(e.control).toEqual({ n: 10, positive: 4, rate: 0.4 });
     expect(e.lift_abs).toBeCloseTo(0.4, 4);
     expect(e.lift_rel_pct).toBeCloseTo(100, 4); // (0.8-0.4)/0.4 × 100
-    expect(e.significance.z).toBeCloseTo(1.8257, 3);
-    expect(e.significance.p).toBeCloseTo(0.068, 2);
-    expect(e.significance.sig90).toBe(true);
-    expect(e.significance.sig95).toBe(false);
+    // Pass 51 — the ARITHMETIC is unchanged (pinned directly below), but the
+    // funnel refuses to publish it: pooled p̂ = 12/20 = 0.6, so each cell's
+    // expected FAILURE count is 10 × 0.4 = 4, under the np/n(1-p) >= 5 rule
+    // the normal approximation needs. The z is real; the 95%-confidence
+    // reading of it is not, so significance is null with a stated reason.
+    expect(twoProportionTest(8, 10, 4, 10).z).toBeCloseTo(1.8257, 3);
+    expect(twoProportionTest(8, 10, 4, 10).p).toBeCloseTo(0.068, 2);
+    expect(e.significance).toBeNull();
+    expect(e.reason).toBe('expected_count_below_5');
   });
 
   test('q3 mean: 4.5 vs 3.5 → lift 1, Welch z≈4.2426, sig95', () => {
@@ -149,14 +157,17 @@ describe('computeBrandLift headline fixture (10 exposed / 10 control)', () => {
     expect(e.significance.sig95).toBe(true);
   });
 
-  test('q4 multi brand-contains: 7/10 vs 5/10 → lift 0.2, z≈0.9129, not sig', () => {
+  test('q4 multi brand-contains: 7/10 vs 5/10 → lift 0.2; test refused', () => {
     const e = entry('q4');
     expect(e.type).toBe('proportion');
     expect(e.exposed).toEqual({ n: 10, positive: 7, rate: 0.7 });
     expect(e.control).toEqual({ n: 10, positive: 5, rate: 0.5 });
     expect(e.lift_abs).toBeCloseTo(0.2, 4);
-    expect(e.significance.z).toBeCloseTo(0.9129, 3);
-    expect(e.significance.sig90).toBe(false);
+    // Same pooled p̂ = 0.6 at n = 10 → expected failures 4 < 5, so the test is
+    // refused here too. Arithmetic still pinned directly.
+    expect(twoProportionTest(7, 10, 5, 10).z).toBeCloseTo(0.9129, 3);
+    expect(e.significance).toBeNull();
+    expect(e.reason).toBe('expected_count_below_5');
   });
 
   test('q5 non-aided multi and q7 text → null blocks with reasons', () => {
@@ -187,6 +198,10 @@ describe('computeBrandLift headline fixture (10 exposed / 10 control)', () => {
     expect(out.summary).toEqual({
       stages_lifted: 3,
       stages_sig95: 1,
+      // q3 (mean, 10 v 10) is the only entry that clears both gates; q2/q4
+      // fail the expected-count rule and q6 has an empty control cell.
+      stages_tested: 1,
+      stages_untested: 3,
       biggest_lift: { question_id: 'q3', lift_abs: 1 },
     });
   });
@@ -262,4 +277,98 @@ test('legacy questions without is_lift_question still enter via funnel_stage', (
   const rows = [mk('e1', 'q2', 'Yes', 'exposed'), mk('c1', 'q2', 'No', 'control')];
   const out = computeBrandLift(rows, qs, MISSION);
   expect(out.funnel.map((f) => f.question_id)).toEqual(['q2']);
+});
+
+// ── Pass 51: minimum cell-size floor on significance ─────────────────────
+//
+// Before this floor the ONLY guard was n === 0. A 3-exposed vs 2-control
+// split therefore reported "significant at 95%" — observed on production
+// mission 191455e8 (n=5). The floor refuses the inferential claim without
+// discarding the descriptive one: lift_abs survives, significance goes null
+// with a machine-readable reason, and the renderer says "not tested".
+describe('minimum cell-size floor', () => {
+  const Q = [
+    { id: 'q1', text: 'Screener', funnel_stage: 'screening', is_lift_question: false, type: 'single', options: ['Yes', 'No'] },
+    { id: 'q2', text: 'Aided awareness', funnel_stage: 'aided_brand_awareness', is_lift_question: true, type: 'multi', options: ['Acme', 'Rival'] },
+    { id: 'q3', text: 'Favorability', funnel_stage: 'brand_favorability', is_lift_question: true, type: 'rating' },
+  ];
+  // Build a cell of `n` personas; `hits` of them name the brand, and every
+  // persona rates `rating`+/-jitter so the mean test has a real variance.
+  const cell = (status, n, hits, ratings) => {
+    const out = [];
+    for (let i = 0; i < n; i += 1) {
+      const pid = `${status}${i}`;
+      out.push({ persona_id: pid, question_id: 'q2', answer: [i < hits ? 'Acme' : 'Rival'], exposure_status: status });
+      out.push({ persona_id: pid, question_id: 'q3', answer: ratings[i % ratings.length], exposure_status: status });
+    }
+    return out;
+  };
+  const run = (rows) => computeBrandLift(rows, Q, { brand_name: 'Acme' });
+  const at = (out, qid) => out.funnel.find((f) => f.question_id === qid);
+
+  test('the floor is 10 per cell, derived from the np >= 5 rule at p = 0.5', () => {
+    expect(MIN_CELL_N).toBe(10);
+    expect(MIN_EXPECTED_COUNT).toBe(5);
+    // 10 is exactly 5 / 0.5 — the smallest n for which np >= 5 and
+    // n(1-p) >= 5 can BOTH hold for any p at all.
+    expect(MIN_EXPECTED_COUNT / 0.5).toBe(MIN_CELL_N);
+  });
+
+  test('3 exposed vs 2 control is refused, not called significant', () => {
+    const out = run([...cell('exposed', 3, 3, [5, 5, 4]), ...cell('control', 2, 0, [1, 1])]);
+    // The pre-floor behaviour this pins against: z = 2.2361 (p = 0.0253) on
+    // the proportion and z = 11 on the mean — both would have read sig95.
+    expect(twoProportionTest(3, 3, 0, 2).sig95).toBe(true);
+
+    const prop = at(out, 'q2');
+    expect(prop.exposed.n).toBe(3);
+    expect(prop.control.n).toBe(2);
+    expect(prop.lift_abs).toBe(1);          // descriptive fact is KEPT
+    expect(prop.significance).toBeNull();   // inferential claim is REFUSED
+    expect(prop.reason).toBe('below_min_cell_n');
+    expect(prop.min_cell_n).toBe(10);
+
+    const mean = at(out, 'q3');
+    expect(mean.significance).toBeNull();
+    expect(mean.reason).toBe('below_min_cell_n');
+
+    // and it must not leak through the summary as "nothing was significant"
+    expect(out.summary.stages_sig95).toBe(0);
+    expect(out.summary.stages_tested).toBe(0);
+    expect(out.summary.stages_untested).toBe(2);
+    expect(out.min_cell_n).toBe(10);
+  });
+
+  test('9 per cell is refused, 25 per cell is tested (boundary is real)', () => {
+    const nine = run([...cell('exposed', 9, 9, [5]), ...cell('control', 9, 0, [1])]);
+    expect(at(nine, 'q2').reason).toBe('below_min_cell_n');
+
+    const many = run([
+      ...cell('exposed', 25, 20, [5, 4, 5, 4, 5]),
+      ...cell('control', 25, 10, [3, 4, 3, 4, 3]),
+    ]);
+    const prop = at(many, 'q2');
+    expect(prop.exposed).toEqual({ n: 25, positive: 20, rate: 0.8 });
+    expect(prop.control).toEqual({ n: 25, positive: 10, rate: 0.4 });
+    expect(prop.reason).toBeUndefined();
+    expect(prop.significance.z).toBeCloseTo(2.8868, 3); // pooled 0.6, exp 15/10
+    expect(prop.significance.sig95).toBe(true);
+    expect(many.summary.stages_tested).toBe(2);
+    expect(many.summary.stages_untested).toBe(0);
+  });
+
+  test('a large but lopsided split still fails the expected-count rule', () => {
+    // 40 v 40 with one success total: n*p̂ = 0.5, nowhere near 5.
+    const out = run([...cell('exposed', 40, 1, [4]), ...cell('control', 40, 0, [3])]);
+    const prop = at(out, 'q2');
+    expect(prop.exposed.n).toBe(40);
+    expect(prop.control.n).toBe(40);
+    expect(prop.significance).toBeNull();
+    expect(prop.reason).toBe('expected_count_below_5');
+  });
+
+  test('refusals stay JSON-serializable with no undefined/NaN', () => {
+    const out = run([...cell('exposed', 3, 3, [5, 5, 4]), ...cell('control', 2, 0, [1, 1])]);
+    expect(JSON.parse(JSON.stringify(out))).toStrictEqual(out);
+  });
 });

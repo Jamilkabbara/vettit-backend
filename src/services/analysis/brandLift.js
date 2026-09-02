@@ -51,6 +51,72 @@ const AIDED_BRAND_STAGES = new Set(['aided_ad_recall', 'aided_brand_awareness'])
 // Legacy fallback when funnel_stage is missing but kpi_category survived.
 const AIDED_BRAND_KPIS = new Set(['ad_recall', 'awareness']);
 
+// ── Minimum cell size for an INFERENTIAL claim ──────────────────────────────
+//
+// Both tests this module runs (the pooled two-proportion z-test in shared.js
+// and welchZTest below) compare |z| against a STANDARD-NORMAL critical value
+// of 1.96. That reference distribution is an asymptotic approximation, and it
+// is the approximation — not the arithmetic — that fails on tiny cells. Before
+// Pass 51 the only guard was n === 0 ('empty_cell'), so a 3-exposed vs
+// 2-control split reported "significant at 95%" (observed on production
+// mission 191455e8, n=5, where 3/3 vs 0/2 gave z = 2.2361, p = 0.0253).
+//
+// MIN_CELL_N = 10 per cell. The justification is the textbook validity
+// condition for the normal approximation to the binomial, applied to the
+// POOLED proportion the test actually uses:
+//
+//     n_i * p̂_pool >= 5   and   n_i * (1 - p̂_pool) >= 5   for i in {exposed, control}
+//
+// p̂_pool is unknown before the data arrives, and the condition is hardest to
+// satisfy in the middle: at p̂ = 0.5 it demands n_i * 0.5 >= 5, i.e. n_i >= 10.
+// Ten per cell is therefore the SMALLEST base at which the rule is satisfiable
+// at all — for any n_i < 10 there is no pooled proportion whatsoever that
+// passes it. That makes 10 a derived bound, not a preference.
+//
+// The same 10 serves Welch's test. welchZTest estimates a per-cell variance
+// (n_i >= 2 just to have one) and then reads the result off the normal curve
+// instead of a t curve with Welch-Satterthwaite df. The cost of that shortcut
+// is a function of n:
+//     n = 3 vs 2  → df ≈ 2-3, t_.975 ≈ 3.18-4.30 vs z = 1.96
+//                   → the |z| >= 1.96 rule's true type-I rate is >20%, i.e.
+//                     the "95% significant" label is close to meaningless
+//     n = 10 vs 10 → df ≈ 18, t_.975 ≈ 2.10 vs z = 1.96
+//                   → true type-I rate ≈ 6.5%, a modest and disclosable
+//                     anti-conservatism rather than a broken claim
+// So n >= 10 per cell is where the z-shortcut stops changing the conclusion,
+// which is the same place the binomial condition becomes satisfiable.
+const MIN_CELL_N = 10;
+
+// Second gate, applied only to proportions once p̂_pool is known: 10 per cell
+// makes the condition SATISFIABLE, it does not make it SATISFIED. A 40-vs-40
+// split with 1 total success has n * p̂ = 0.5, far below 5, and the normal
+// approximation is still worthless there. This checks the realised value.
+const MIN_EXPECTED_COUNT = 5;
+
+/**
+ * Structural gate applied to BOTH tests before any inferential claim.
+ * @returns {string|null} machine-readable refusal reason, or null to proceed.
+ */
+function cellSizeRefusal(n1, n2) {
+  if (n1 === 0 || n2 === 0) return 'empty_cell';
+  if (n1 < MIN_CELL_N || n2 < MIN_CELL_N) return 'below_min_cell_n';
+  return null;
+}
+
+/**
+ * Realised expected-count gate for the two-proportion test (see
+ * MIN_EXPECTED_COUNT). Runs only after cellSizeRefusal has passed.
+ * @returns {string|null} refusal reason, or null to proceed.
+ */
+function expectedCountRefusal(x1, n1, x2, n2) {
+  const pooled = (x1 + x2) / (n1 + n2);
+  for (const n of [n1, n2]) {
+    if (n * pooled < MIN_EXPECTED_COUNT) return 'expected_count_below_5';
+    if (n * (1 - pooled) < MIN_EXPECTED_COUNT) return 'expected_count_below_5';
+  }
+  return null;
+}
+
 /**
  * Welch z-test for two independent means (unequal variances).
  * z = (m1 − m2) / √(s1²/n1 + s2²/n2), two-sided p via the shared
@@ -223,7 +289,8 @@ function funnelEntry(q, eRows, cRows, brandLower) {
     const exposed = ratingStats(eRows) || { n: 0 };
     const control = ratingStats(cRows) || { n: 0 };
     // Pass 46 Phase 3 — a cell with n=0 → significance null + lift null.
-    if (eNums.length === 0 || cNums.length === 0) {
+    const refusal = cellSizeRefusal(eNums.length, cNums.length);
+    if (refusal === 'empty_cell') {
       return {
         ...base, type: 'mean', exposed, control,
         lift_abs: null, lift_rel_pct: null, significance: null, reason: 'empty_cell',
@@ -232,6 +299,10 @@ function funnelEntry(q, eRows, cRows, brandLower) {
     // Lift from raw (unrounded) means so round4 happens exactly once.
     const m1 = eNums.reduce((s, v) => s + v, 0) / eNums.length;
     const m2 = cNums.reduce((s, v) => s + v, 0) / cNums.length;
+    // Pass 51 — the observed difference is DESCRIPTIVE and stays; only the
+    // inferential claim is refused. significance: null + an explicit reason,
+    // mirroring the empty_cell shape, so the renderer can say "not tested"
+    // rather than collapsing it into "not significant".
     return {
       ...base,
       type: 'mean',
@@ -239,7 +310,8 @@ function funnelEntry(q, eRows, cRows, brandLower) {
       control,
       lift_abs: round4(m1 - m2),
       lift_rel_pct: m2 !== 0 ? round4(((m1 - m2) / m2) * 100) : null,
-      significance: welchZTest(eNums, cNums),
+      significance: refusal ? null : welchZTest(eNums, cNums),
+      ...(refusal ? { reason: refusal, min_cell_n: MIN_CELL_N } : {}),
     };
   }
 
@@ -252,7 +324,9 @@ function funnelEntry(q, eRows, cRows, brandLower) {
   const exposed = { n: e.n, positive: e.positive, rate: e.n > 0 ? round4(e.positive / e.n) : null };
   const control = { n: c.n, positive: c.positive, rate: c.n > 0 ? round4(c.positive / c.n) : null };
   // Pass 46 Phase 3 — a cell with n=0 → significance null + lift null.
-  if (e.n === 0 || c.n === 0) {
+  const propRefusal = cellSizeRefusal(e.n, c.n)
+    || expectedCountRefusal(e.positive, e.n, c.positive, c.n);
+  if (propRefusal === 'empty_cell') {
     return {
       ...base, type: 'proportion', exposed, control,
       lift_abs: null, lift_rel_pct: null, significance: null, reason: 'empty_cell',
@@ -260,6 +334,8 @@ function funnelEntry(q, eRows, cRows, brandLower) {
   }
   const p1 = e.positive / e.n;
   const p2 = c.positive / c.n;
+  // Pass 51 — see the mean branch: the rate difference is a fact about the
+  // sample and is kept; the 95%-confidence claim is what gets refused.
   return {
     ...base,
     type: 'proportion',
@@ -267,7 +343,8 @@ function funnelEntry(q, eRows, cRows, brandLower) {
     control,
     lift_abs: round4(p1 - p2),
     lift_rel_pct: p2 > 0 ? round4(((p1 - p2) / p2) * 100) : null,
-    significance: twoProportionTest(e.positive, e.n, c.positive, c.n),
+    significance: propRefusal ? null : twoProportionTest(e.positive, e.n, c.positive, c.n),
+    ...(propRefusal ? { reason: propRefusal, min_cell_n: MIN_CELL_N } : {}),
   };
 }
 
@@ -328,14 +405,25 @@ function computeBrandLift(rows, questions, mission) {
       biggest = { question_id: f.question_id, lift_abs: f.lift_abs };
     }
   }
+  // Pass 51 — an entry was TESTED only when a significance block came back.
+  // Entries whose test was refused (cells too small) are counted separately so
+  // "0 stages significant" can never be read as "we tested and found nothing":
+  // stages_sig95 + stages_untested does NOT have to equal stages_tested.
+  const testable = funnel.filter((f) => f.type !== null);
+  const tested = testable.filter((f) => f.significance);
+  const untested = testable.filter((f) => !f.significance);
   const summary = {
     // "stages" = funnel entries (one question per funnel stage by design).
     stages_lifted: computed.filter((f) => f.lift_abs > 0).length,
-    stages_sig95: funnel.filter((f) => f.significance && f.significance.sig95 === true).length,
+    stages_sig95: tested.filter((f) => f.significance.sig95 === true).length,
+    stages_tested: tested.length,
+    stages_untested: untested.length,
     biggest_lift: biggest,
   };
 
-  return { methodology: 'brand_lift', cells, funnel, summary };
+  // min_cell_n travels with the block so every renderer can state the rule it
+  // was held to without hard-coding the number a second time.
+  return { methodology: 'brand_lift', cells, funnel, summary, min_cell_n: MIN_CELL_N };
 }
 
-module.exports = { computeBrandLift, welchZTest };
+module.exports = { computeBrandLift, welchZTest, MIN_CELL_N, MIN_EXPECTED_COUNT };

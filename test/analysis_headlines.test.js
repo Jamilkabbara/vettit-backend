@@ -328,3 +328,55 @@ describe('analysisHeadlines — display rounding (Pass 50)', () => {
     expect(valOf(comp, 'Gap on "Trust" vs Y')).toBe('-1.17 pts');
   });
 });
+
+// Pass 51 — a refused significance test must not render as "directional".
+describe('analysisHeadlines — refused significance reads as not tested', () => {
+  const analysis = {
+    methodology: 'brand_lift',
+    min_cell_n: 10,
+    cells: { exposed: { n: 3 }, control: { n: 2 }, not_applicable: { n: 0 } },
+    funnel: [
+      {
+        question_id: 'q2', text: 'Aided awareness', type: 'proportion',
+        exposed: { n: 3, positive: 3, rate: 1 }, control: { n: 2, positive: 0, rate: 0 },
+        lift_abs: 1, lift_rel_pct: null,
+        significance: null, reason: 'below_min_cell_n', min_cell_n: 10,
+      },
+    ],
+    summary: {
+      stages_lifted: 1, stages_sig95: 0, stages_tested: 0, stages_untested: 1,
+      biggest_lift: { question_id: 'q2', lift_abs: 1 },
+    },
+  };
+
+  test('headline says not tested, never directional', () => {
+    const rows = analysisHeadlines(analysis);
+    const v = valOf(rows, 'Aided awareness');
+    expect(v).toContain('not tested');
+    expect(v).not.toContain('directional');
+    expect(v).not.toContain('significant at');
+  });
+
+  test('untested stage count is surfaced next to the sig95 count', () => {
+    const rows = analysisHeadlines(analysis);
+    expect(valOf(rows, 'Stages significant at 95%')).toBe('0');
+    expect(valOf(rows, 'Stages not tested (base too small)')).toBe('1 (needs n>=10 per cell)');
+  });
+
+  test('stage table carries the same refusal wording', () => {
+    const t = brandLiftStageTable(analysis);
+    expect(t[0].significance).toBe('not tested — cell below the minimum base');
+  });
+
+  test("a tested-but-weak result still reads 'directional'", () => {
+    const rows = analysisHeadlines({
+      methodology: 'brand_lift',
+      funnel: [{
+        question_id: 'q', text: 'Familiarity', type: 'mean',
+        exposed: { mean: 4, n: 20 }, control: { mean: 3.8, n: 20 },
+        lift_abs: 0.2, significance: { z: 0.5, p: 0.6, sig90: false, sig95: false },
+      }],
+    });
+    expect(valOf(rows, 'Familiarity')).toContain('directional');
+  });
+});
