@@ -410,6 +410,9 @@ async function generateReportSummaries(report, opts = {}) {
   }
 
   // 2b) Per-question insights (batched, one call)
+  // The mission's own sample size corroborates each question's base; without it
+  // the figure guard will not substitute, only log.
+  const sampleN = sample && sample.n != null ? Number(sample.n) : null;
   if (survey.length) {
     try {
       const compact = survey.map(compactQuestionForPrompt);
@@ -439,14 +442,31 @@ async function generateReportSummaries(report, opts = {}) {
         // wrong one, and because dataTokens() admits the raw counts it actively
         // waves through a count wearing a % sign. Check the arithmetic before
         // the sentence is cached and rendered on a paid deliverable.
-        const fig = checkNarrativeFigures(cand, q);
-        if (fig.checked && !fig.ok) {
+        //
+        // FAIL SAFE: only `substitutable` may discard the sentence - an
+        // enforcing-tier violation against a positively confirmed base.
+        // Everything else logs and keeps the model's line, because silently
+        // replacing prose that was RIGHT is the worse failure: it is invisible
+        // to the customer and it degrades a deliverable that was already good.
+        const fig = checkNarrativeFigures(cand, q, sampleN);
+        if (fig.checked && fig.substitutable) {
           logger.warn('reportSummaries: narrative figure rejected; keeping computed line', {
             missionId: opts.missionId,
             qid: q.id,
-            violations: fig.violations.map((v) => `${v.rule}:${v.claim}`),
+            base: fig.base,
+            violations: fig.violations.filter((v) => v.enforceable).map((v) => `${v.rule}:${v.claim}`),
           });
           continue; // deterministic line stays; it is grounded by construction
+        }
+        if (fig.checked && !fig.ok) {
+          // Advisory only. Surfaced for a human, never acted on automatically.
+          logger.warn('reportSummaries: narrative figure suspect; KEEPING model line', {
+            missionId: opts.missionId,
+            qid: q.id,
+            base: fig.base,
+            baseConfirmed: fig.baseConfirmed,
+            violations: fig.violations.map((v) => `${v.rule}:${v.claim}`),
+          });
         }
         detPerQ.set(q.id, cand);
         perQSource.set(q.id, 'ai');

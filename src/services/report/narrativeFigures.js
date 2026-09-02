@@ -45,6 +45,36 @@
  *      "N out of M" - N must be an achievable subset sum, and M when stated
  *      must be the question's base.
  *
+ * ENFORCING vs ADVISORY  (added after a live false positive - read this)
+ * ----------------------------------------------------------------------
+ * A validator that suppresses a CORRECT sentence is worse than one that lets a
+ * wrong one through: the suppression is silent, and it degrades output that was
+ * already right. So the rules are tiered by their MEASURED error rate against
+ * raw `mission_responses` on 66 completed production missions:
+ *
+ *   ENFORCING (may replace the sentence) - 18 flags, 18 confirmed, 0 wrong:
+ *     count_as_percent, underivable_percent
+ *
+ *   ADVISORY (logs only, never replaces) - 25 flags, 3 wrong or undetermined:
+ *     wrong_base, underivable_count
+ *
+ * Every false positive found came from the advisory pair; none from the
+ * enforcing pair. The advisory rules depend on the exact bucketing of the
+ * distribution, and the pipeline legitimately merges option labels differing
+ * only in dash style ("SAR 26-35 / EGP 131-185" absorbing a bare
+ * "EGP 131-185"), so a narrative quoting an unmerged raw count reads as
+ * underivable while being true (mission b8f5abce q4). They still surface in the
+ * log, where a human can act; they never silently rewrite a deliverable.
+ *
+ * On top of the tier, enforcement requires a POSITIVELY CONFIRMED base: the
+ * counts must sum exactly to the base AND the mission sample n must agree. If a
+ * base cannot be corroborated the sentence is left alone and logged - never
+ * substituted against a denominator we are not sure of. This is what would have
+ * stopped the one regression found in review: mission 0a494ef7 carries 300
+ * personas and 2400 response rows, and an audit that read it through an
+ * unpaginated 1000-row query saw a base of 125 and called a TRUE sentence
+ * ("All 300 respondents confirmed...") a fabrication.
+ *
  * WHAT IT DOES NOT CATCH (read this before trusting it)
  * ----------------------------------------------------
  *   - A figure that is right but ATTACHED TO THE WRONG OPTION ("71% would NOT
@@ -90,6 +120,12 @@ const COUNT_UNIT_RE = /(?<![\w.])(\d+)\s+(respondents?|people|persons?|answers?|
  * already produced gets flagged.
  */
 const STAT_LEVEL_AFTER_RE = /^\s*(?:confidence|ci\b|c\.i\.|significan|margin\s+of\s+error|certain|sure\b)/i;
+
+/**
+ * Rules whose flags may REPLACE a sentence. Everything else logs only.
+ * See the ENFORCING vs ADVISORY block above for the measured justification.
+ */
+const ENFORCING_RULES = new Set(['count_as_percent', 'underivable_percent']);
 
 /** Renderers whose data has no single honest denominator - skip, never guess. */
 const UNCHECKABLE_RENDERERS = new Set(['attribute_battery', 'max_diff', 'open_text_verbatims']);
@@ -240,12 +276,19 @@ function isScaleCeiling(d, qdata) {
  *
  * @param {string} text      the candidate insight sentence
  * @param {object} question  canonical survey question ({ renderer, data, text, options })
+ * @param {number|null} sampleN  the mission's own sample size (report.header.sample.n),
+ *        used to CORROBORATE the question's base. Without corroboration nothing
+ *        is ever substituted, only logged.
  * @returns {{checked:boolean, ok:boolean, violations:Array<{rule,claim,value,reason}>}}
  *          checked=false means the question offered no honest denominator; treat
- *          that as "no opinion", not as a pass.
+ *          that as "no opinion", not as a pass. `substitutable` is the ONLY flag
+ *          a caller may act on destructively; `ok` and `violations` are for
+ *          reporting and logging.
  */
-function checkNarrativeFigures(text, question) {
-  const empty = { checked: false, ok: true, violations: [] };
+function checkNarrativeFigures(text, question, sampleN = null) {
+  const empty = {
+    checked: false, ok: true, violations: [], baseConfirmed: false, substitutable: false,
+  };
   if (typeof text !== 'string' || !text.trim()) return empty;
   const qdata = question && question.data;
   const fig = buildFigureSet(qdata, question && question.renderer);
@@ -326,7 +369,36 @@ function checkNarrativeFigures(text, question) {
     }
   }
 
-  return { checked: true, ok: violations.length === 0, violations };
+  for (const v of violations) v.enforceable = ENFORCING_RULES.has(v.rule);
+
+  // A base is trustworthy only when the distribution ACCOUNTS FOR IT EXACTLY
+  // and the mission's own sample size agrees.
+  //
+  // NB `bases` deliberately contains the selection sum, so `bases.has(distSum)`
+  // is true by construction and proves nothing - an earlier cut of this check
+  // did exactly that and confirmed every base it was handed, including
+  // af36a36d q1 where 25 selections sit under a stated base of 10. Compare
+  // against the DECLARED respondent base instead.
+  const distSum = fig.counts.reduce((a, b) => a + b, 0);
+  const declaredBase = finite(qdata.n_respondents) ?? finite(qdata.n);
+  const isMulti = question && question.renderer === 'multi_select';
+  const accountsForBase = isMulti
+    // Multi-select answers overlap, so selections legitimately exceed the base;
+    // what corroborates it is that the pipeline tracked respondents separately.
+    ? finite(qdata.n_respondents) != null && distSum >= declaredBase
+    : declaredBase != null && distSum === declaredBase;
+  const sampleAgrees = sampleN == null || bases.has(Number(sampleN));
+  const baseConfirmed = Boolean(accountsForBase && sampleAgrees);
+
+  return {
+    checked: true,
+    ok: violations.length === 0,
+    violations,
+    base,
+    baseConfirmed,
+    // The ONLY condition under which a caller may replace the sentence.
+    substitutable: baseConfirmed && violations.some((v) => v.enforceable),
+  };
 }
 
 /**
