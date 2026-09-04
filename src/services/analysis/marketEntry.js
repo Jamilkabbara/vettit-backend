@@ -26,11 +26,18 @@
  *     recommended_market, top_barrier, best_demand_index }
  */
 
-const { byQuestion, personaCount, num, distribution, shares } = require('./shared');
+const {
+  byQuestion, personaCount, num, distribution, shares,
+  resolveBoxSet, offScaleCount, auditZeroBox,
+} = require('./shared');
 const logger = require('../../utils/logger');
 
 const MIN_RELIABLE_N = 30; // WO §2.4 — below this a market reads directional
-const INTENT_TOP2 = new Set(['definitely would buy', 'probably would buy']);
+// Pass 51 — intent is scored POSITIONALLY off the question's own options.
+// The canonical q3 scale (claudeAI.js:2198) runs MOST→LEAST positive, so the
+// top-2 box is the head of a 5-option list; these literals are the fallback
+// used only when the question is not that shape.
+const INTENT_TOP2_FALLBACK = ['Definitely would buy', 'Probably would buy'];
 const APPEAL_MAX = 7;
 const round1 = (v) => Math.round(v * 10) / 10;
 const round2 = (v) => Math.round(v * 100) / 100;
@@ -93,7 +100,17 @@ function computeMarketEntry(rows, questions, mission) {
       : [declared[0] || 'Target market'];
 
     const appealId = firstId('appeal');
+    const intentQ = qById('intent')[0] || null;
     const intentId = firstId('intent');
+    const intentBox = resolveBoxSet({
+      question: intentQ,
+      tag: { key: 'kind', value: 'intent' },
+      type: 'single',
+      size: 2,
+      expectedLength: 5,
+      from: 'head',
+      fallbackLabels: INTENT_TOP2_FALLBACK,
+    });
     const wtpId = firstId('wtp');
     const barrierIds = qById('barrier').map((q) => q.id);
     const compIds = qById('competitive').map((q) => q.id);
@@ -104,8 +121,15 @@ function computeMarketEntry(rows, questions, mission) {
     const allMarkets = marketSet.map((mk) => {
       const intentRows = intentId ? rowsForMarket(mk, [intentId]) : [];
       const intentBase = new Set(intentRows.map((r) => r.persona_id)).size;
-      const intentTop2 = intentRows.filter((r) => INTENT_TOP2.has(norm(r.answer))).length;
+      const intentTop2 = intentRows.filter((r) => intentBox.set.has(norm(r.answer))).length;
       const purchase_intent_pct = intentBase ? round1((intentTop2 / intentBase) * 100) : null;
+      const intentOffScale = offScaleCount(intentRows.map((r) => r.answer), intentBox.optionSet);
+      const intentZeroFlag = intentBase
+        ? auditZeroBox({
+          metric: 'market_entry_intent_top2', questionId: intentQ && intentQ.id,
+          count: intentTop2, base: intentBase, basis: intentBox.basis, offScale: intentOffScale,
+        })
+        : null;
 
       const appealRows = appealId ? rowsForMarket(mk, [appealId]) : [];
       const appealVals = appealRows.map((r) => num(r.answer)).filter((v) => v !== null && v >= 1 && v <= APPEAL_MAX);
@@ -162,6 +186,12 @@ function computeMarketEntry(rows, questions, mission) {
         demand_index,
         signal,
         purchase_intent_pct,
+        // Pass 51 — how the top-2 box was resolved, and how many answers fell
+        // outside the question's own option list. A 0% intent with
+        // off_scale_n === the base is label drift, not a dead market.
+        intent_scale_basis: intentBox.basis,
+        intent_off_scale_n: intentOffScale,
+        intent_zero_box_flag: intentZeroFlag,
         appeal_mean,
         wtp,
         barriers,

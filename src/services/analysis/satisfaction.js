@@ -36,6 +36,7 @@
 
 const {
   byQuestion, distribution, ratingStats, round4, personaCount, num, isSkip,
+  resolveBoxSet, offScaleCount, auditZeroBox,
 } = require('./shared');
 
 // ── Local helpers (each Phase 3 module is self-contained; only shared.js
@@ -127,13 +128,37 @@ function computeNps(rows) {
  * off-scale labels stay in the base (and in the distribution) but never
  * count as top-2 — conservative by construction.
  */
-function top2Single(rows, top2Labels) {
+function top2Single(rows, question, fallbackLabels) {
   const ans = scalarAnswered(rows);
   const n = ans.length;
   if (n === 0) return null;
-  const top2Set = new Set(top2Labels.map(norm));
-  const top2 = ans.filter((r) => top2Set.has(norm(r.answer))).length;
-  return { top2_pct: round4((top2 / n) * 100), n, distribution: distribution(ans) };
+  // Pass 51 — CSAT options run LEAST→MOST positive (claudeAI.js:903:
+  // ["Very dissatisfied","Dissatisfied","Neutral","Satisfied","Very satisfied"]),
+  // so the top-2 box is the TAIL of the array, not the head. from:'tail' is
+  // load-bearing: taking the head here would invert the metric.
+  const box = resolveBoxSet({
+    question,
+    tag: { key: 'methodology', value: 'csat' },
+    type: 'single',
+    size: 2,
+    expectedLength: 5,
+    from: 'tail',
+    fallbackLabels,
+  });
+  const answers = ans.map((r) => r.answer);
+  const top2 = ans.filter((r) => box.set.has(norm(r.answer))).length;
+  const offScale = offScaleCount(answers, box.optionSet);
+  return {
+    top2_pct: round4((top2 / n) * 100),
+    n,
+    distribution: distribution(ans),
+    scale_basis: box.basis,
+    off_scale_n: offScale,
+    zero_box_flag: auditZeroBox({
+      metric: 'csat_top2', questionId: question && question.id,
+      count: top2, base: n, basis: box.basis, offScale,
+    }),
+  };
 }
 
 // ── CES ────────────────────────────────────────────────────────────────────
@@ -281,8 +306,11 @@ function computeSatisfaction(rows, questions, mission) {
     // First question per methodology tag (the generator emits exactly one each).
     const qBy = (m) => qs.find((q) => q && q.methodology === m) || null;
 
-    // q4 CSAT top-2-box — exact labels from claudeAI.js:903.
-    const CSAT_TOP2 = ['Satisfied', 'Very satisfied'];
+    // q4 CSAT top-2-box. Scored POSITIONALLY off the question's own options
+    // (the canonical 5-point scale, top-2 = the last two). These literals are
+    // now only the fallback for a question that is not that shape — see
+    // resolveBoxSet in shared.js.
+    const CSAT_TOP2_FALLBACK = ['Satisfied', 'Very satisfied'];
 
     const npsQ = qBy('nps');
     const csatQ = qBy('csat');
@@ -319,7 +347,7 @@ function computeSatisfaction(rows, questions, mission) {
       ...skeleton,
       n: personaCount(allRows),
       nps: safe(() => computeNps(rowsFor(npsQ))),
-      csat: safe(() => top2Single(rowsFor(csatQ), CSAT_TOP2)),
+      csat: safe(() => top2Single(rowsFor(csatQ), csatQ, CSAT_TOP2_FALLBACK)),
       ces: safe(() => computeCes(rowsFor(cesQ))),
       attributes: safe(() => computeAttributes(amQs, byQ)),
       retention,
