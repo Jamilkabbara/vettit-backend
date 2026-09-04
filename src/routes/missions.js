@@ -6,6 +6,7 @@ const supabase = require('../db/supabase');
 const fetchAllResponses = require('../db/fetchAllResponses');
 const {
   calculateMissionPrice,
+  validateMissionPricing,
   extractCountriesFromMission,
   MAX_SELF_SERVE_RESPONDENTS,
   SELF_SERVE_LEAD_CAPTURE,
@@ -674,6 +675,45 @@ router.post('/launch', authenticate, async (req, res, next) => {
     // is strictly worse than no cap. Gate first, charge second.
     if (mission.respondent_count > MAX_SELF_SERVE_RESPONDENTS) {
       return res.status(400).json(aboveSelfServeCapError(mission.respondent_count));
+    }
+
+    // ── The same fail-closed gate /payments/create-checkout-session runs ────
+    //
+    // This route builds a PaymentIntent straight from the stored row, so
+    // whatever is in that row is what gets charged. Without this call the
+    // ONLY things standing between a mission row and a live Stripe object
+    // are the respondent-count ceiling above and totalCents < 50 below -
+    // neither of which knows anything about the goal.
+    //
+    // What that let through: a brand_lift row stored at n=5 sits below the
+    // Pulse minimum and has NO tier on the brand-lift ladder. The engine
+    // silently fell back to the default ladder's cheapest rate and charged
+    // $9, writing "Sniff Test" onto the stored breakdown and the Stripe
+    // receipt for a study that was never priced on that ladder. Same shape
+    // for a creative_attention row with no media_type.
+    //
+    // Gate first, price second, charge third. Must stay ABOVE
+    // calculateMissionPrice: the ordering is the guarantee, not the status
+    // code, which is why the tests assert the Stripe mock was never called.
+    const validation = validateMissionPricing({
+      goalType:        mission.goal_type,
+      respondentCount: mission.respondent_count,
+      mediaType:       mission.media_type,
+    });
+    if (!validation.valid) {
+      logger.warn('POST /missions/launch: pricing validation failed', {
+        missionId,
+        goal_type: mission.goal_type,
+        media_type: mission.media_type,
+        respondent_count: mission.respondent_count,
+        error: validation.error,
+      });
+      return res.status(400).json({
+        error: 'mission_pricing_invalid',
+        message: 'This mission cannot be charged as configured.',
+        reason: validation.error,
+        ...(validation.leadCapture ? { leadCapture: validation.leadCapture } : {}),
+      });
     }
 
     const countries = extractCountriesFromMission(mission);
