@@ -179,6 +179,17 @@ function getActiveTierTable() {
   // charged $300/$900/$2000 for the same three tiers. There is now one
   // expression, so a rate or bracket change moves display and charge together.
   const tiers = VOLUME_TIERS.map((t) => {
+    // A tier whose anchor sits above the self-serve ceiling cannot be bought.
+    // Publishing a price for it is the same defect as publishing a stale one:
+    // the ladder would advertise something checkout refuses. Render it as a
+    // custom quote instead, which is where the above-cap path already routes.
+    if (t.anchorCount > MAX_SELF_SERVE_RESPONDENTS) {
+      return {
+        id: t.id, name: t.name, respondents: t.anchorCount,
+        priceCents: null, priceUsd: null,
+        fromLabel: 'Custom', custom: true,
+      };
+    }
     const priceUsd   = respondentLadderBase(VOLUME_TIERS, t, t.anchorCount, t.ratePerResp);
     const priceCents = Math.round(priceUsd * 100);
     return {
@@ -187,7 +198,8 @@ function getActiveTierTable() {
       fromLabel: `$${formatUsd(priceUsd)}`, custom: false,
     };
   });
-  return { version: 'v1', flagActive: false, startingFromCents: tiers[0].priceCents, tiers };
+  const cheapest = tiers.find((t) => t.priceCents != null);
+  return { version: 'v1', flagActive: false, startingFromCents: cheapest ? cheapest.priceCents : null, tiers };
 }
 
 /**
