@@ -237,6 +237,42 @@ router.get('/:id', authenticate, async (req, res, next) => {
  * POST /api/missions — create a new mission draft.
  * Accepts the full mission config; computes price server-side; stores snapshot.
  */
+/**
+ * The self-serve respondent-count ceiling.
+ *
+ * This bound was enforced on POST / and POST /draft and on NEITHER of the two
+ * doors that can change what a mission is finally charged for:
+ *
+ *   PATCH /missions/:id   re-prices AND persists respondent_count, unvalidated
+ *   POST  /missions/launch  creates a PaymentIntent straight from the stored
+ *                           count, guarded only by totalCents < 50
+ *
+ * calculateMissionPrice has no ceiling of its own, so the two composed into a
+ * live money path: create at a legal count, PATCH to 50,000, launch, and the
+ * route opens a real $20,000 PaymentIntent for a mission the pipeline cannot
+ * deliver (it would be auto-failed by the 6h backstop) with a $6,000 AI spend
+ * ceiling authorised behind it. At 100,000 it is $40,000.
+ *
+ * One constant, one predicate, checked on every door that reaches Stripe.
+ */
+const MAX_SELF_SERVE_RESPONDENTS = 5000;
+
+/**
+ * Returns a 400 body when the count is unusable, or null when it is fine.
+ * `undefined` is allowed through: callers treat it as "not supplied" and fall
+ * back to their own default, which is separately bounded.
+ */
+function invalidRespondentCount(count) {
+  if (count === undefined) return null;
+  if (!Number.isInteger(count) || count < 1 || count > MAX_SELF_SERVE_RESPONDENTS) {
+    return {
+      error: 'invalid_respondent_count',
+      message: `respondentCount must be an integer between 1 and ${MAX_SELF_SERVE_RESPONDENTS}.`,
+    };
+  }
+  return null;
+}
+
 router.post('/', authenticate, async (req, res, next) => {
   try {
     const {
@@ -247,13 +283,8 @@ router.post('/', authenticate, async (req, res, next) => {
     // Pass 46 Phase 2 — create-time validation (audit P1-6). The Phase 0
     // probe proved respondentCount:0 was silently coerced to 50 and
     // priced $99; reject garbage explicitly instead.
-    if (respondentCount !== undefined
-        && (!Number.isInteger(respondentCount) || respondentCount < 1 || respondentCount > 5000)) {
-      return res.status(400).json({
-        error: 'invalid_respondent_count',
-        message: 'respondentCount must be an integer between 1 and 5000.',
-      });
-    }
+    const badCount = invalidRespondentCount(respondentCount);
+    if (badCount) return res.status(400).json(badCount);
     if (questions !== undefined && !Array.isArray(questions)) {
       return res.status(400).json({
         error: 'invalid_questions',
@@ -453,13 +484,8 @@ router.post('/draft', authenticate, async (req, res, next) => {
     } = req.body;
 
     // Pass 46 Phase 2 — same create-time validation as POST / (audit P1-6).
-    if (respondentCount !== undefined
-        && (!Number.isInteger(respondentCount) || respondentCount < 1 || respondentCount > 5000)) {
-      return res.status(400).json({
-        error: 'invalid_respondent_count',
-        message: 'respondentCount must be an integer between 1 and 5000.',
-      });
-    }
+    const badDraftCount = invalidRespondentCount(respondentCount);
+    if (badDraftCount) return res.status(400).json(badDraftCount);
     if (questions !== undefined && !Array.isArray(questions)) {
       return res.status(400).json({
         error: 'invalid_questions',
@@ -619,6 +645,14 @@ router.post('/launch', authenticate, async (req, res, next) => {
       promoCode:       promo,
     });
 
+    // Door 4. The stored count is re-checked here rather than trusted, because
+    // this route creates a PaymentIntent directly and never runs
+    // validateMissionPricing. A row written before this guard existed, or by
+    // any future writer, is refused at the till instead of being charged.
+    // Must stay ABOVE the Stripe call: the ordering is the guarantee.
+    const badStoredCount = invalidRespondentCount(mission.respondent_count);
+    if (badStoredCount) return res.status(400).json(badStoredCount);
+
     if (pricing.totalCents < 50) {
       return res.status(400).json({ error: 'Minimum payment is $0.50' });
     }
@@ -676,6 +710,12 @@ router.patch('/:id', authenticate, async (req, res, next) => {
     }
 
     // If pricing-impacting fields change, recompute cost columns server-side.
+    // Door 3. Without this, PATCH re-prices and PERSISTS an arbitrary count
+    // (see MAX_SELF_SERVE_RESPONDENTS above). Checked before the re-price, so
+    // no out-of-range count ever reaches calculateMissionPrice or the columns.
+    const badPatchCount = invalidRespondentCount(updates.respondentCount);
+    if (badPatchCount) return res.status(400).json(badPatchCount);
+
     if (updates.respondentCount || updates.questions || updates.targeting || updates.targetingConfig) {
       const { data: existing } = await supabase
         .from('missions')
