@@ -39,13 +39,17 @@ describe('the CA floor is enforced at checkout, not just computed', () => {
     expect(String(ca(1).error)).toContain(String(CA_MIN_RESPONDENTS));
   });
 
-  test('n=1 was previously charged the full flat $19 for an empty study', () => {
-    // Not an undercharge - the whole point. This asserts the price the old
-    // valid:true path let through, so the fix is visibly about the gate and
-    // not about the money.
-    expect(calculateMissionPrice({
+  test('n=1 is no longer priceable at all', () => {
+    // This assertion used to read `.total).toBe(19)` - the full flat Sniff
+    // Test price the old valid:true path let through for a 1-respondent
+    // study. Not an undercharge: the defect was selling an empty study at
+    // list price. The follow-on PR that makes a null tier throw removed the
+    // silent packagePrice fallback that produced that $19, and this is the
+    // one caller in the tree that the removal surfaced. Kept as a pin on the
+    // charge that used to be possible.
+    expect(() => calculateMissionPrice({
       goalType: 'creative_attention', respondentCount: 1, mediaType: 'image',
-    }).total).toBe(19);
+    })).toThrow(/at least 10 respondents/);
   });
 });
 

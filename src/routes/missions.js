@@ -8,6 +8,8 @@ const {
   calculateMissionPrice,
   validateMissionPricing,
   extractCountriesFromMission,
+  goalMinRespondents,
+  UnpriceableMissionError,
   MAX_SELF_SERVE_RESPONDENTS,
   SELF_SERVE_LEAD_CAPTURE,
 } = require('../utils/pricingEngine');
@@ -301,6 +303,56 @@ function invalidRespondentCount(count) {
   return null;
 }
 
+/**
+ * The per-goal respondent floor, checked on every door that can create or
+ * re-price a mission.
+ *
+ * brand_lift and creative_attention each have a minimum below which the goal
+ * has NO tier on its own ladder. POST / enforced the Creative Attention one
+ * and not the brand-lift one; /draft and PATCH enforced neither, and /launch
+ * enforced neither until it started running validateMissionPricing. A
+ * brand_lift study created or edited to n=5 was therefore stored priced at
+ * 5 x $1.80 = $9.00 and labelled "Sniff Test" - a rate off the DEFAULT ladder,
+ * which brand lift does not use.
+ *
+ * REJECT, not reprice. Repricing n=5 onto the brand-lift ladder would charge
+ * $99 for a 3-vs-2 comparison that the cell-size floor refuses to call
+ * significant. Charging four times as much for the same unusable answer is not
+ * a fix. Owner-decided.
+ *
+ * Returns a 400 body when the count is below the goal's floor, else null.
+ */
+function belowGoalMinimum(goalType, respondentCount) {
+  const min = goalMinRespondents(goalType);
+  if (min == null) return null;
+  const c = Number(respondentCount);
+  if (!Number.isFinite(c) || c >= min) return null;
+  const label = goalType === 'brand_lift' ? 'Brand Lift studies' : 'Creative Attention';
+  return {
+    error: 'min_respondents',
+    message: `${label} require at least ${min} respondents.`,
+    goal_type: goalType,
+    minRespondents: min,
+    requestedRespondents: c,
+  };
+}
+
+/**
+ * Translate the engine's UnpriceableMissionError into a clean 400 for the
+ * price-PREVIEW endpoints, which take goalType straight off the request body
+ * and so are the one caller group that can reach the throw legitimately.
+ * A preview must not 500 because a user dragged the slider below a floor.
+ */
+function unpriceableResponse(err) {
+  return {
+    error: err.code,
+    message: err.message,
+    goal_type: err.goalType,
+    minRespondents: err.minRespondents,
+    requestedRespondents: err.respondentCount,
+  };
+}
+
 router.post('/', authenticate, async (req, res, next) => {
   try {
     const {
@@ -341,14 +393,12 @@ router.post('/', authenticate, async (req, res, next) => {
 
     // Pass 25 Phase 0.3 — CA missions need >= 10 respondents. Reject early
     // with 400 so the UI can surface the message rather than silently
-    // creating a broken draft.
-    const { CA_MIN_RESPONDENTS, calculateBrandLiftMissionPrice } = require('../utils/pricingEngine');
-    if (resolvedGoal === 'creative_attention' && respCount < CA_MIN_RESPONDENTS) {
-      return res.status(400).json({
-        error: 'min_respondents',
-        message: `Creative Attention requires at least ${CA_MIN_RESPONDENTS} respondents.`,
-      });
-    }
+    // creating a broken draft. Now goal-generic: brand_lift has the same shape
+    // of floor and had no check here at all, which is how a brand_lift study
+    // at n=5 got stored priced at $9 off the default ladder's Sniff Test rate.
+    const { calculateBrandLiftMissionPrice } = require('../utils/pricingEngine');
+    const belowFloor = belowGoalMinimum(resolvedGoal, respCount);
+    if (belowFloor) return res.status(400).json(belowFloor);
 
     // Pass 27 — brand_lift markets + channels are mandatory.
     if (resolvedGoal === 'brand_lift') {
@@ -531,6 +581,13 @@ router.post('/draft', authenticate, async (req, res, next) => {
     const respCount   = respondentCount || 50;
     const finalTarget = targeting || {};
     const finalQs     = questions || [];
+
+    // Same per-goal floor as POST /. This route had none, so a below-floor
+    // brand_lift or creative_attention draft was created with a manufactured
+    // price on it, ready for /launch or checkout to charge.
+    const belowDraftFloor = belowGoalMinimum(goalType || 'research', respCount);
+    if (belowDraftFloor) return res.status(400).json(belowDraftFloor);
+
     // Pass 44 P0 — object-signature call (see POST /missions above).
     const pricing     = calculateMissionPrice({
       respondentCount: respCount,
@@ -633,6 +690,12 @@ router.post('/calculate-price', optionalAuthenticate, async (req, res, next) => 
     });
     res.json(pricing);
   } catch (err) {
+    // A preview takes goalType straight off the body, so it is the one caller
+    // that can legitimately ask for a below-floor combination. Answer 400 with
+    // the floor, not 500.
+    if (err instanceof UnpriceableMissionError) {
+      return res.status(err.statusCode).json(unpriceableResponse(err));
+    }
     next(err);
   }
 });
@@ -844,6 +907,15 @@ router.patch('/:id', authenticate, async (req, res, next) => {
       const respCount = updates.respondentCount || existing?.respondent_count || 50;
       const finalTarget = updates.targeting || updates.targetingConfig || existing?.targeting || {};
       const finalQs = updates.questions || existing?.questions || [];
+
+      // Door 3 for the per-goal floor. PATCH re-prices AND persists, so
+      // without this a legal brand_lift mission could be edited down to n=5
+      // and stored at $9 on the default ladder - the same bypass shape the
+      // respondent-count ceiling closed. Checked BEFORE the re-price, so no
+      // below-floor count reaches calculateMissionPrice or the columns.
+      const patchGoal = updates.goalType || existing?.goal_type || 'validate';
+      const belowPatchFloor = belowGoalMinimum(patchGoal, respCount);
+      if (belowPatchFloor) return res.status(400).json(belowPatchFloor);
       // Pass 44 P0 — object-signature call; goal_type added to the
       // select so the engine routes to the correct pricing ladder.
       const pricing = calculateMissionPrice({
@@ -1043,6 +1115,12 @@ router.post('/pricing/calculate', optionalAuthenticate, async (req, res, next) =
     });
     res.json(pricing);
   } catch (err) {
+    // A preview takes goalType straight off the body, so it is the one caller
+    // that can legitimately ask for a below-floor combination. Answer 400 with
+    // the floor, not 500.
+    if (err instanceof UnpriceableMissionError) {
+      return res.status(err.statusCode).json(unpriceableResponse(err));
+    }
     next(err);
   }
 });
