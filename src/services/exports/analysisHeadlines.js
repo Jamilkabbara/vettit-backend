@@ -56,9 +56,26 @@ function num(v, dp = 2) {
   return String(Math.round(Number(v) * f) / f);
 }
 
+/**
+ * Pass 51 — a REFUSED test is not a failed test.
+ *
+ * A null significance block used to fall through to 'directional', which reads
+ * as "we ran the test and it came back weak". After the brandLift.js minimum
+ * cell-size floor, null means the test was never run, and the two claims are
+ * not interchangeable — absent evidence is not evidence of absence. Each
+ * refusal reason (set alongside significance: null by funnelEntry) gets its own
+ * wording. 'directional' is preserved for its original meaning: tested, below
+ * both thresholds.
+ */
+const SIG_REFUSAL_LABELS = {
+  below_min_cell_n: 'not tested — cell below the minimum base',
+  expected_count_below_5: 'not tested — too few events to test',
+  empty_cell: 'not tested — empty cell',
+};
+
 /** Significance label from a brand-lift/two-proportion significance block. */
-function sigLabel(sig) {
-  if (!sig) return 'directional';
+function sigLabel(sig, reason) {
+  if (!sig) return SIG_REFUSAL_LABELS[reason] || 'not tested';
   if (sig.sig95) return 'significant at 95%';
   if (sig.sig90) return 'significant at 90%';
   return 'directional';
@@ -126,16 +143,26 @@ function analysisHeadlines(analysis) {
             const exPct = f.exposed?.rate != null ? `${Math.round(f.exposed.rate * 100)}%` : '?';
             const coPct = f.control?.rate != null ? `${Math.round(f.control.rate * 100)}%` : '?';
             const liftPts = `${Math.round(f.lift_abs * 100)} pts`;
-            push(stage, `exposed ${exPct} vs control ${coPct} (+${liftPts}, ${sigLabel(f.significance)})`);
+            push(stage, `exposed ${exPct} vs control ${coPct} (+${liftPts}, ${sigLabel(f.significance, f.reason)})`);
           } else if (f.type === 'mean') {
             const exM = f.exposed?.mean != null ? (num(f.exposed.mean) ?? '?') : '?';
             const coM = f.control?.mean != null ? (num(f.control.mean) ?? '?') : '?';
-            push(stage, `exposed ${exM} vs control ${coM} (+${num(f.lift_abs) ?? f.lift_abs}, ${sigLabel(f.significance)})`);
+            push(stage, `exposed ${exM} vs control ${coM} (+${num(f.lift_abs) ?? f.lift_abs}, ${sigLabel(f.significance, f.reason)})`);
           }
         }
         if (analysis.summary) {
           push('Funnel stages lifted', analysis.summary.stages_lifted);
           push('Stages significant at 95%', analysis.summary.stages_sig95);
+          // Pass 51 — without this line "0 significant" out of 6 stages is
+          // indistinguishable from "6 stages we were never able to test".
+          if (analysis.summary.stages_untested) {
+            const floor = analysis.min_cell_n;
+            push(
+              'Stages not tested (base too small)',
+              floor ? `${analysis.summary.stages_untested} (needs n>=${floor} per cell)`
+                : analysis.summary.stages_untested,
+            );
+          }
         }
         // Cell base sizes are context, not the headline — surface them last.
         const ex = analysis.cells?.exposed?.n;
@@ -362,7 +389,7 @@ function brandLiftStageTable(analysis) {
         exposed: f.exposed?.rate != null ? `${Math.round(f.exposed.rate * 100)}%` : 'n/a',
         control: f.control?.rate != null ? `${Math.round(f.control.rate * 100)}%` : 'n/a',
         lift: `+${Math.round(f.lift_abs * 100)} pts`,
-        significance: sigLabel(f.significance),
+        significance: sigLabel(f.significance, f.reason),
         n: `${f.exposed?.n ?? '?'} / ${f.control?.n ?? '?'}`,
       });
     } else if (f.type === 'mean') {
@@ -371,7 +398,7 @@ function brandLiftStageTable(analysis) {
         exposed: f.exposed?.mean != null ? (num(f.exposed.mean) ?? 'n/a') : 'n/a',
         control: f.control?.mean != null ? (num(f.control.mean) ?? 'n/a') : 'n/a',
         lift: `+${num(f.lift_abs) ?? f.lift_abs}`,
-        significance: sigLabel(f.significance),
+        significance: sigLabel(f.significance, f.reason),
         n: `${f.exposed?.n ?? '?'} / ${f.control?.n ?? '?'}`,
       });
     }
