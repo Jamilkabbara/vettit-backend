@@ -67,12 +67,21 @@ describe('public price display equals the charged price', () => {
     const { tiers } = getActiveTierTable();
     expect(tiers.length).toBe(VOLUME_TIERS.length);
     expect(tiers.length).toBeGreaterThan(0);
+    let priced = 0;
     for (const published of tiers) {
+      if (published.custom) {
+        // Above the ceiling: no price may be published at all.
+        expect({ id: published.id, priceUsd: published.priceUsd, label: published.fromLabel })
+          .toEqual({ id: published.id, priceUsd: null, label: 'Custom' });
+        continue;
+      }
+      priced += 1;
       const charged = baseFor('validate', published.respondents);
       expect({ id: published.id, published: published.priceUsd })
         .toEqual({ id: published.id, published: charged });
       expect(published.priceCents).toBe(Math.round(charged * 100));
     }
+    expect(priced).toBeGreaterThan(0); // no vacuous pass if every tier went custom
   });
 
   test('the three tiers that actually drifted publish the corrected figures', () => {
@@ -81,9 +90,12 @@ describe('public price display equals the charged price', () => {
     const byId = Object.fromEntries(getActiveTierTable().tiers.map((t) => [t.id, t]));
     expect(byId.deep_dive.priceUsd).toBe(300);
     expect(byId.scale.priceUsd).toBe(900);
-    expect(byId.enterprise.priceUsd).toBe(2000);
     expect(byId.deep_dive.fromLabel).toBe('$300');
-    expect(byId.scale.fromLabel).toBe('$900');
-    expect(byId.enterprise.fromLabel).toBe('$2,000'); // rendered verbatim into /terms
+    expect(byId.scale.fromLabel).toBe('$900'); // rendered verbatim into /terms
+    // Enterprise anchors at 5,000, above the self-serve ceiling, so it no
+    // longer carries a price. $1,990 was stale; $2,000 was correct but
+    // unsellable. "Custom" is the only honest third option.
+    expect(byId.enterprise.custom).toBe(true);
+    expect(byId.enterprise.priceUsd).toBeNull();
   });
 });

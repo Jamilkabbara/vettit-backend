@@ -21,7 +21,13 @@ const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const stripeService = require('../services/stripe');
 const supabase = require('../db/supabase');
-const { calculateMissionPrice, extractCountriesFromMission, validateMissionPricing } = require('../utils/pricingEngine');
+const {
+  calculateMissionPrice,
+  extractCountriesFromMission,
+  validateMissionPricing,
+  MAX_SELF_SERVE_RESPONDENTS,
+  SELF_SERVE_LEAD_CAPTURE,
+} = require('../utils/pricingEngine');
 const { runMission } = require('../jobs/runMission');
 const { updateMission } = require('../db/missionSchema');
 const { logPaymentError, shapeStripeError } = require('../services/paymentErrors');
@@ -155,10 +161,17 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
     // self-serve price (base $0 under PRICING_V2). validateMissionPricing above
     // already rejects it, but this never lets a $0-base charge (or a surcharge-
     // only charge on a $0 base) reach Stripe even if that gate ever changes.
+    //
+    // customQuote is ALSO set (flag off) for any mission above
+    // MAX_SELF_SERVE_RESPONDENTS, so this is the money-side backstop for a
+    // draft that was created before the cap existed. The response carries the
+    // lead-capture destination so the client has somewhere to send the buyer.
     if (pricing.customQuote) {
       return res.status(400).json({
         error: 'This study size requires a custom quote, please contact sales.',
         reason: 'enterprise_custom_quote',
+        maxSelfServeRespondents: MAX_SELF_SERVE_RESPONDENTS,
+        leadCapture: SELF_SERVE_LEAD_CAPTURE,
       });
     }
 

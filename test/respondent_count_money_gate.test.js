@@ -87,8 +87,9 @@ describe('door 3 — PATCH /missions/:id cannot persist an out-of-range count', 
   it('refuses 50,000 and writes nothing', async () => {
     const res = await request(app).patch('/api/missions/m-1').send({ respondentCount: 50000 });
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('invalid_respondent_count');
-    expect(mockLastUpdate).toBeNull(); // never reached persistence
+    expect(res.body.error).toBe('respondent_count_above_self_serve_cap');
+    expect(res.body.leadCapture).toBeTruthy();          // routes to "talk to us"
+    expect(mockLastUpdate).toBeNull();                  // never reached persistence
     assertNoStripeCall();
   });
 
@@ -116,7 +117,7 @@ describe('door 4 — POST /missions/launch re-checks the STORED count before Str
     mockStoredCount = 50000; // a row written before the guard existed
     const res = await request(app).post('/api/missions/launch').send({ missionId: 'm-1' });
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('invalid_respondent_count');
+    expect(res.body.error).toBe('respondent_count_above_self_serve_cap');
     assertNoStripeCall();
   });
 
@@ -128,12 +129,44 @@ describe('door 4 — POST /missions/launch re-checks the STORED count before Str
   });
 });
 
+describe('malformed and above-cap stay distinct on every door', () => {
+  const doors = [
+    ['POST /', () => request(app).post('/api/missions').send({ goalType: 'validate', brief: 'b', respondentCount: 0 })],
+    ['POST /draft', () => request(app).post('/api/missions/draft').send({ goalType: 'validate', brief: 'b', respondentCount: 1.5 })],
+    ['PATCH', () => request(app).patch('/api/missions/m-1').send({ respondentCount: -5 })],
+  ];
+  it.each(doors)('%s reports malformed input as invalid_respondent_count', async (_name, call) => {
+    const res = await call();
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_respondent_count');
+    expect(res.body.leadCapture).toBeUndefined();  // NOT a sales lead
+    assertNoStripeCall();
+  });
+
+  it('a count just over the cap routes to lead capture, not validation', async () => {
+    const res = await request(app).post('/api/missions')
+      .send({ goalType: 'validate', brief: 'b', respondentCount: 1251 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('respondent_count_above_self_serve_cap');
+    expect(res.body.maxSelfServeRespondents).toBe(1250);
+    expect(res.body.requestedRespondents).toBe(1251);
+    expect(res.body.leadCapture).toBeTruthy();
+    assertNoStripeCall();
+  });
+
+  it('the cap itself is still sellable', async () => {
+    const res = await request(app).post('/api/missions')
+      .send({ goalType: 'validate', brief: 'b', respondentCount: 1250 });
+    expect(res.status).toBeLessThan(400);
+  });
+});
+
 describe('doors 1 and 2 keep their existing guard', () => {
   it('POST / refuses 50,000', async () => {
     const res = await request(app).post('/api/missions')
       .send({ goalType: 'validate', brief: 'b', respondentCount: 50000 });
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('invalid_respondent_count');
+    expect(res.body.error).toBe('respondent_count_above_self_serve_cap');
     assertNoStripeCall();
   });
 
@@ -141,7 +174,7 @@ describe('doors 1 and 2 keep their existing guard', () => {
     const res = await request(app).post('/api/missions/draft')
       .send({ goalType: 'validate', brief: 'b', respondentCount: 50000 });
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('invalid_respondent_count');
+    expect(res.body.error).toBe('respondent_count_above_self_serve_cap');
     assertNoStripeCall();
   });
 });

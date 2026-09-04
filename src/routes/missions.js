@@ -4,7 +4,30 @@ const router = express.Router();
 const { authenticate, optionalAuthenticate } = require('../middleware/auth');
 const supabase = require('../db/supabase');
 const fetchAllResponses = require('../db/fetchAllResponses');
-const { calculateMissionPrice, extractCountriesFromMission } = require('../utils/pricingEngine');
+const {
+  calculateMissionPrice,
+  extractCountriesFromMission,
+  MAX_SELF_SERVE_RESPONDENTS,
+  SELF_SERVE_LEAD_CAPTURE,
+} = require('../utils/pricingEngine');
+
+/**
+ * Above the self-serve ceiling we CAPTURE THE LEAD, we do not sell. The 400
+ * carries the destination (POST /api/crm/lead, public + rate-limited) and the
+ * cap itself, so the client can render a real "talk to us" affordance instead
+ * of a dead end. See MAX_SELF_SERVE_RESPONDENTS in utils/pricingEngine.js for
+ * how the number was derived.
+ */
+function aboveSelfServeCapError(respondentCount) {
+  return {
+    error: 'respondent_count_above_self_serve_cap',
+    message: `Self-serve studies run up to ${MAX_SELF_SERVE_RESPONDENTS.toLocaleString('en-US')} respondents. `
+           + `${Number(respondentCount).toLocaleString('en-US')} is a managed engagement. Tell us about it and we will scope it with you.`,
+    maxSelfServeRespondents: MAX_SELF_SERVE_RESPONDENTS,
+    requestedRespondents: Number(respondentCount),
+    leadCapture: SELF_SERVE_LEAD_CAPTURE,
+  };
+}
 const { runMission } = require('../jobs/runMission');
 const { sanitizeMissionPatch, updateMission } = require('../db/missionSchema');
 const { isComingSoon, notAvailableError } = require('../config/comingSoon');
@@ -255,7 +278,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
  *
  * One constant, one predicate, checked on every door that reaches Stripe.
  */
-const MAX_SELF_SERVE_RESPONDENTS = 5000;
+
 
 /**
  * Returns a 400 body when the count is unusable, or null when it is fine.
@@ -264,12 +287,16 @@ const MAX_SELF_SERVE_RESPONDENTS = 5000;
  */
 function invalidRespondentCount(count) {
   if (count === undefined) return null;
-  if (!Number.isInteger(count) || count < 1 || count > MAX_SELF_SERVE_RESPONDENTS) {
+  if (!Number.isInteger(count) || count < 1) {
     return {
       error: 'invalid_respondent_count',
       message: `respondentCount must be an integer between 1 and ${MAX_SELF_SERVE_RESPONDENTS}.`,
     };
   }
+  // Above the ceiling is NOT a validation failure - it is a legitimate request
+  // we cannot deliver self-serve. Distinct error so the client branches to lead
+  // capture instead of showing a form error for asking for too much.
+  if (count > MAX_SELF_SERVE_RESPONDENTS) return aboveSelfServeCapError(count);
   return null;
 }
 
@@ -636,12 +663,29 @@ router.post('/launch', authenticate, async (req, res, next) => {
       if (data) promo = data;
     }
 
+    // ── Self-serve ceiling, BEFORE any Stripe object exists ─────────────────
+    //
+    // This route is a second money path: it creates a PaymentIntent directly
+    // rather than going through /payments/create-checkout-session, so it does
+    // NOT inherit that route's validateMissionPricing + customQuote guards. A
+    // cap enforced only at mission-create is bypassable here via
+    //   create at 1,250  ->  PATCH respondentCount to 50,000  ->  POST /launch
+    // and the reject would then land AFTER a live PaymentIntent exists, which
+    // is strictly worse than no cap. Gate first, charge second.
+    if (mission.respondent_count > MAX_SELF_SERVE_RESPONDENTS) {
+      return res.status(400).json(aboveSelfServeCapError(mission.respondent_count));
+    }
+
     const countries = extractCountriesFromMission(mission);
     const pricing = calculateMissionPrice({
       respondentCount: mission.respondent_count,
       targeting:       mission.targeting || {},
       questionCount:   (mission.questions || []).length,
       countries,
+      // Pass the goal so the engine picks the right ladder, matching what
+      // /payments/create-checkout-session already does.
+      goalType:        mission.goal_type,
+      mediaType:       mission.media_type,
       promoCode:       promo,
     });
 
@@ -650,8 +694,24 @@ router.post('/launch', authenticate, async (req, res, next) => {
     // validateMissionPricing. A row written before this guard existed, or by
     // any future writer, is refused at the till instead of being charged.
     // Must stay ABOVE the Stripe call: the ordering is the guarantee.
+    // Under V1 (live) this is the guard that actually fires, and since
+    // invalidRespondentCount now returns the above-cap lead-capture error, a
+    // stored count over the ceiling routes to "talk to us" rather than a 400.
     const badStoredCount = invalidRespondentCount(mission.respondent_count);
     if (badStoredCount) return res.status(400).json(badStoredCount);
+
+    // Defence in depth for the V2 flag path, which prices by bracket rather
+    // than by count: the same fail-closed customQuote guard the checkout route
+    // runs. Never let a non-self-serve mission reach Stripe from here. Both
+    // guards are kept deliberately - they fire under different pricing modes.
+    if (pricing.customQuote) {
+      return res.status(400).json({
+        error: 'This study size requires a custom quote, please contact sales.',
+        reason: 'enterprise_custom_quote',
+        maxSelfServeRespondents: MAX_SELF_SERVE_RESPONDENTS,
+        leadCapture: SELF_SERVE_LEAD_CAPTURE,
+      });
+    }
 
     if (pricing.totalCents < 50) {
       return res.status(400).json({ error: 'Minimum payment is $0.50' });
@@ -707,6 +767,22 @@ router.patch('/:id', authenticate, async (req, res, next) => {
           message: 'Cannot edit questions after responses generated; re-run mission to regenerate.',
         });
       }
+    }
+
+    // The cap has to hold on the EDIT path too. POST / and POST /draft reject
+    // above-cap counts at create time, but this route re-prices and persists
+    // respondent_count without re-validating it — so without this gate a
+    // mission created at 1,250 could be raised to any size afterwards and then
+    // taken to either money path.
+    if (updates.respondentCount !== undefined
+        && (!Number.isInteger(updates.respondentCount) || updates.respondentCount < 1)) {
+      return res.status(400).json({
+        error: 'invalid_respondent_count',
+        message: `respondentCount must be an integer between 1 and ${MAX_SELF_SERVE_RESPONDENTS}.`,
+      });
+    }
+    if (updates.respondentCount !== undefined && updates.respondentCount > MAX_SELF_SERVE_RESPONDENTS) {
+      return res.status(400).json(aboveSelfServeCapError(updates.respondentCount));
     }
 
     // If pricing-impacting fields change, recompute cost columns server-side.
