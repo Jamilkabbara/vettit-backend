@@ -14,6 +14,7 @@ const {
   calculateMissionPrice,
   VOLUME_TIERS,
   BRAND_LIFT_TIERS,
+  BRAND_LIFT_MIN_RESPONDENTS,
   CREATIVE_ATTENTION_TIERS,
   PRICING_V2_ACTIVE,
 } = require('../src/utils/pricingEngine');
@@ -58,7 +59,11 @@ describe('V1 price is monotonic non-decreasing in respondent count', () => {
   });
 
   it('brand_lift ladder: price(n+1) >= price(n) across every boundary', () => {
-    const counts = sweepCounts(BRAND_LIFT_TIERS, 50, 5000, 1);
+    // Sweep from the FLOOR. Below BRAND_LIFT_MIN_RESPONDENTS a brand_lift
+    // mission has no price at all - calculateMissionPrice throws rather than
+    // silently pricing it off the default ladder - so monotonicity is
+    // undefined below the floor, not violated.
+    const counts = sweepCounts(BRAND_LIFT_TIERS, BRAND_LIFT_MIN_RESPONDENTS, 5000, 1);
     let prev = -Infinity;
     let prevN = null;
     for (const n of counts) {
@@ -132,12 +137,17 @@ describe('the specific reported arbitrage windows are closed', () => {
   });
 
   it('every brand_lift boundary: maxCount+1 is never cheaper than maxCount', () => {
+    let checked = 0;
     for (const t of BRAND_LIFT_TIERS) {
       if (!Number.isFinite(t.maxCount)) continue;
+      // Pulse's maxCount (50) now sits below the floor and is unpriceable.
+      if (t.maxCount < BRAND_LIFT_MIN_RESPONDENTS) continue;
       const at = baseFor('brand_lift', t.maxCount);
       const past = baseFor('brand_lift', t.maxCount + 1);
       expect(past).toBeGreaterThanOrEqual(at);
+      checked += 1;
     }
+    expect(checked).toBeGreaterThan(0); // no vacuous pass if every tier is skipped
   });
 });
 
@@ -152,8 +162,14 @@ describe('the fix does not raise prices at the tier anchor / preset counts', () 
   });
 
   it.each([
-    [50, 99], [200, 300], [500, 600], [2000, 1500],
+    [200, 300], [500, 600], [2000, 1500],
   ])('brand_lift n=%i → $%s (unchanged)', (n, expected) => {
     expect(baseFor('brand_lift', n)).toBe(expected);
+  });
+
+  it('brand_lift n=50 is no longer priced at all (floor moved to 100)', () => {
+    // Was [50, 99]. Pulse's anchor is below the floor, so the honest assertion
+    // is that it REFUSES, not that it costs $99.
+    expect(() => baseFor('brand_lift', 50)).toThrow(/at least 100 respondents/);
   });
 });

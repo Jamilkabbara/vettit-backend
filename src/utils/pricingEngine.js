@@ -97,16 +97,52 @@ const VOLUME_TIERS = [
  * bare `c < 50` in validateMissionPricing. Six copies of a number nobody could
  * change in one edit.
  *
- * NOTE FOR THE OWNER - this number is not yet reconciled with the product.
- * src/lib/sampleSizeMinimums.ts in the frontend tells users brand lift
- * "typically requires >= 100", and the PRICING_V2 comment block in this file
- * says >= 100 as well. Moving this constant to 100 is now a ONE-LINE change,
- * but it is a product decision, not a bug fix, so it is deliberately NOT made
- * here: at 100 the Pulse tier (anchor 50, $99) becomes unbuyable for
- * brand_lift and the cheapest brand-lift study becomes $150 on Tracker. See
- * the PR body for the power analysis behind the recommendation to move it.
+ * RECONCILED AT 100 (owner decision). The product told users two different
+ * numbers: this constant said 50, while src/lib/sampleSizeMinimums.ts in the
+ * frontend and the PRICING_V2 block below both say >= 100. 100 is now the
+ * single number.
+ *
+ * The power analysis, because the number alone is misleading. Brand lift is a
+ * two-proportion comparison across an exposed/control split, so n splits into
+ * two cells and the minimum detectable effect at 80% power, two-sided
+ * alpha 0.05, worst case p=0.5, is:
+ *
+ *     MDE = (z_0.975 + z_0.80) * sqrt(2*p*(1-p) / n_per_cell)
+ *         = 2.8016 * sqrt(0.5 / n_per_cell)
+ *
+ *     n=50   (25/cell)  ->  39.6 pp
+ *     n=100  (50/cell)  ->  28.0 pp   <- this floor
+ *     n=800  (400/cell) ->   9.9 pp
+ *     n=1250 (625/cell) ->   7.9 pp   <- the self-serve ceiling
+ *
+ * Real brand-lift effects run 2-10 pp. Detecting 10 pp needs n=786; 5 pp needs
+ * n=3,140. So NEITHER 50 nor 100 confers adequate power, and no floor can fix
+ * that - even at the 1,250 ceiling the best attainable MDE is 7.9 pp. 100 is
+ * the less indefensible number and the one already published to users; the
+ * honest move is to state the MDE alongside the result rather than let a floor
+ * imply a validity it does not deliver. brandLiftMDE() below does that.
+ *
+ * Accepted cost: at 100 the Pulse tier (anchor 50, $99) is unbuyable for
+ * brand_lift, and the cheapest brand-lift study becomes $150 (100 x $1.50 on
+ * Tracker). A $99 study that cannot support its own methodology is not worth
+ * selling.
  */
-const BRAND_LIFT_MIN_RESPONDENTS = 50;
+const BRAND_LIFT_MIN_RESPONDENTS = 100;
+
+/**
+ * Minimum detectable effect, in percentage points, for a brand-lift study of
+ * `n` total respondents split evenly across exposed and control. Surfaced on
+ * the results page and in exports so the number carries its own limit.
+ * Returns null for a non-positive n.
+ */
+function brandLiftMDE(n) {
+  const total = Number(n);
+  if (!Number.isFinite(total) || total <= 0) return null;
+  const perCell = total / 2;
+  if (perCell <= 0) return null;
+  // 2.8016 = z(0.975) + z(0.80); p = 0.5 is the worst case (max variance).
+  return Math.round(2.801585 * Math.sqrt(0.5 / perCell) * 1000) / 10;
+}
 
 /** Brand Lift — minimum statistical sample sizes (no Sniff Test / Validate). */
 const BRAND_LIFT_TIERS = [
@@ -839,7 +875,7 @@ function validateMissionPricing({ goalType, respondentCount, mediaType }) {
     if (c < BRAND_LIFT_MIN_RESPONDENTS) {
       return {
         valid: false,
-        error: `brand_lift missions require at least ${BRAND_LIFT_MIN_RESPONDENTS} respondents (Pulse tier minimum)`,
+        error: `brand_lift missions require at least ${BRAND_LIFT_MIN_RESPONDENTS} respondents. Below that the exposed/control split cannot detect a realistic lift.`,
       };
     }
     return { valid: true, tier: resolveTier({ goalType, respondentCount: c }) };
@@ -924,6 +960,7 @@ module.exports = {
   CREATIVE_ATTENTION_TIERS,
   CA_MIN_RESPONDENTS,
   BRAND_LIFT_MIN_RESPONDENTS,
+  brandLiftMDE,
   goalMinRespondents,
   UnpriceableMissionError,
   // Pricing V2 (flag-gated single canonical ladder)

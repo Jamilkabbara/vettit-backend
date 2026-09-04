@@ -143,7 +143,9 @@ describe('no brand_lift or CA price can carry a tier from another ladder', () =>
   const blIds = new Set(BRAND_LIFT_TIERS.map(t => t.id));
   const caIds = new Set(CREATIVE_ATTENTION_TIERS.map(t => t.id));
 
-  test.each([50, 99, 100, 200, 300, 500, 800, 1250])('brand_lift n=%i lands on a brand-lift tier', (n) => {
+  // 50 and 99 dropped: below the floor there is no tier to land on, which the
+  // refusal tests above cover. These are the counts that ARE buyable.
+  test.each([100, 200, 300, 500, 800, 1250])('brand_lift n=%i lands on a brand-lift tier', (n) => {
     const p = calculateMissionPrice({ goalType: 'brand_lift', respondentCount: n });
     expect(blIds.has(p.volumeTier.id)).toBe(true);
     expect(BRAND_LIFT_TIERS.find(t => t.id === p.volumeTier.id).anchorCount).toBe(p.volumeTier.anchorCount);
@@ -242,7 +244,7 @@ describe('positive control - legal missions are unaffected, at unchanged prices'
     ['validate',   10,  35],
     ['validate',   50,  99],
     ['validate',   250, 300],
-    ['brand_lift', 50,  99],
+    ['brand_lift', 100, 150],   // was [50, 99]; the floor moved and Pulse is unbuyable
     ['brand_lift', 200, 300],
     ['brand_lift', 500, 600],
   ])('%s n=%i still prices at $%i', (goalType, n, expected) => {
