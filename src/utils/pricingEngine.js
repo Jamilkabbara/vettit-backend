@@ -686,8 +686,11 @@ function round2(val) {
  * Attention asset (the original 23.61 forensic).
  *
  * Validation rules:
- *   - creative_attention REQUIRES mediaType in {image,video,bundle,series}.
- *     respondentCount is ignored.
+ *   - creative_attention REQUIRES mediaType in {image,video,bundle,series}
+ *     AND respondentCount >= CA_MIN_RESPONDENTS. (This comment used to say
+ *     respondentCount is ignored - it was stale from before Pass 25 Phase 0.3
+ *     moved CA onto a respondent ladder, and it is what made the missing
+ *     argument below look intentional.)
  *   - brand_lift REQUIRES respondentCount >= 50 (the Pulse minimum).
  *   - validate / naming_messaging / marketing accept any
  *     respondentCount in [5, 5000].
@@ -735,7 +738,21 @@ function validateMissionPricing({ goalType, respondentCount, mediaType }) {
         error: 'creative_attention missions require media_type in {image, video, bundle, series}',
       };
     }
-    const tier = resolveTier({ goalType, mediaType });
+    const c = Number(respondentCount) || 0;
+    // resolveTier needs the COUNT. Without it the argument arrives as
+    // undefined, coerces to 0, trips 0 < CA_MIN_RESPONDENTS and returns null -
+    // the documented "invalid combo" signal - for EVERY creative_attention
+    // mission, legal ones included. The old code then returned valid: true
+    // with that null attached, so two things were wrong at once: the CA floor
+    // of 10 was never enforced at checkout, and no caller ever received a real
+    // CA tier from this function.
+    const tier = resolveTier({ goalType, respondentCount: c, mediaType });
+    if (!tier) {
+      return {
+        valid: false,
+        error: `creative_attention missions require at least ${CA_MIN_RESPONDENTS} respondents`,
+      };
+    }
     return { valid: true, tier };
   }
   if (goalType === 'brand_lift') {
