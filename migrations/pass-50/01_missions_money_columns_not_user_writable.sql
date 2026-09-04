@@ -1,3 +1,11 @@
+-- ⚠️ SUPERSEDED BY 02. DO NOT RUN THIS FILE.
+--
+-- This migration is a NO-OP. It was applied to production and reported
+-- success while changing nothing: `authenticated` holds UPDATE at the TABLE
+-- level, and PostgreSQL does not allow a column-scoped REVOKE to carve a
+-- column out of a table-wide grant. It does not error, it simply has no
+-- effect. Kept for the record; 02 is the working form.
+--
 -- Pass 50 — the money and lifecycle columns on `missions` must not be
 -- user-writable.
 --
