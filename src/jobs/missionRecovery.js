@@ -556,7 +556,73 @@ async function reconcileOrphanPendingPayment(m) {
     return;
   }
 
+  // ─── PI-to-mission binding ────────────────────────────────────────────────
+  // `pi.status === 'succeeded'` alone is NOT proof that THIS mission was paid
+  // for. `latest_payment_intent_id` lives on the mission row, and the RLS
+  // policy on `missions` is ownership-only with no column restriction, so a
+  // signed-in user can write any value they like into it. Without the checks
+  // below, a user who has ever completed one real payment can take that
+  // succeeded PI id, paste it onto a brand-new expensive mission, set the row
+  // to 'pending_payment', and let this job flip it to paid and run it. The
+  // same PI is reusable indefinitely - nothing marks one as consumed.
+  //
+  // Every PI this app creates carries metadata.missionId (services/stripe.js),
+  // and the webhook path already keys off it (routes/webhooks.js:216,325).
+  // This job simply was not using it.
+  //
+  // A mismatch is a SIGNAL, not noise: alert rather than silently skipping.
+  const piMissionId = pi.metadata && pi.metadata.missionId;
+  if (piMissionId && String(piMissionId) !== String(m.id)) {
+    await alertAdmin('pi_mission_id_mismatch', m.id, {
+      user_id:         m.user_id,
+      payment_intent:  pi.id,
+      pi_mission_id:   String(piMissionId),
+      reason:          'latest_payment_intent_id points at a PI created for a DIFFERENT mission',
+      action_required: 'Treat as attempted payment reuse until proven otherwise. Do not recover this row automatically.',
+    });
+    logger.error('[cron] job2 REFUSED: PI belongs to another mission', {
+      missionId: m.id, pi: pi.id, piMissionId: String(piMissionId),
+    });
+    return;
+  }
+
+  // A PI with no metadata.missionId predates the metadata (or was not created
+  // by us). Refuse to auto-recover on it; alert for manual reconciliation.
+  if (!piMissionId) {
+    if (!isOldEnoughToReset) return;
+    await alertAdmin('pi_missing_mission_metadata', m.id, {
+      user_id:         m.user_id,
+      payment_intent:  pi.id,
+      reason:          'PI carries no metadata.missionId, so it cannot be bound to this mission',
+      action_required: 'Manual Stripe Dashboard reconciliation before recovering.',
+    });
+    logger.warn('[cron] job2 alert-only (PI has no missionId metadata)', { missionId: m.id, pi: pi.id });
+    return;
+  }
+
   if (pi.status === 'succeeded') {
+    // The captured amount must actually cover what this mission costs. A bound
+    // but under-paying PI is still not payment for THIS mission.
+    const capturedCents = Number.isFinite(pi.amount_received) ? pi.amount_received
+      : (Number.isFinite(pi.amount) ? pi.amount : null);
+    const owedCents = Number.isFinite(Number(m.total_price_usd))
+      ? Math.round(Number(m.total_price_usd) * 100)
+      : null;
+    if (owedCents != null && capturedCents != null && capturedCents < owedCents) {
+      await alertAdmin('pi_amount_below_mission_price', m.id, {
+        user_id:         m.user_id,
+        payment_intent:  pi.id,
+        captured_cents:  capturedCents,
+        owed_cents:      owedCents,
+        reason:          'succeeded PI is bound to this mission but captured less than the mission price',
+        action_required: 'Reconcile manually. Do not recover automatically.',
+      });
+      logger.error('[cron] job2 REFUSED: PI captured less than mission price', {
+        missionId: m.id, pi: pi.id, capturedCents, owedCents,
+      });
+      return;
+    }
+
     // Webhook miss — recover.
     const piPaidAt = pi.created
       ? new Date(pi.created * 1000).toISOString()
