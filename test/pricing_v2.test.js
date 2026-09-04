@@ -26,9 +26,18 @@ describe('PRICING_V2 OFF (default) — V1 charge is unchanged', () => {
     expect(p.customQuote).toBe(false);
   });
 
-  test('brand_lift keeps its V1 ladder when the flag is off (Pulse 50 = $99)', () => {
-    const p = calculateMissionPrice({ respondentCount: 50, goalType: 'brand_lift' });
-    expect(p.total).toBeCloseTo(99, 2);
+  test('brand_lift keeps its V1 ladder when the flag is off (Tracker 200 = $300)', () => {
+    // Was Pulse 50 = $99. The brand_lift floor moved to 100, so Pulse's anchor
+    // is no longer buyable; the V1-ladder assertion moves to the cheapest
+    // count that IS buyable. What is being pinned here is unchanged: with the
+    // flag off, brand_lift prices off BRAND_LIFT_TIERS, not the default ladder.
+    const p = calculateMissionPrice({ respondentCount: 200, goalType: 'brand_lift' });
+    expect(p.total).toBeCloseTo(300, 2);
+  });
+
+  test('brand_lift below the floor refuses rather than pricing off another ladder', () => {
+    expect(() => calculateMissionPrice({ respondentCount: 50, goalType: 'brand_lift' }))
+      .toThrow(/at least 100 respondents/);
   });
 
   test('getActiveTierTable reports v1 and projects VOLUME_TIERS', () => {

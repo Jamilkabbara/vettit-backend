@@ -89,12 +89,67 @@ const VOLUME_TIERS = [
   { id: 'enterprise', name: 'Enterprise', anchorCount: 5000, maxCount: Infinity, ratePerResp: 0.40, packagePrice: 2000 },
 ];
 
+/**
+ * The brand-lift respondent floor, in ONE place.
+ *
+ * It used to be written four times as a literal 50 on the tiers below, once
+ * more as `ladder[0].minRespondents || 50` in resolveTier, and once more as a
+ * bare `c < 50` in validateMissionPricing. Six copies of a number nobody could
+ * change in one edit.
+ *
+ * RECONCILED AT 100 (owner decision). The product told users two different
+ * numbers: this constant said 50, while src/lib/sampleSizeMinimums.ts in the
+ * frontend and the PRICING_V2 block below both say >= 100. 100 is now the
+ * single number.
+ *
+ * The power analysis, because the number alone is misleading. Brand lift is a
+ * two-proportion comparison across an exposed/control split, so n splits into
+ * two cells and the minimum detectable effect at 80% power, two-sided
+ * alpha 0.05, worst case p=0.5, is:
+ *
+ *     MDE = (z_0.975 + z_0.80) * sqrt(2*p*(1-p) / n_per_cell)
+ *         = 2.8016 * sqrt(0.5 / n_per_cell)
+ *
+ *     n=50   (25/cell)  ->  39.6 pp
+ *     n=100  (50/cell)  ->  28.0 pp   <- this floor
+ *     n=800  (400/cell) ->   9.9 pp
+ *     n=1250 (625/cell) ->   7.9 pp   <- the self-serve ceiling
+ *
+ * Real brand-lift effects run 2-10 pp. Detecting 10 pp needs n=786; 5 pp needs
+ * n=3,140. So NEITHER 50 nor 100 confers adequate power, and no floor can fix
+ * that - even at the 1,250 ceiling the best attainable MDE is 7.9 pp. 100 is
+ * the less indefensible number and the one already published to users; the
+ * honest move is to state the MDE alongside the result rather than let a floor
+ * imply a validity it does not deliver. brandLiftMDE() below does that.
+ *
+ * Accepted cost: at 100 the Pulse tier (anchor 50, $99) is unbuyable for
+ * brand_lift, and the cheapest brand-lift study becomes $150 (100 x $1.50 on
+ * Tracker). A $99 study that cannot support its own methodology is not worth
+ * selling.
+ */
+const BRAND_LIFT_MIN_RESPONDENTS = 100;
+
+/**
+ * Minimum detectable effect, in percentage points, for a brand-lift study of
+ * `n` total respondents split evenly across exposed and control. Surfaced on
+ * the results page and in exports so the number carries its own limit.
+ * Returns null for a non-positive n.
+ */
+function brandLiftMDE(n) {
+  const total = Number(n);
+  if (!Number.isFinite(total) || total <= 0) return null;
+  const perCell = total / 2;
+  if (perCell <= 0) return null;
+  // 2.8016 = z(0.975) + z(0.80); p = 0.5 is the worst case (max variance).
+  return Math.round(2.801585 * Math.sqrt(0.5 / perCell) * 1000) / 10;
+}
+
 /** Brand Lift — minimum statistical sample sizes (no Sniff Test / Validate). */
 const BRAND_LIFT_TIERS = [
-  { id: 'pulse',      name: 'Pulse',      anchorCount: 50,   maxCount: 50,   ratePerResp: 1.98, packagePrice: 99,   minRespondents: 50 },
-  { id: 'tracker',    name: 'Tracker',    anchorCount: 200,  maxCount: 200,  ratePerResp: 1.50, packagePrice: 300,  minRespondents: 50 },
-  { id: 'wave',       name: 'Wave',       anchorCount: 500,  maxCount: 500,  ratePerResp: 1.20, packagePrice: 600,  minRespondents: 50 },
-  { id: 'enterprise', name: 'Enterprise', anchorCount: 2000, maxCount: Infinity, ratePerResp: 0.75, packagePrice: 1500, minRespondents: 50 },
+  { id: 'pulse',      name: 'Pulse',      anchorCount: 50,   maxCount: 50,   ratePerResp: 1.98, packagePrice: 99,   minRespondents: BRAND_LIFT_MIN_RESPONDENTS },
+  { id: 'tracker',    name: 'Tracker',    anchorCount: 200,  maxCount: 200,  ratePerResp: 1.50, packagePrice: 300,  minRespondents: BRAND_LIFT_MIN_RESPONDENTS },
+  { id: 'wave',       name: 'Wave',       anchorCount: 500,  maxCount: 500,  ratePerResp: 1.20, packagePrice: 600,  minRespondents: BRAND_LIFT_MIN_RESPONDENTS },
+  { id: 'enterprise', name: 'Enterprise', anchorCount: 2000, maxCount: Infinity, ratePerResp: 0.75, packagePrice: 1500, minRespondents: BRAND_LIFT_MIN_RESPONDENTS },
 ];
 
 /**
@@ -238,7 +293,7 @@ function resolveTier({ goalType, respondentCount, mediaType }) {
   }
   const ladder = getPricingForGoalType(goalType);
   const c = Math.max(0, Number(respondentCount) || 0);
-  if (goalType === 'brand_lift' && c < (ladder[0].minRespondents || 50)) {
+  if (goalType === 'brand_lift' && c < (ladder[0].minRespondents || BRAND_LIFT_MIN_RESPONDENTS)) {
     return null; // signal: brand_lift requires >= minRespondents
   }
   return ladder.find(t => c <= t.maxCount) || ladder[ladder.length - 1];
@@ -461,6 +516,56 @@ function isAboveSelfServeCap(count) {
   return (Math.max(0, Number(count) || 0)) > MAX_SELF_SERVE_RESPONDENTS;
 }
 
+/**
+ * ── Why a null tier now throws ──────────────────────────────────────────────
+ *
+ * resolveTier returns null to say "this {goal, count} combination has no tier
+ * on this goal's ladder". calculateMissionPrice used to answer that by picking
+ * a tier from a DIFFERENT ladder:
+ *
+ *   ratePerResp = tier?.ratePerResp || VOLUME_TIERS[0].ratePerResp
+ *   volumeTier  = tier || VOLUME_TIERS[0]
+ *   base        = tier?.packagePrice || CREATIVE_ATTENTION_TIERS[0].packagePrice
+ *
+ * A brand_lift study at n=5 has no brand-lift tier, so it was priced at the
+ * DEFAULT ladder's Sniff Test rate: 5 x $1.80 = $9.00, with "Sniff Test",
+ * anchorCount 5 and packagePrice 9 written onto the stored breakdown and the
+ * Stripe receipt. n=49 came out at $88.20. A creative_attention study at n=1
+ * took the packagePrice fallback to the flat $19 and was labelled "Sniff Test"
+ * with anchorCount 10 - a tier that appears on neither ladder involved.
+ *
+ * None of those prices was ever a decision. They were the shape of an `||`.
+ * The fallback also hid the omission that produced them, because a
+ * manufactured price is indistinguishable from a real one downstream.
+ *
+ * So: refuse. The routes that create, re-price or charge a mission all reject
+ * a below-floor goal before they get here, which makes this a backstop rather
+ * than the user-facing behaviour - the tests assert exactly that. It carries
+ * statusCode 400 so the two price-preview endpoints can translate it into a
+ * clean client error instead of a 500.
+ */
+class UnpriceableMissionError extends Error {
+  constructor({ goalType, respondentCount, minRespondents }) {
+    super(
+      `${goalType} missions require at least ${minRespondents} respondents; `
+      + `${respondentCount} has no tier on the ${goalType} ladder and will not be priced off another one.`
+    );
+    this.name = 'UnpriceableMissionError';
+    this.code = 'unpriceable_mission';
+    this.statusCode = 400;
+    this.goalType = goalType;
+    this.respondentCount = respondentCount;
+    this.minRespondents = minRespondents;
+  }
+}
+
+/** The respondent floor for a goal, or null when the goal has no floor. */
+function goalMinRespondents(goalType) {
+  if (goalType === 'brand_lift')         return BRAND_LIFT_MIN_RESPONDENTS;
+  if (goalType === 'creative_attention') return CA_MIN_RESPONDENTS;
+  return null;
+}
+
 const EXTRA_QUESTION_PRICE = 20; // $ per question beyond the 5th
 const FREE_QUESTIONS        = 5;
 
@@ -557,20 +662,30 @@ function calculateMissionPrice({
     ratePerResp = null;
     volumeTier = { id: v2.id, name: v2.name, anchorCount: v2.respondents, packagePrice: v2.custom ? null : v2.priceCents / 100 };
   } else {
-    // Creative Attention: flat package price, count irrelevant.
-    // Other goals: rate × count. Tier null (brand_lift below minRespondents)
-    // falls back to the cheapest in-ladder tier rate × count for safety;
-    // route layer should reject the invalid combo BEFORE calling here.
-    ratePerResp = isCreative ? null : (tier?.ratePerResp || VOLUME_TIERS[0].ratePerResp);
+    // Creative Attention: flat package price per bracket.
+    // Other goals: rate × count. A null tier (brand_lift or creative_attention
+    // below its floor) is REFUSED here; the route layer rejects the invalid
+    // combo first, so this throw is a backstop, not the normal path.
+    // A null tier is resolveTier saying the combo has no price on this goal's
+    // ladder. Refuse it here rather than silently borrowing another ladder's
+    // rate - see UnpriceableMissionError above for what that silence charged.
+    if (!tier) {
+      throw new UnpriceableMissionError({
+        goalType,
+        respondentCount: Math.max(0, Number(respondentCount) || 0),
+        minRespondents: goalMinRespondents(goalType),
+      });
+    }
+    ratePerResp = isCreative ? null : tier.ratePerResp;
     base = isCreative
-      ? (tier?.packagePrice || CREATIVE_ATTENTION_TIERS[0].packagePrice)
+      ? tier.packagePrice
       // Monotonic: never cheaper than the top of the tier below (see
       // respondentLadderBase — V1 tier-boundary inversion fix).
       // Monotonic AND plateau-free: the default ladder interpolates between
       // its $900/$2,000 anchors across 1,000 < n <= 5,000 (see
       // bridgedRespondentBase); every other ladder keeps the tier floor.
       : bridgedRespondentBase(getPricingForGoalType(goalType), tier, respondentCount, ratePerResp);
-    volumeTier = tier || (isCreative ? CREATIVE_ATTENTION_TIERS[0] : VOLUME_TIERS[0]);
+    volumeTier = tier;
     // Above the self-serve cap the price is still computed (so breakdowns and
     // logs stay sane) but is NOT sellable. routes/payments.js and
     // routes/pricing.js already fail closed on customQuote.
@@ -757,10 +872,10 @@ function validateMissionPricing({ goalType, respondentCount, mediaType }) {
   }
   if (goalType === 'brand_lift') {
     const c = Number(respondentCount) || 0;
-    if (c < 50) {
+    if (c < BRAND_LIFT_MIN_RESPONDENTS) {
       return {
         valid: false,
-        error: 'brand_lift missions require at least 50 respondents (Pulse tier minimum)',
+        error: `brand_lift missions require at least ${BRAND_LIFT_MIN_RESPONDENTS} respondents. Below that the exposed/control split cannot detect a realistic lift.`,
       };
     }
     return { valid: true, tier: resolveTier({ goalType, respondentCount: c }) };
@@ -844,6 +959,10 @@ module.exports = {
   BRAND_LIFT_TIERS,
   CREATIVE_ATTENTION_TIERS,
   CA_MIN_RESPONDENTS,
+  BRAND_LIFT_MIN_RESPONDENTS,
+  brandLiftMDE,
+  goalMinRespondents,
+  UnpriceableMissionError,
   // Pricing V2 (flag-gated single canonical ladder)
   PRICING_V2_ACTIVE,
   CANONICAL_TIERS_V2,
