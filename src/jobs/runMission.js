@@ -223,7 +223,7 @@ async function runMission(missionId, opts = {}) {
         });
         await updateMission(supabase, missionId, {
           status:         'failed',
-          failure_reason: `Mission has no survey questions and run-time generation failed: ${qErr.message}`,
+          failure_reason: `Mission has no survey questions and run-time generation failed: ${friendlyFailureReason(qErr.message)}`,
           completed_at:   new Date().toISOString(),
         }, { caller: 'runMission: empty-survey guard' });
         try {
@@ -1061,7 +1061,17 @@ async function runMission(missionId, opts = {}) {
     } // end if (!terminalWriteLost) — notification + completion email
   } catch (err) {
     logger.error('Mission run: fatal', { missionId, err: err.message, stack: err.stack });
-    const failureReason = String(err && err.message ? err.message : 'Unknown error').slice(0, 500);
+    // Sanitised, not raw. `failure_reason` is a customer-facing column: it is
+    // rendered on the processing page, and the frontend reads it DIRECTLY from
+    // Postgres via supabase-js, so an API-level filter would not cover it.
+    // Storing the raw message leaked supplier names - a HEIC upload produced
+    // "Unsupported image format. Anthropic Vision accepts JPG, PNG, WebP, GIF."
+    // on screen. The email path already ran this same sanitiser, which is why
+    // only the on-screen path was affected.
+    // The raw message and stack are preserved in the logger.error above.
+    const failureReason = friendlyFailureReason(
+      err && err.message ? err.message : 'Unknown error',
+    );
 
     // Pass 44 P0 — auto-refund block REMOVED (was Pass 23 Bug 23.80).
     //
