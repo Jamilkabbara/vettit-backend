@@ -92,6 +92,27 @@ function computeStatGate(methodology, analysis, n) {
   if (degenerate) {
     return { posture: 'directional', note: capitalize(degenerate), suppress_headline: !!hard, threshold: hard || SOFT_THRESHOLD, n: N, reason: 'incomputable' };
   }
+  // No sample at all. This MUST come before the soft-base branch, whose
+  // condition is `N > 0 && N < SOFT_THRESHOLD` - zero fails the `N > 0` test
+  // and fell all the way through to `authoritative`. The gate was strictly
+  // LESS honest at n=0 than at n=5: five responses read "directional", zero
+  // read "authoritative" with the headline shown.
+  //
+  // Reachable today, not hypothetical: any mission whose responses all fail
+  // to persist lands here, and hard-gated methodologies were only protected
+  // by accident, because `hard && N < hard` happens to catch zero first.
+  //
+  // Zero evidence is the MOST suppressed state, not the least.
+  if (!(N > 0)) {
+    return {
+      posture: 'directional',
+      note: 'No respondent data was recorded for this mission, so no figure here is supported by a sample.',
+      suppress_headline: true,
+      threshold: hard || SOFT_THRESHOLD,
+      n: 0,
+      reason: 'no_sample',
+    };
+  }
   if (hard && N < hard) {
     return { posture: 'directional', note: HARD_NOTE[methodology], suppress_headline: true, threshold: hard, n: N, reason: 'below_threshold' };
   }

@@ -280,7 +280,10 @@ function analysisHeadlines(analysis) {
         // No methodology centerpiece — lead with the overall base size so the
         // top-line reads as a sample size, not a finding. (Pass 48: leading
         // with a per-question "n — <screener text>=5" misread as an answer.)
-        if (analysis.n != null) push('Responses analyzed', analysis.n);
+        // Zero is not null, so a mission with no recorded responses led its
+        // headline strip with "Responses analyzed: 0" - rendered with the
+        // same authority as a real finding. A count of zero is not a finding.
+        if (analysis.n != null && Number(analysis.n) > 0) push('Responses analyzed', analysis.n);
         for (const q of (analysis.per_question || []).slice(0, 12)) {
           if (!q) continue;
           const label = q.text ? `Base: ${String(q.text).slice(0, 60)}` : `Base: ${q.question_id}`;
