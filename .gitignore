@@ -7,3 +7,13 @@ coverage/
 
 # Backups written by scripts/regenerate-untagged-draft-surveys.js --execute
 regenerate-backup-*.json
+
+# Local ops/marketing working tree. Not part of the service, and an untracked
+# directory sitting next to a nested git worktree is how a `git add -A` turns
+# into a 612-file commit. Ignore it explicitly rather than relying on care.
+vett-ops/
+
+# Nested worktrees created by tooling. Committing one as an embedded repo also
+# poisons the jest baseline in the main checkout (it reports ~1151 instead of
+# the real count), so keep them out of the index entirely.
+.claude/worktrees/

@@ -20,6 +20,17 @@
 -- pricing engine and fails if the two ever disagree, so the constraint cannot
 -- silently drift away from the code that computes the price.
 --
+-- APPLIED TO PRODUCTION 2026-09-06. Verified: 3 constraints present, all
+-- convalidated=false; 16 historical violating rows untouched; below-floor
+-- inserts rejected, a legal insert still accepted. VALIDATE CONSTRAINT was
+-- deliberately NOT run and must not be.
+--
+-- >>> IF YOU ARE CHANGING THE CEILING, READ FIRST:
+-- >>> docs/operational/raising-the-self-serve-ceiling.md
+-- >>> The database must be widened BEFORE the env var, or the app will accept
+-- >>> missions the database rejects, and the error lands on the customer at
+-- >>> the end of setup because the UI inserts the row directly.
+--
 -- ONE CAVEAT ON 1250: in the engine the ceiling is
 -- `Number(process.env.MAX_SELF_SERVE_RESPONDENTS || 1250)` — env-overridable
 -- at runtime. A CHECK constraint cannot read an env var, so 1250 is frozen
