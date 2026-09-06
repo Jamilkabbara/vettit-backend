@@ -107,25 +107,20 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
       }
     }
 
-    // Free / 100%-off promos ($0) never touch Stripe. The pricing engine
-    // intentionally does not zero a `free`-type code (it only discounts
-    // percentage/flat), and a $0 Session would fail the <$0.50 minimum below
-    // anyway — so a `free` code sent here would otherwise checkout at FULL
-    // price. The dedicated /api/payments/free-launch path (which re-validates
-    // the code server-side, enforces the Coming-Soon gate, marks the mission
-    // paid, and runs it) is the correct $0 route. Signal the client to complete
-    // via that path. Only `type === 'free'` diverts; percentage/flat/no-promo
-    // fall through to the normal Stripe session below, entirely unchanged.
-    if (promo && promo.type === 'free') {
-      return res.json({ free: true, missionId, promoCode: promo.code });
-    }
-
     // Pass 23 Bug 23.61 — fail-closed pricing validation. Reject
     // mismatched {goal_type, tier, media_type} BEFORE computing price
     // so a Creative Attention mission can't accidentally checkout at
     // a Sniff Test rate ($1.80) — the forensic that surfaced this bug
     // (mission a24d3776 paid $1.80 for an Image-tier creative analysis
     // that should have been $19).
+    //
+    // Pass 51 — this block used to sit BELOW the `free`-promo diversion, so a
+    // $0 promo skipped it entirely: an unpriceable mission (brand_lift under
+    // the 100 floor, creative_attention with no media_type, anything above the
+    // self-serve cap) got { free: true } back and completed via /free-launch,
+    // which ran it without a single floor ever being checked. Price is not the
+    // only thing this validates — it is also the methodology gate — so it has
+    // to run before ANY exit from this route, paid or free.
     const validation = validateMissionPricing({
       goalType:        mission.goal_type,
       respondentCount: mission.respondent_count,
@@ -140,6 +135,23 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
         error: 'Mission pricing is not valid for checkout',
         reason: validation.error,
       });
+    }
+
+    // Free / 100%-off promos ($0) never touch Stripe. The pricing engine
+    // intentionally does not zero a `free`-type code (it only discounts
+    // percentage/flat), and a $0 Session would fail the <$0.50 minimum below
+    // anyway — so a `free` code sent here would otherwise checkout at FULL
+    // price. The dedicated /api/payments/free-launch path (which re-validates
+    // the code server-side, enforces the Coming-Soon gate, marks the mission
+    // paid, and runs it) is the correct $0 route. Signal the client to complete
+    // via that path. Only `type === 'free'` diverts; percentage/flat/no-promo
+    // fall through to the normal Stripe session below, entirely unchanged.
+    //
+    // Position matters: this now sits AFTER validateMissionPricing. The
+    // short-circuit itself is unchanged — same condition, same response body —
+    // it just no longer outruns the gate.
+    if (promo && promo.type === 'free') {
+      return res.json({ free: true, missionId, promoCode: promo.code });
     }
 
     // Recalculate price server-side — single source of truth.
@@ -376,7 +388,7 @@ router.post('/free-launch', authenticate, async (req, res, next) => {
 
     const { data: mission } = await supabase
       .from('missions')
-      .select('id, status, user_id, goal_type')
+      .select('id, status, user_id, goal_type, respondent_count, media_type')
       .eq('id', missionId)
       .eq('user_id', req.user.id)
       .single();
@@ -397,6 +409,34 @@ router.post('/free-launch', authenticate, async (req, res, next) => {
     const launchable = ['draft', 'pending_payment', 'active'].includes(status);
     if (!launchable) {
       return res.status(400).json({ error: `Mission cannot be free-launched from status: ${status}` });
+    }
+
+    // Pass 51 — the same fail-closed pricing gate create-checkout-session
+    // runs. This route is a door in its own right, not a continuation of that
+    // one: PayButton.tsx and DashboardPage.tsx both POST here directly once
+    // they see { free: true }, and nothing stops a client POSTing here first.
+    // Reordering the gate over there closes the referred path; this closes the
+    // route. $0 is a price, and a mission that cannot be priced or cannot
+    // support its own methodology must not RUN either, which is what this
+    // endpoint authorises.
+    //
+    // Placed after the status guards so the already_running short-circuit
+    // stays idempotent for missions that predate the floors, and before
+    // updateMission so no status flip or run can happen on a failure.
+    const validation = validateMissionPricing({
+      goalType:        mission.goal_type,
+      respondentCount: mission.respondent_count,
+      mediaType:       mission.media_type,
+    });
+    if (!validation.valid) {
+      logger.warn('Free-launch: pricing validation failed', {
+        missionId, goal_type: mission.goal_type, media_type: mission.media_type,
+        respondent_count: mission.respondent_count, error: validation.error,
+      });
+      return res.status(400).json({
+        error: 'Mission pricing is not valid for checkout',
+        reason: validation.error,
+      });
     }
 
     await updateMission(supabase, missionId, {
