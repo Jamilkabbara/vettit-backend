@@ -78,6 +78,12 @@ const MISSION_LIST_COLUMNS = [
   'delivery_unit',
   'respondent_count',
   'delivered_respondent_count',
+  // Pass 50 — the LIVE respondent counter. recruitLoop writes this as it
+  // qualifies personas, so it is the only correct numerator for the
+  // in-flight "x/y respondents" line on a mission card. The card used to
+  // use the mission_responses row count instead, which is one row per
+  // persona PER QUESTION and therefore rendered fractions like "80/5".
+  'recruited_persona_count',
   'total_simulated_count',
   'qualified_respondent_count',
   'qualification_rate',
@@ -93,27 +99,100 @@ const MISSION_LIST_COLUMNS = [
   'category',
 ].join(', ');
 
-const MISSION_LIST_DEFAULT_LIMIT = 100;
+/**
+ * Rows per page when reading the full list. Kept well under PostgREST's
+ * own 1000-row `db-max-rows` ceiling so a page is never silently short
+ * for a reason other than "this was the last page".
+ */
+const MISSION_LIST_PAGE_SIZE = 200;
 
-router.get('/', authenticate, async (req, res, next) => {
-  try {
-    const limit = Math.min(
-      Math.max(parseInt(req.query.limit, 10) || MISSION_LIST_DEFAULT_LIMIT, 1),
-      500,
-    );
+/**
+ * Safety valve. A single user is not expected to own more missions than
+ * this; hitting it means something is wrong, so we stop and warn rather
+ * than page forever. A capped read is still a truncated read.
+ */
+const MISSION_LIST_MAX_ROWS = 5000;
+
+/**
+ * Read every mission row for a user, paging past any single-request row
+ * ceiling — same contract as db/fetchAllResponses.js, which exists for
+ * exactly this class of bug.
+ *
+ * BUG THIS FIXES. This endpoint used to apply a flat
+ * `.limit(MISSION_LIST_DEFAULT_LIMIT = 100)` when the caller passed no
+ * `?limit`. MissionsListPage.tsx never passes one, and it renders
+ * `${missions.length} missions total` straight off the response length.
+ * So the dashboard of the account that owns 112 missions read
+ * "100 missions total" — a wrong number presented as a fact, with the
+ * 12 oldest missions missing from the grid entirely and no indication
+ * anything had been withheld. Verified against production on
+ * 2026-09-06: user 82405ff9 has 112 rows, the endpoint returned exactly
+ * 100.
+ *
+ * The order matters as much as the paging: `created_at` is not unique
+ * (the seeded/audit missions share timestamps), so paging on it alone
+ * can drop and duplicate rows across page boundaries. We add `id` as a
+ * tiebreaker to make the sort total and the paging stable.
+ */
+async function fetchAllUserMissions(userId) {
+  const all = [];
+  let offset = 0;
+
+  for (;;) {
     const { data, error } = await supabase
       .from('missions')
       .select(`${MISSION_LIST_COLUMNS}, mission_responses(count)`)
-      .eq('user_id', req.user.id)
+      .eq('user_id', userId)
       .order('created_at', { ascending: false })
-      .limit(limit);
+      .order('id', { ascending: true })
+      .range(offset, offset + MISSION_LIST_PAGE_SIZE - 1);
+
+    if (error) return { data: null, error };
+
+    const page = Array.isArray(data) ? data : [];
+    all.push(...page);
+
+    // A short page is the last page — the normal exit.
+    if (page.length < MISSION_LIST_PAGE_SIZE) break;
+
+    offset += MISSION_LIST_PAGE_SIZE;
+    if (offset >= MISSION_LIST_MAX_ROWS) {
+      logger.warn('GET /api/missions: hard row cap hit — list is TRUNCATED', {
+        userId, maxRows: MISSION_LIST_MAX_ROWS, rowsRead: all.length,
+      });
+      break;
+    }
+  }
+
+  return { data: all, error: null };
+}
+
+router.get('/', authenticate, async (req, res, next) => {
+  try {
+    // `?limit` is still honoured for callers that genuinely want a slice
+    // (previews, tests). Absent it, the user gets ALL of their missions —
+    // a list endpoint that silently drops rows is worse than a slow one.
+    const limitRaw = parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(limitRaw)
+      ? Math.min(Math.max(limitRaw, 1), MISSION_LIST_MAX_ROWS)
+      : null;
+
+    const { data, error } = await fetchAllUserMissions(req.user.id);
     if (error) throw error;
+
     // Flatten the join: mission_responses is [{count:N}], expose as responses_collected.
+    //
+    // NOTE ON UNITS: this count is mission_responses ROWS, which is one
+    // row per persona PER QUESTION — it is NOT a respondent count. Live
+    // example: mission a8f878bc holds 80 rows = 16 personas x 5
+    // questions. `delivered_respondent_count` is the respondent truth
+    // (COUNT DISTINCT persona_id). Anything rendering this next to
+    // `respondent_count` must not present it as respondents.
     const rows = (data || []).map(m => ({
       ...m,
       responses_collected: m.mission_responses?.[0]?.count ?? 0,
     }));
-    res.json(rows);
+    res.json(limit ? rows.slice(0, limit) : rows);
   } catch (err) {
     next(err);
   }
