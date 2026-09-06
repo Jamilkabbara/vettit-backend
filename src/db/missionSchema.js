@@ -20,85 +20,217 @@
  * and wraps the UPDATE with error logging.
  */
 
-const logger = require('../utils/logger');
+/**
+ * VETT — Missions table schema guard.
+ *
+ * ── What changed and why ───────────────────────────────────────────────
+ * ALLOWED_COLUMNS used to be a hand-maintained literal. It drifted: at the
+ * time this was rewritten it was missing 18 of the 118 real columns of
+ * public.missions. Because sanitizeMissionPatch drops unknown keys with
+ * only a logger.warn, that drift was SILENT — three columns written by
+ * POST /api/missions today (price_breakdown, targeted_markets,
+ * campaign_channels) were being thrown away in production with no error.
+ * The same failure had already eaten `brand_name` and `category` once.
+ *
+ * The list is no longer hand-maintained. It is generated from
+ * information_schema and committed as src/db/missionsColumns.json by
+ * `node scripts/dump-missions-schema.js`. test/mission_schema_snapshot.test.js
+ * FAILS in CI when the table gains a column that has not been classified,
+ * so the next missing column is caught at review time instead of in prod.
+ *
+ * ── Two different questions, two different sets ─────────────────────────
+ * These are NOT the same question and must not share a list:
+ *
+ *   1. "Does this column exist on the table?"  → ALLOWED_COLUMNS
+ *      A schema-existence guard. Writing a column outside it produces a
+ *      PostgREST 400 that 400s the whole request. This applies to EVERY
+ *      writer, including the ~20 trusted server-side writers (runMission,
+ *      the Stripe webhooks, payments, missionRecovery, recruitLoop) that
+ *      legitimately write status, paid_at and the *_usd money columns.
+ *      ALLOWED_COLUMNS is therefore the FULL snapshot — all 118 columns.
+ *
+ *   2. "May an end user set this column?"      → CLIENT_PATCHABLE_COLUMNS
+ *      An authorization ceiling for request-driven writes. Everything the
+ *      server owns — identity, lifecycle, money, AI output, counters — is
+ *      in SERVER_OWNED_COLUMNS and can never be set from a request body.
+ *
+ * Collapsing (2) into (1) would be a money hole: a client-patchable
+ * `status` or `total_price_usd` is a free mission. Collapsing (1) into (2)
+ * would break every internal writer. Hence both.
+ *
+ * ── Deny by default ─────────────────────────────────────────────────────
+ * CLIENT_PATCHABLE_COLUMNS is an explicit allowlist, not "snapshot minus
+ * denylist". A column added to the table lands in NEITHER set, so it is
+ * not client-patchable until someone deliberately classifies it — and the
+ * snapshot test fails until they do. That direction of failure is safe
+ * (a dropped write, loudly logged); the other direction is not.
+ */
 
-// Live schema (information_schema.columns query — source of truth)
-const ALLOWED_COLUMNS = new Set([
+const logger = require('../utils/logger');
+const SCHEMA_SNAPSHOT = require('./missionsColumns.json');
+
+/**
+ * Every column that exists on public.missions, generated from
+ * information_schema. This is a SCHEMA-EXISTENCE guard, not a permission
+ * check — see the header. Trusted server writers pass through it.
+ */
+const ALLOWED_COLUMNS = new Set(SCHEMA_SNAPSHOT.columns);
+
+/**
+ * Columns the SERVER owns. A value for one of these arriving in a request
+ * body is either a bug or an attack; sanitizeClientMissionPatch refuses it.
+ *
+ * Grouped by why each is server-owned. If you are tempted to move one of
+ * these to CLIENT_PATCHABLE_COLUMNS, read the group comment first.
+ */
+const SERVER_OWNED_COLUMNS = new Set([
+  // ── Identity & ownership ──────────────────────────────────────────────
+  // A patchable user_id is a mission-theft primitive.
   'id',
   'user_id',
-  'title',
-  'status',
-  'country',
-  'target_audience',
-  'price_estimated',
   'created_at',
-  'goal_type',
-  'brief',
-  'respondent_count',
-  'targeting',
-  'questions',
+
+  // ── Lifecycle state machine ───────────────────────────────────────────
+  // `status` is the gate every money path and the runner key off. A client
+  // that can set status='paid' gets a free mission; one that can set
+  // status='processing' can steal another writer's claim.
+  'status',
+  'paid_at',
+  'started_at',
+  'completed_at',
+  'heartbeat_at',
+  'delivery_status',
+  'delivery_check_at',
+  'failure_reason',
+  'recruitment_status',
+  'recruitment_completed_at',
+
+  // ── Money ─────────────────────────────────────────────────────────────
+  // All of these are computed by src/utils/pricingEngine.js or stamped by
+  // Stripe. Every one is a direct "pay less / refund more" hole.
+  // NOTE: the `pricing_*` and `concept_price_usd` columns are NOT here —
+  // they describe the product the CUSTOMER is researching, not what VETT
+  // bills. Read the CLIENT_PATCHABLE note on them before moving anything.
+  'price_estimated',
   'base_cost_usd',
   'targeting_surcharge_usd',
   'extra_questions_cost_usd',
   'total_price_usd',
-  'promo_code',
+  'price_breakdown',
   'discount_usd',
-  'paid_at',
-  'started_at',
-  'completed_at',
-  'executive_summary',
-  'insights',
+  'promo_code',            // validated server-side; a direct write skips validation
+  'paid_amount_cents',
+  'paid_amount_estimated',
+  'partial_refund_id',
+  'partial_refund_amount_cents',
+  'payment_method',
+  'latest_payment_intent_id',
+  'checkout_session_id',
+
+  // ── Cost accounting & margin control ──────────────────────────────────
+  // ai_spend_ceiling_usd is the 30%-of-price cap protecting the margin
+  // floor. Client-writable, it is an unbounded AI spend authorization.
   'ai_cost_usd',
   'chat_cost_usd',
   'chat_messages_used',
   'chat_quota_limit',
-  'creative_urls',
-  'mission_assets',
-  // Pass 21 Bug 5: persist qualification aggregates so dashboards/reports
-  // never need to recompute from mission_responses on every read.
+  'ai_spend_usd_actual',
+  'ai_spend_ceiling_usd',
+
+  // ── Delivery counters (what we owe vs what we delivered) ──────────────
+  // These decide whether the auto-refund path fires. target_qualified_count
+  // is derived server-side from respondent_count at insert/re-price.
+  'target_qualified_count',
+  'recruited_persona_count',
   'total_simulated_count',
   'qualified_respondent_count',
   'qualification_rate',
-  // Pass 21 Bug 19: top-level failure reason populated by runMission's
-  // fatal handler. Replaces fishing the message out of mission_assets.
-  'failure_reason',
-  // Pass 22 Bug 22.23: track the most recent Stripe PI for this mission so
-  // /api/payments/create-intent can resume an in-flight PI instead of creating
-  // a new one on every retry. See migrations/pass-22/03_bug_22_9_*.sql.
-  'latest_payment_intent_id',
-  // Pass 22 Bug 22.24: user-editable screener acceptance criteria. Set on
-  // mission setup before launch; runMission reads it when generating the
-  // screener prompt.
+  'delivered_respondent_count',
+  'delivery_unit',
+
+  // ── AI / pipeline output ──────────────────────────────────────────────
+  // The deliverable itself. Client-writable output is fabricated research.
+  'executive_summary',
+  'insights',
+  'analysis',
+  'aggregated_by_question',
+  'targeting_brief',
+  'creative_analysis',
+  'mission_assets',
+
+  // ── Cross-row references & wave sequencing ────────────────────────────
+  // linked_mission_ids points at other mission rows and is not ownership-
+  // checked anywhere; a patchable array of uuids is an IDOR primitive.
+  // wave_number / wave_config drive the paired brand-lift split the runner
+  // and the wave pricing uplift both read.
+  'linked_mission_ids',
+  'wave_number',
+  'wave_config',
+
+  // ── Brand-lift pricing inputs (see note below) ────────────────────────
+  // calculateBrandLiftMissionPrice() prices off marketCount and
+  // channelCount, i.e. off these two columns. POST /api/missions computes
+  // the price from them in the same request, so mission CREATION is fine —
+  // but PATCH does not re-price when they change, so a client that could
+  // PATCH them would change the fair price after paying. They stay denied
+  // until the PATCH route adds them to its re-price trigger set alongside
+  // respondentCount/questions/targeting.
+  'targeted_markets',
+  'campaign_channels',
+
+  // ── Pricing-adjacent / unclassified ───────────────────────────────────
+  // `media_type` is a declared parameter of calculateMissionPrice and
+  // gates creative_attention validation (resolveTier says it does not pick
+  // the tier *today*, which is exactly the kind of thing that changes).
+  // `tier` has no reader in src/ at all — an unread column with a
+  // pricing-shaped name is denied until someone can say what it is.
+  'media_type',
+  'tier',
+]);
+
+/**
+ * Columns an authenticated owner may set on their own mission.
+ *
+ * This is a CEILING, not a route contract: routes/missions.js still maps
+ * request fields to columns explicitly, so listing a column here does not
+ * expose it by itself. It is the boundary the "route all mission writes
+ * through the backend" work builds against, replacing the direct
+ * supabase-js insert the UI does today.
+ */
+const CLIENT_PATCHABLE_COLUMNS = new Set([
+  // ── Core mission definition ───────────────────────────────────────────
+  // respondent_count, goal_type, questions and targeting are pricing
+  // inputs, but PATCH /api/missions/:id already re-prices server-side when
+  // any of them changes (and re-validates the cap and the per-goal floor),
+  // so the customer never controls the resulting price.
+  'title',
+  'brief',
+  'goal_type',
+  'questions',
+  'targeting',
+  'target_audience',
+  'respondent_count',
+  'country',
   'screener_criteria',
-  // Pass 23 Bug 23.0e v2: active Stripe Checkout Session id for this mission.
-  // Set on POST /api/payments/create-checkout-session; cleared on
-  // checkout.session.expired webhook. Parallel to latest_payment_intent_id
-  // (Stripe Checkout still creates a PaymentIntent under the hood).
-  'checkout_session_id',
-  // A3 — payment method type (e.g. "card") from the succeeded PaymentIntent,
-  // stamped by the Stripe webhook so the dashboard shows how a mission was paid.
-  'payment_method',
-  // Pass 23 Bug 23.25 — delivery integrity columns. Stamped by runMission's
-  // over-recruit loop or the partial-delivery branch. delivery_status is the
-  // canonical {full|partial} flag; the rest are forensic + idempotency for
-  // the auto-refund path.
-  'delivery_status',
-  'delivery_check_at',
-  'paid_amount_cents',
-  // Pass 29 A1 — flag for backfilled paid_amount_cents (TRUE means
-  // estimated from total_price_usd, FALSE means captured directly
-  // from Stripe payment_intent.succeeded).
-  'paid_amount_estimated',
-  'partial_refund_id',
-  'partial_refund_amount_cents',
-  // Pass 29 B2 — universal mission inputs. Required on every
-  // methodology-bound mission type (everything except `research`).
-  // Brand Lift and Creative Attention already capture equivalents
-  // through their deep pickers but writing here is harmless.
+
+  // ── Creative & brief attachments (the customer's own assets) ──────────
+  'creative_urls',
+  'brief_attachment',
+  'media_url',
+  'creative_metadata',
+  'desired_emotions',
+  'key_message',
+
+  // ── Universal methodology inputs (Pass 29 B2) ─────────────────────────
   'brand_name',
   'category',
   'audience_description',
-  // Pass 29 B4 — pricing research (Van Westendorp + Gabor-Granger).
+
+  // ── Pricing RESEARCH inputs (Pass 29 B4) ──────────────────────────────
+  // Read this before moving any of them to SERVER_OWNED: these describe
+  // the price of the CUSTOMER'S product in a Van Westendorp / Gabor-Granger
+  // study. They are survey stimulus, not VETT billing. Nothing in
+  // pricingEngine.js reads them.
   'pricing_product_description',
   'pricing_currency',
   'pricing_model',
@@ -106,27 +238,38 @@ const ALLOWED_COLUMNS = new Set([
   'pricing_expected_min',
   'pricing_expected_max',
   'pricing_methodology',
-  // Pass 29 B6 — feature roadmap (MaxDiff + Kano).
+
+  // ── Feature roadmap (Pass 29 B6) ──────────────────────────────────────
   'roadmap_features',
   'roadmap_methodology',
-  // Pass 29 B8 — customer satisfaction (NPS + CSAT + CES).
+
+  // ── Customer satisfaction (Pass 29 B8) ────────────────────────────────
   'csat_touchpoint',
   'csat_custom_touchpoint',
   'csat_customer_type',
   'csat_recency_window',
   'csat_methodology',
-  // Pass 30 B1 — validate product (concept test).
+
+  // ── Validate product (Pass 30 B1) ─────────────────────────────────────
+  // concept_price_usd is the price point shown TO respondents, not a
+  // billing column.
   'concept_description',
   'concept_media_url',
   'concept_media_type',
   'concept_price_usd',
   'concept_use_occasion',
   'validate_methodology',
-  // Pass 30 B3 — compare concepts (sequential monadic).
+
+  // ── Compare concepts (Pass 30 B3) ─────────────────────────────────────
   'concepts',
   'comparison_methodology',
   'rotation_strategy',
-  // Pass 30 B5 — test marketing / ads (ad effectiveness).
+
+  // ── Test marketing / ads (Pass 30 B5) ─────────────────────────────────
+  // Footgun: `campaign_channel` (singular, text) is this survey-setup
+  // field and is patchable. `campaign_channels` (plural, jsonb) is the
+  // brand-lift PRICING input and is server-owned. They are different
+  // columns with near-identical names.
   'creative_media_url',
   'creative_media_type',
   'campaign_channel',
@@ -134,53 +277,58 @@ const ALLOWED_COLUMNS = new Set([
   'campaign_objective',
   'intended_message',
   'ad_methodology',
-  // Pass 31 B1 — competitor analysis (brand health tracker).
-  // competitor_brands JSONB already exists from Pass 28.
+
+  // ── Competitor analysis (Pass 31 B1) ──────────────────────────────────
+  'competitor_brands',
   'attribute_battery',
   'competitor_methodology',
-  // Pass 31 B3 — naming & messaging (monadic + paired + TURF).
+
+  // ── Naming & messaging (Pass 31 B3) ───────────────────────────────────
   'naming_test_type',
   'naming_candidates',
   'naming_criteria',
   'naming_methodology',
   'brand_personality',
-  // Pass 31 B5 — churn research (driver tree + win-back).
+
+  // ── Churn research (Pass 31 B5) ───────────────────────────────────────
   'churn_definition',
   'churn_custom_definition',
   'churn_customer_type',
   'churn_winback_possible',
   'churn_methodology',
-  // Pass 32 X1 — delivered_respondent_count records actual delivered
-  // count (may differ from contract for Brand Lift paired splits etc).
-  'delivered_respondent_count',
-  // Pass 32 X2 — delivery_unit ∈ {respondent, creative_asset}.
-  'delivery_unit',
-  // Pass 42 A1 — recruit-until-qualified semantics.
-  // target_qualified_count is the customer-paid count (recruit loop
-  // runs until reached); recruited_persona_count is the running
-  // total of personas generated (pass + fail); ai_spend_usd_actual
-  // is the accumulated AI cost; ai_spend_ceiling_usd is the hard
-  // 30%-of-mission-price cap protecting the 70% margin floor;
-  // recruitment_status ∈ {pending|recruiting|ceiling_hit|target_hit};
-  // recruitment_completed_at is the loop-exit timestamp.
-  'target_qualified_count',
-  'recruited_persona_count',
-  'ai_spend_usd_actual',
-  'ai_spend_ceiling_usd',
-  'recruitment_status',
-  'recruitment_completed_at',
-  // Pass 45 T1 — per-question aggregation map consumed by the 9
-  // methodology result renderers (CSAT/Naming/Pricing/etc.).
-  'aggregated_by_question',
-  // Pass 46 Phase 3 — deterministic methodology analysis object.
-  'analysis',
-  // Pass 49 — liveness stamp for the reapers. MUST be listed here:
-  // sanitizeMissionPatch silently drops anything outside this set with
-  // only a logger.warn, which has already broken two columns after they
-  // shipped (`brand_name`, `category`). See
-  // migrations/pass-49/01_missions_heartbeat_at.sql.
-  'heartbeat_at',
+
+  // ── Brand lift setup (non-pricing) ────────────────────────────────────
+  // The KPI template and KPI selection do not feed
+  // calculateBrandLiftMissionPrice — only market and channel counts do.
+  'brand_lift_template',
+  'brand_lift_kpis',
 ]);
+
+/**
+ * Filter a patch that came from a REQUEST BODY down to the columns an end
+ * user is allowed to set.
+ *
+ * Unlike sanitizeMissionPatch this distinguishes the two failure modes,
+ * because they mean very different things:
+ *   `rejected` — key is not a column of the table at all (drift / typo)
+ *   `denied`   — key IS a real column but the SERVER owns it. This is the
+ *                interesting one: it is either a bug in a route mapping or
+ *                someone probing for a writable `status` / `total_price_usd`.
+ *
+ * Callers should treat a non-empty `denied` as a 400, not a silent drop —
+ * see the warn-vs-error note on sanitizeMissionPatch.
+ */
+function sanitizeClientMissionPatch(raw) {
+  const patch = {};
+  const rejected = [];
+  const denied = [];
+  for (const [k, v] of Object.entries(raw || {})) {
+    if (CLIENT_PATCHABLE_COLUMNS.has(k)) patch[k] = v;
+    else if (ALLOWED_COLUMNS.has(k)) denied.push(k);
+    else rejected.push(k);
+  }
+  return { patch, rejected, denied };
+}
 
 /**
  * Strip any keys that aren't in the actual missions table schema.
@@ -209,6 +357,8 @@ function sanitizeMissionPatch(raw) {
  * Usage:
  *   await updateMission(supabase, missionId, patch, { caller: 'routes/missions PATCH', userId: req.user.id });
  *
+ * Pass `strict: true` to throw instead of silently dropping unknown keys.
+ *
  * Caller can pass additional `.eq()` filters via `scope` — e.g.
  * { user_id: req.user.id } — to scope the update to the row's owner, or
  * { status: 'processing' } to make a terminal write conditional on the
@@ -236,7 +386,7 @@ function sanitizeMissionPatch(raw) {
  * so no existing call site is affected.
  */
 async function updateMission(supabase, missionId, rawPatch, opts = {}) {
-  const { caller = 'unknown', scope = null, select = false } = opts;
+  const { caller = 'unknown', scope = null, select = false, strict = false } = opts;
   const { patch, rejected } = sanitizeMissionPatch(rawPatch);
 
   if (rejected.length > 0) {
@@ -245,6 +395,21 @@ async function updateMission(supabase, missionId, rawPatch, opts = {}) {
       missionId,
       rejected,
     });
+    // `strict: true` turns the silent drop into a hard failure. Opt-in
+    // rather than the default because ~20 trusted writers share this
+    // function and a throw on a background job (the Stripe webhooks,
+    // missionRecovery) would convert a partial write into a lost one.
+    // Recommended for request-driven routes, where the caller can turn it
+    // into a 400 and the client can see the mistake. See the PR body.
+    if (strict) {
+      const err = new Error(
+        `missions.update: unknown column(s) ${rejected.join(', ')} — not in public.missions. `
+        + 'Regenerate src/db/missionsColumns.json if the schema changed.',
+      );
+      err.code = 'UNKNOWN_MISSION_COLUMN';
+      err.rejected = rejected;
+      throw err;
+    }
   }
 
   if (Object.keys(patch).length === 0) {
@@ -337,7 +502,11 @@ function _resetHeartbeatColumnLatch() {
 
 module.exports = {
   ALLOWED_COLUMNS,
+  SERVER_OWNED_COLUMNS,
+  CLIENT_PATCHABLE_COLUMNS,
+  SCHEMA_SNAPSHOT,
   sanitizeMissionPatch,
+  sanitizeClientMissionPatch,
   updateMission,
   isHeartbeatColumnMissing,
   noteHeartbeatColumnMissing,
