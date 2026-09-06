@@ -888,7 +888,16 @@ router.get('/:missionId/reasoning', require('../middleware/auth').authenticate, 
       .select('persona_id, response_value, reasoning_text, created_at')
       .eq('mission_id', missionId)
       .eq('question_id', question_id)
+      // persona_response_reasoning.created_at is NOT unique - it defaults to
+      // now() and the reasoning rows for a mission+question are written in one
+      // batch, so they all share a timestamp. Production carries a
+      // (mission_id, question_id) group of 10 rows on a single created_at.
+      // With a bare `.limit(5)` on a fully tied sort, WHICH five reasons the
+      // modal shows is arbitrary and changes between two identical requests.
+      // `persona_id` is unique within (mission_id, question_id) - that triple
+      // is the table's unique index - so it makes the sample deterministic.
       .order('created_at', { ascending: false })
+      .order('persona_id', { ascending: true })
       .limit(limit);
     if (typeof response_value === 'string' && response_value.length > 0) {
       q = q.eq('response_value', response_value);

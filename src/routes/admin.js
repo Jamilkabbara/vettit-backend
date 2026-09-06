@@ -206,7 +206,18 @@ router.get('/missions', async (req, res, next) => {
          created_at, paid_at, completed_at, executive_summary`,
         { count: 'exact' }
       )
+      // `created_at` is NOT unique. It defaults to now(), which in Postgres is
+      // the TRANSACTION timestamp, so every mission written by one bulk insert
+      // carries an identical value; prod already shows this shape on sibling
+      // tables (mission_responses.answered_at has tie groups of 200 rows).
+      // Paging on a non-unique key alone lets PostgREST return the tied rows in
+      // a different order per request, so a row can appear on two pages and
+      // another can appear on none - while `total` below still reports the
+      // exact count, making the loss invisible. `id` is the primary key, so
+      // adding it makes the sort total and the paging stable. Same fix as
+      // GET /api/missions (PR #139).
       .order('created_at', { ascending: false })
+      .order('id', { ascending: true })
       .range(offset, offset + limit - 1);
 
     if (status)    q = q.eq('status', status);
@@ -309,7 +320,14 @@ router.get('/users', async (req, res, next) => {
     let q = supabase
       .from('profiles')
       .select('id, first_name, last_name, full_name, company_name, role, project_stage, is_admin, created_at', { count: 'exact' })
+      // Same defect as /admin/missions above: profiles.created_at has no unique
+      // index (verified against production pg_index) and defaults to
+      // timezone('utc', now()), the transaction clock. Any two profiles created
+      // in one transaction - a seed, a backfill, an OAuth batch - tie, and the
+      // offset pager then drops and duplicates rows while AdminUsers.tsx renders
+      // "start-end of total" as fact. `id` is the primary key.
       .order('created_at', { ascending: false })
+      .order('id', { ascending: true })
       .range(offset, offset + limit - 1);
 
     // Pass 49 security (P2): `search` is interpolated into a PostgREST raw
