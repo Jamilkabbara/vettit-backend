@@ -186,10 +186,25 @@ describe('runMission heartbeat', () => {
     expect(stampIdx).toBeLessThan(tryIdx);
   });
 
+  // The stamp moved into src/db/missionSchema.js as stampMissionHeartbeat so
+  // creative_attention's vision loop uses the SAME implementation instead of
+  // a third divergent copy. The invariant is unchanged; only its address is.
   test("is status-scoped — a zombie must not keep a resolved row looking alive", () => {
-    const fn = src.slice(src.indexOf('const stampHeartbeat'), src.indexOf('await stampHeartbeat();'));
+    const schemaSrc = require('fs').readFileSync(
+      require.resolve('../src/db/missionSchema'), 'utf8');
+    const fn = schemaSrc.slice(
+      schemaSrc.indexOf('async function stampMissionHeartbeat'),
+      schemaSrc.indexOf('module.exports'));
     expect(fn).toContain("heartbeat_at: new Date().toISOString()");
     expect(fn).toContain(".eq('status', 'processing')");
+  });
+
+  test('delegates to the shared stamper rather than keeping a private copy', () => {
+    expect(src).toContain('stampMissionHeartbeat');
+    const fn = src.slice(src.indexOf('const stampHeartbeat'), src.indexOf('await stampHeartbeat();'));
+    expect(fn).toContain('stampMissionHeartbeat(supabase, missionId');
+    // No second implementation left behind to drift out of sync.
+    expect(fn).not.toContain("heartbeat_at: new Date().toISOString()");
   });
 
   test('the batch path stamps it on the existing every-25 onProgress throttle', () => {

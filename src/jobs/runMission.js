@@ -33,8 +33,7 @@ const { generateTargetingBrief } = require('../services/ai/targetingBrief');
 const { analyzeCreative }       = require('../services/ai/creativeAttention');
 const {
   updateMission,
-  isHeartbeatColumnMissing,
-  noteHeartbeatColumnMissing,
+  stampMissionHeartbeat,
 } = require('../db/missionSchema');
 // Pass 42 A2 — recruit-until-qualified loop (env-gated). When
 // RECRUIT_LOOP_ENABLED=true the new flow replaces the batch
@@ -132,28 +131,10 @@ async function runMission(missionId, opts = {}) {
   // load-bearing for idempotency, and a column that does not exist yet
   // (the migration is applied by hand) would turn a lost heartbeat into a
   // lost claim.
-  const stampHeartbeat = async () => {
-    if (isHeartbeatColumnMissing()) return;
-    try {
-      const { error } = await supabase
-        .from('missions')
-        .update({ heartbeat_at: new Date().toISOString() })
-        .eq('id', missionId)
-        // Only a run that still owns the mission may refresh its liveness.
-        // Without this a zombie would keep the row looking alive, which is
-        // the precise opposite of what the column is for.
-        .eq('status', 'processing');
-      if (error && !noteHeartbeatColumnMissing(error, 'runMission: stampHeartbeat')) {
-        logger.warn('Mission run: heartbeat write failed (non-fatal)', {
-          missionId, err: error.message, code: error.code,
-        });
-      }
-    } catch (e) {
-      logger.warn('Mission run: heartbeat write threw (non-fatal)', {
-        missionId, err: e?.message,
-      });
-    }
-  };
+  // The stamp itself (status-scoped, non-fatal, latch-aware) now lives in
+  // src/db/missionSchema.js so creative_attention's vision loop uses the
+  // SAME implementation rather than a third divergent copy.
+  const stampHeartbeat = () => stampMissionHeartbeat(supabase, missionId, 'runMission: stampHeartbeat');
   await stampHeartbeat();
 
   try {
@@ -164,8 +145,9 @@ async function runMission(missionId, opts = {}) {
       // undiagnosable (a dead creative URL / unreadable image surfaces as a
       // bare "400 invalid_request"). Capture the stage + message before the
       // outer handler marks the mission failed.
+      let caResult;
       try {
-        await analyzeCreative({ mission });
+        caResult = await analyzeCreative({ mission });
       } catch (caErr) {
         logger.error('Mission run: creative analysis failed', { missionId, err: caErr.message });
         try {
@@ -181,6 +163,19 @@ async function runMission(missionId, opts = {}) {
         }
         throw caErr; // outer handler marks the mission failed
       }
+      // Pass 49 — the creative path's stale-writer check. analyzeCreative's
+      // terminal write is scoped to status='processing'; when it matches 0
+      // rows the mission had already been resolved by someone else (reaper
+      // auto-fail, admin force-complete, concurrent resume) and THIS run's
+      // creative_analysis was correctly not persisted. Telling the customer
+      // their report is ready would then be a lie about a mission this
+      // process does not own. analyzeCreative has already logged the
+      // incident and raised the admin_alert.
+      if (caResult && caResult.terminalWriteLost) {
+        logger.error('Mission run: creative analysis finished but its terminal write was LOST — notification suppressed', { missionId });
+        return;
+      }
+
       logger.info('Mission run: creative analysis complete', { missionId });
 
       // Notification — Bug 23.12 templated copy. Bug 23.50 fix: use the
