@@ -16,6 +16,7 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 const supabase  = require('../../db/supabase');
+const { updateMission, stampMissionHeartbeat } = require('../../db/missionSchema');
 const { callClaude, extractJSON } = require('./anthropic');
 // Pass 23 — em-dash sanitizer shared with insights.js. Applied to every
 // creative_analysis JSONB write so CA reports have the same prose
@@ -574,10 +575,24 @@ async function analyzeCreative({ mission }) {
   });
 
   // 3. Analyze each frame with Claude vision
+  //
+  // Pass 49 heartbeat. This loop runs up to `maxFrames` (30) SERIAL vision
+  // calls plus a synthesis call, and it used to stamp nothing at all. The
+  // last heartbeat a creative run got was the single one runMission writes
+  // right after the claim, so the row went silent for the whole analysis.
+  // missionRecovery's Job 1 auto-fails a 'processing' mission whose
+  // heartbeat is older than JOB1_HEARTBEAT_STALE_MIN (45 min), which means
+  // a legitimate long video run was reaped mid-flight and the customer's
+  // paid mission was marked failed while it was still working.
+  //
+  // Stamped after every frame, so the gap the reaper sees is one vision
+  // call, not the whole run.
   const frameAnalyses = [];
   for (const frame of frames) {
     const result = await analyzeFrame({ frame, mission, mediaType: frameMediaType });
     if (result) frameAnalyses.push(result);
+
+    await stampMissionHeartbeat(supabase, mission.id, 'creativeAttention: frame loop');
 
     // Small delay to avoid rate limiting on long videos
     if (frames.length > 5) await new Promise((r) => setTimeout(r, 200));
@@ -589,7 +604,10 @@ async function analyzeCreative({ mission }) {
     of:        frames.length,
   });
 
-  // 4. Synthesize into summary report
+  // 4. Synthesize into summary report. One more stamp first: synthesis is
+  //    another unbounded LLM call and the frame loop's last heartbeat would
+  //    otherwise have to cover it.
+  await stampMissionHeartbeat(supabase, mission.id, 'creativeAttention: synthesis');
   const summary = await synthesizeCreativeInsights({ frameAnalyses, mission });
 
   // 5. Persist to mission
@@ -614,19 +632,77 @@ async function analyzeCreative({ mission }) {
     ...(creative_effectiveness ? { creative_effectiveness } : {}),
   };
 
-  const { error: saveErr } = await supabase.from('missions').update({
+  // Pass 49 — TERMINAL WRITE, STATUS-SCOPED.
+  //
+  // This write used to be UNCONDITIONAL: it filtered on the mission id
+  // alone, exactly like runMission's completion write did before Pass 49
+  // scoped it (src/jobs/runMission.js, `scope: { status: 'processing' }`).
+  // So a creative run that the Job 1 reaper had already auto-failed, or
+  // that an admin had force-completed, or that a concurrent Job 3 resume
+  // had already finished, would stamp 'completed' straight back over that
+  // newer terminal state and hand the customer a completion notification
+  // for a mission somebody else had resolved. creative_attention bypassed
+  // the whole Pass-49 protection because it never went through
+  // updateMission at all.
+  //
+  // Scoping to status='processing' makes the write conditional on this
+  // process still owning the claim runMission took on its behalf.
+  const {
+    error:   saveErr,
+    matched: saveMatched,
+  } = await updateMission(supabase, mission.id, {
     creative_analysis: creative_analysis_v2,
     status:       'completed',
     completed_at: new Date().toISOString(),
-  }).eq('id', mission.id);
+  }, { caller: 'creativeAttention: complete', scope: { status: 'processing' } });
 
   if (saveErr) {
     logger.error('[CreativeAttention] save failed', { missionId: mission.id, err: saveErr.message });
     throw saveErr;
   }
 
+  // 0 rows matched => the mission left 'processing' while we were analysing.
+  // We are the stale writer.
+  //
+  // Deliberately NOT a throw: runMission's creative bypass persists an
+  // analysis_error and rethrows, and its outer handler then marks the
+  // mission 'failed' — which would clobber the newer terminal state with a
+  // DIFFERENT wrong value instead of the one we just refused to write.
+  // Report it instead, and let the caller suppress the customer-facing
+  // side effects.
+  if (saveMatched === 0) {
+    logger.error('[CreativeAttention] TERMINAL WRITE LOST — mission is no longer processing; another writer resolved it', {
+      missionId: mission.id,
+      attempted: 'status=completed',
+      frames:    frames.length,
+      note:      'creative_analysis from THIS process was NOT persisted; customer notification suppressed',
+    });
+    // Ops-visible, same channel and shape runMission uses for its own lost
+    // terminal write: someone has to decide whether to re-run or
+    // force-complete, and a silent drop makes that undiscoverable.
+    try {
+      await supabase.from('admin_alerts').insert({
+        alert_type: 'mission_terminal_write_lost',
+        mission_id: mission.id,
+        user_id:    mission.user_id,
+        payload: {
+          attempted_status: 'completed',
+          stage:            'creative_attention',
+          frames_analyzed:  frameAnalyses.length,
+          action_required:  'A creative analysis finished but could not write its terminal state — the row had already left processing (reaper auto-fail, admin force-complete, or a concurrent run). Check the mission status and re-run or force-complete as appropriate.',
+        },
+        resolved: false,
+      });
+    } catch (alertErr) {
+      logger.warn('[CreativeAttention] terminal_write_lost alert insert failed (non-fatal)', {
+        missionId: mission.id, err: alertErr.message,
+      });
+    }
+    return { frameAnalyses, summary, terminalWriteLost: true };
+  }
+
   logger.info('[CreativeAttention] complete', { missionId: mission.id });
-  return { frameAnalyses, summary };
+  return { frameAnalyses, summary, terminalWriteLost: false };
 }
 
 module.exports = { analyzeCreative, detectImageMime, assertImageWithinVisionLimits };

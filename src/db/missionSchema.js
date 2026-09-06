@@ -500,6 +500,47 @@ function _resetHeartbeatColumnLatch() {
   _heartbeatColumnMissing = false;
 }
 
+/**
+ * Refresh missions.heartbeat_at for a run that still owns the mission.
+ *
+ * THE ONE implementation. runMission had a local closure and recruitLoop
+ * folds the same stamp into writeProgress; creative_attention had neither,
+ * which is how a legitimate 30-frame vision run could sit silent past
+ * JOB1_HEARTBEAT_STALE_MIN (45 min) and be auto-failed mid-flight by the
+ * Job 1 reaper.
+ *
+ * Contract, matching the closure this replaces:
+ *   - Scoped to status='processing'. A run that no longer owns the mission
+ *     must NOT keep the row looking alive; that is the precise opposite of
+ *     what the column is for.
+ *   - Non-fatal in every failure mode. A missed liveness ping must never
+ *     take down the work it is reporting on.
+ *   - No-ops once the 42703 latch has fired, so a schema without the
+ *     hand-applied migration does not 400 on every stamp.
+ *
+ * Deliberately a raw update rather than updateMission(): heartbeat_at is a
+ * liveness ping, not a state transition, and it must not emit the
+ * "SCOPED WRITE MATCHED 0 ROWS" incident log on every tick of a run that
+ * legitimately lost its claim.
+ */
+async function stampMissionHeartbeat(supabase, missionId, caller = 'unknown') {
+  if (isHeartbeatColumnMissing()) return;
+  try {
+    const { error } = await supabase
+      .from('missions')
+      .update({ heartbeat_at: new Date().toISOString() })
+      .eq('id', missionId)
+      .eq('status', 'processing');
+    if (error && !noteHeartbeatColumnMissing(error, caller)) {
+      logger.warn('heartbeat write failed (non-fatal)', {
+        caller, missionId, err: error.message, code: error.code,
+      });
+    }
+  } catch (e) {
+    logger.warn('heartbeat write threw (non-fatal)', { caller, missionId, err: e?.message });
+  }
+}
+
 module.exports = {
   ALLOWED_COLUMNS,
   SERVER_OWNED_COLUMNS,
@@ -510,5 +551,6 @@ module.exports = {
   updateMission,
   isHeartbeatColumnMissing,
   noteHeartbeatColumnMissing,
+  stampMissionHeartbeat,
   _resetHeartbeatColumnLatch,
 };
