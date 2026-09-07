@@ -23,16 +23,50 @@ const { sanitizeDashesString } = require('../src/utils/textSanitize');
 
 const DASHES = /[–—]/;
 
+const { readFileSync } = require('node:fs');
+const { join } = require('node:path');
+
+
+/**
+ * Read the ACTUAL source, not a copy of it.
+ *
+ * The first version of this file asserted against string literals typed into
+ * the test. Putting the em dash back into missionRecovery.js did not fail it,
+ * because the test was never looking at that file. A test that restates the
+ * source instead of reading it is a test of the person who wrote it.
+ */
+const sourceOf = (rel) => readFileSync(join(__dirname, '..', rel), 'utf8');
+
+/** String and template literals in a file, excluding // and * comment lines. */
+function literalsIn(src) {
+  return src
+    .split('\n')
+    .filter((line) => !/^\s*(\*|\/\/)/.test(line))
+    .join('\n')
+    .match(/(['"`])(?:\\.|(?!\1)[^\\])*\1/g) || [];
+}
+
 describe('failure_reason is written without dashes', () => {
-  test('the heartbeat reaper message is clean at the source', () => {
-    // The literal as it now stands in missionRecovery.js reapReason().
-    const msg = `Mission has not checked in for 50 min (>45 min heartbeat threshold), auto-failed by recovery cron`;
-    expect(msg).not.toMatch(DASHES);
+  test('no reaper message in missionRecovery.js carries a dash', () => {
+    // Scoped to reapReason() itself, the function whose return value BECOMES
+    // the column. A first version scanned the whole file and flagged a
+    // logger.error string, which is a developer log, not customer copy. The
+    // rule is about what the customer reads, so the test has to be about the
+    // same thing.
+    const src = sourceOf('src/jobs/missionRecovery.js');
+    const start = src.indexOf('function reapReason');
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf('\n}', start));
+    const offenders = literalsIn(body).filter((lit) => DASHES.test(lit));
+    expect(offenders).toEqual([]);
   });
 
-  test('the no-heartbeat-ever message is clean at the source', () => {
-    const msg = `Mission stuck in 'processing' for >6h with no heartbeat ever recorded, auto-failed by recovery cron`;
-    expect(msg).not.toMatch(DASHES);
+  test('every failure_reason write site routes through the sanitizer', () => {
+    // Source-level, because the alternative is asserting a copy of the code.
+    const recovery = sourceOf('src/jobs/missionRecovery.js');
+    const run      = sourceOf('src/jobs/runMission.js');
+    expect(recovery).toMatch(/failure_reason:\s*sanitizeDashesString\(/);
+    expect(run).toMatch(/failureReasonForColumn|failure_reason:\s*sanitizeDashesString\(/);
   });
 
   test('the sanitizer catches a dash that reaches it from upstream', () => {
