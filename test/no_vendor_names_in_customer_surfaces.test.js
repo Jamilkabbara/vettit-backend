@@ -47,7 +47,14 @@ describe('failure_reason is sanitised before it is stored', () => {
     expect(src).not.toMatch(
       /const failureReason = String\(err && err\.message \? err\.message : 'Unknown error'\)/,
     );
-    expect(src).toMatch(/const failureReason = friendlyFailureReason\(/);
+    // Pass 51: the call site is now failureReasonForColumn(), a thin wrapper
+    // that applies friendlyFailureReason AND the dash sanitiser. The guarantee
+    // this test exists for is unchanged - a raw error message must never reach
+    // the column - so accept either spelling rather than pinning the older one.
+    expect(src).toMatch(/const failureReason = (?:friendlyFailureReason|failureReasonForColumn)\(/);
+    // And the wrapper must actually route through the sanitiser, or renaming
+    // the call site would be enough to satisfy the line above.
+    expect(src).toMatch(/function failureReasonForColumn[\s\S]{0,200}sanitizeDashesString\(\s*friendlyFailureReason\(/);
   });
 
   it('the empty-survey guard does not interpolate a raw error', () => {
