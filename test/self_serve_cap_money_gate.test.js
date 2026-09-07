@@ -46,6 +46,11 @@ jest.mock('../src/jobs/runMission', () => ({ runMission: jest.fn(async () => ({}
 jest.mock('../src/db/missionSchema', () => ({
   updateMission: jest.fn(async () => ({})),
   sanitizeMissionPatch: (p) => ({ patch: p, rejected: [] }),
+  // PATCH now denies server-owned columns before anything else. Delegate to
+  // the REAL partitioner rather than stubbing it flat: a no-op stub would
+  // make these money tests blind to the guard they sit in front of.
+  sanitizeClientMissionPatch:
+    jest.requireActual('../src/db/missionSchema').sanitizeClientMissionPatch,
 }));
 
 let mockMissionRow = null;

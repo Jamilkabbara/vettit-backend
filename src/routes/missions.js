@@ -32,7 +32,11 @@ function aboveSelfServeCapError(respondentCount) {
   };
 }
 const { runMission } = require('../jobs/runMission');
-const { sanitizeMissionPatch, updateMission } = require('../db/missionSchema');
+const {
+  sanitizeMissionPatch,
+  sanitizeClientMissionPatch,
+  updateMission,
+} = require('../db/missionSchema');
 const { isComingSoon, notAvailableError } = require('../config/comingSoon');
 const logger = require('../utils/logger');
 
@@ -930,6 +934,41 @@ router.post('/launch', authenticate, async (req, res, next) => {
 router.patch('/:id', authenticate, async (req, res, next) => {
   try {
     const updates = req.body;
+
+    // ── Server-owned columns are not patchable by a client ──────────────
+    //
+    // This route mapped seven columns straight from the request body onto the
+    // row: total_price_usd, base_cost_usd, targeting_surcharge_usd,
+    // extra_questions_cost_usd, status, target_qualified_count and
+    // ai_spend_ceiling_usd. The re-price below only fires when
+    // respondentCount / questions / targeting change, so a body that names
+    // none of those skipped it entirely and the client's numbers were
+    // persisted verbatim.
+    //
+    // The pair that mattered is target_qualified_count + ai_spend_ceiling_usd.
+    // recruitLoop reads ai_spend_ceiling_usd as the hard spend cap and derives
+    // its iteration ceiling as target_qualified_count * MAX_PERSONAS_PER_TARGET,
+    // so ONE request moved both governors of the loop at once. Either alone is
+    // bounded by the other. That same body writes neither respondent_count nor
+    // total_price_usd, so the pass-51 recompute trigger never fires either, and
+    // a heartbeating run is never reaped. That is uncapped model spend on a
+    // fixed-price sale.
+    //
+    // Only `denied` is checked, never `rejected`. This route's contract is
+    // camelCase (respondentCount, goalType, targetingConfig, missionStatement)
+    // and those are not column names, so they land in `rejected` by design.
+    // Treating `rejected` as an error would 400 every legitimate call.
+    const { denied } = sanitizeClientMissionPatch(updates);
+    if (denied.length) {
+      logger.warn('PATCH /missions: client attempted to write server-owned columns', {
+        missionId: req.params.id, userId: req.user.id, denied,
+      });
+      return res.status(400).json({
+        error: 'server_owned_columns_denied',
+        message: 'These fields are set by the server and cannot be edited directly.',
+        denied,
+      });
+    }
 
     // Pass 25 Phase 0.1 Bug H part 2 — write-time guard. Once responses exist
     // for a mission, its schema (questions / targeting / respondent_count) is
