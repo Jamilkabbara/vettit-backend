@@ -53,6 +53,7 @@ const {
   noteHeartbeatColumnMissing,
 } = require('../db/missionSchema');
 const logger = require('../utils/logger');
+const { sanitizeDashesString } = require('../utils/textSanitize');
 const os = require('os');
 
 // ─── Config ────────────────────────────────────────────────────────────────
@@ -316,8 +317,8 @@ function isReapable(m) {
 function reapReason(m) {
   const hb = heartbeatAgeMin(m);
   return hb != null
-    ? `Mission has not checked in for ${Math.round(hb)} min (>${JOB1_HEARTBEAT_STALE_MIN} min heartbeat threshold) — auto-failed by recovery cron`
-    : `Mission stuck in 'processing' for >${JOB1_STUCK_AFTER_HOURS}h with no heartbeat ever recorded — auto-failed by recovery cron`;
+    ? `Mission has not checked in for ${Math.round(hb)} min (>${JOB1_HEARTBEAT_STALE_MIN} min heartbeat threshold), auto-failed by recovery cron`
+    : `Mission stuck in 'processing' for >${JOB1_STUCK_AFTER_HOURS}h with no heartbeat ever recorded, auto-failed by recovery cron`;
 }
 
 /**
@@ -397,7 +398,7 @@ async function runJob1() {
         // two terminal writes now enforce.
         const { error: reapErr, matched } = await updateMission(supabase, m.id, {
           status:         'failed',
-          failure_reason: reapReason(m),
+          failure_reason: sanitizeDashesString(reapReason(m)),
           completed_at:   new Date().toISOString(),
         }, { caller: 'cron:missionRecovery:job1', scope: { status: 'processing' } });
 
