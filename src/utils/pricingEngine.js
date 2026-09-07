@@ -486,7 +486,7 @@ const SELF_SERVE_LEAD_CAPTURE = {
   endpoint: '/api/crm/lead',   // public, rate-limited (5/hour/IP), dedupes on email
   cta: 'Request a quote',      // exactly what MissionControlPricing sends as `cta`
   page: 'mission_control_pricing',
-  message: 'Studies above this size are run as a managed engagement — leave an email and we will scope it with you.',
+  message: 'Studies above this size are run as a managed engagement. Leave an email and we will scope it with you.',
 };
 
 /**
@@ -841,7 +841,7 @@ function validateMissionPricing({ goalType, respondentCount, mediaType }) {
   if (isAboveSelfServeCap(respondentCount)) {
     return {
       valid: false,
-      error: `Studies above ${MAX_SELF_SERVE_RESPONDENTS.toLocaleString('en-US')} respondents are run as a managed engagement, not self-serve — please contact sales.`,
+      error: `Studies above ${MAX_SELF_SERVE_RESPONDENTS.toLocaleString('en-US')} respondents are run as a managed engagement, not self-serve. Please contact sales.`,
       leadCapture: SELF_SERVE_LEAD_CAPTURE,
     };
   }

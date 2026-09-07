@@ -35,6 +35,7 @@ const {
   updateMission,
   stampMissionHeartbeat,
 } = require('../db/missionSchema');
+const { sanitizeDashesString } = require('../utils/textSanitize');
 // Pass 42 A2 — recruit-until-qualified loop (env-gated). When
 // RECRUIT_LOOP_ENABLED=true the new flow replaces the batch
 // generate+simulate+retry path with a streaming per-persona loop
@@ -218,7 +219,9 @@ async function runMission(missionId, opts = {}) {
         });
         await updateMission(supabase, missionId, {
           status:         'failed',
-          failure_reason: `Mission has no survey questions and run-time generation failed: ${friendlyFailureReason(qErr.message)}`,
+          failure_reason: sanitizeDashesString(
+            `Mission has no survey questions and run-time generation failed: ${friendlyFailureReason(qErr.message)}`,
+          ),
           completed_at:   new Date().toISOString(),
         }, { caller: 'runMission: empty-survey guard' });
         try {
@@ -1064,7 +1067,7 @@ async function runMission(missionId, opts = {}) {
     // on screen. The email path already ran this same sanitiser, which is why
     // only the on-screen path was affected.
     // The raw message and stack are preserved in the logger.error above.
-    const failureReason = friendlyFailureReason(
+    const failureReason = failureReasonForColumn(
       err && err.message ? err.message : 'Unknown error',
     );
 
@@ -1209,6 +1212,21 @@ function friendlyFailureReason(raw) {
   // Generic — first sentence only.
   const firstSentence = r.split(/[.\n]/)[0] || r;
   return firstSentence.slice(0, 180);
+}
+
+/**
+ * failure_reason is rendered straight to the customer: ProcessingPage.tsx
+ * reads the column from Postgres with supabase-js, so nothing between here
+ * and the screen can clean it. Every other user-facing surface (exports,
+ * chat, the report builder) already routes through sanitizeDashesString;
+ * this column was the one that did not, which is why the heartbeat reaper's
+ * "— auto-failed by recovery cron" reached the column verbatim.
+ *
+ * Applied at the WRITE, like the truncation above, because the read side is
+ * a direct table read we do not control.
+ */
+function failureReasonForColumn(raw) {
+  return sanitizeDashesString(friendlyFailureReason(raw));
 }
 
 module.exports = { runMission };
