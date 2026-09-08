@@ -810,34 +810,27 @@ function round2(val) {
  *   - validate / naming_messaging / marketing accept any
  *     respondentCount in [5, 5000].
  *   - Other goal_types fall back to the default ladder (lenient).
+ *
+ * Structure: the METHODOLOGY gates run first and unconditionally; only the
+ * TIER RESOLUTION below them is flag-aware. This split is deliberate. The
+ * goal-specific blocks used to sit BELOW an `if (PRICING_V2_ACTIVE)` early
+ * return, so flipping PRICING_V2 — a pricing flag — would have silently
+ * switched off the brand_lift floor, the creative_attention floor and the
+ * self-serve ceiling. Those three are not prices. The floors are the sample
+ * sizes below which the analysis cannot produce the thing the customer is
+ * buying (brand_lift's exposed/control split cannot detect a realistic lift
+ * under 100; creative_attention's attention model has nothing to average
+ * under 10), and the ceiling is a DELIVERY constraint (wall-clock inside the
+ * 6h recovery backstop at the measured recruit-loop rate). None of them
+ * should move because the price ladder changed.
  */
 function validateMissionPricing({ goalType, respondentCount, mediaType }) {
-  // PRICING V2 (flag on): one canonical ladder for every goal type. The only
-  // hard price gate is the Enterprise/custom tier (500+ respondents) — block
-  // self-serve checkout so a large mission never charges the $0 base. The
-  // brand_lift/creative_attention sample minimums survive only as setup
-  // recommendations, not price gates. (creative_attention still needs a media
-  // type for its analysis pipeline.)
-  if (PRICING_V2_ACTIVE) {
-    if (goalType === 'creative_attention') {
-      const validMedia = new Set(['image', 'video', 'bundle', 'series']);
-      if (!mediaType || !validMedia.has(mediaType)) {
-        return { valid: false, error: 'creative_attention missions require media_type in {image, video, bundle, series}' };
-      }
-    }
-    const c = Number(respondentCount) || 0;
-    if (c < 1) return { valid: false, error: 'respondentCount must be >= 1' };
-    const tier = resolveCanonicalTierV2(c);
-    if (tier.custom) {
-      return { valid: false, error: 'Studies beyond 500 respondents require a custom quote, please contact sales.' };
-    }
-    return { valid: true, tier };
-  }
-  // V1 self-serve ceiling — goal-agnostic, because the constraint is DELIVERY
-  // (wall-clock inside the 6h recovery backstop at the measured recruit-loop
-  // rate), not the price ladder. Fires before any goal-specific gate so a
-  // 3,000-respondent Creative Attention mission is refused for the same reason
-  // a 3,000-respondent validate mission is.
+  // ── Methodology + delivery gates — run in BOTH pricing modes ────────────
+  //
+  // Self-serve ceiling first, goal-agnostic, because the constraint is
+  // delivery, not the price ladder: a 3,000-respondent Creative Attention
+  // mission is refused for the same reason a 3,000-respondent validate
+  // mission is.
   if (isAboveSelfServeCap(respondentCount)) {
     return {
       valid: false,
@@ -853,7 +846,6 @@ function validateMissionPricing({ goalType, respondentCount, mediaType }) {
         error: 'creative_attention missions require media_type in {image, video, bundle, series}',
       };
     }
-    const c = Number(respondentCount) || 0;
     // resolveTier needs the COUNT. Without it the argument arrives as
     // undefined, coerces to 0, trips 0 < CA_MIN_RESPONDENTS and returns null -
     // the documented "invalid combo" signal - for EVERY creative_attention
@@ -861,31 +853,45 @@ function validateMissionPricing({ goalType, respondentCount, mediaType }) {
     // with that null attached, so two things were wrong at once: the CA floor
     // of 10 was never enforced at checkout, and no caller ever received a real
     // CA tier from this function.
-    const tier = resolveTier({ goalType, respondentCount: c, mediaType });
-    if (!tier) {
+    //
+    // resolveTier is used here as the FLOOR ORACLE (null = below
+    // CA_MIN_RESPONDENTS), not as the price source — under PRICING_V2 the
+    // tier that gets returned to the caller is the canonical V2 one below.
+    if (!resolveTier({ goalType, respondentCount: Number(respondentCount) || 0, mediaType })) {
       return {
         valid: false,
         error: `creative_attention missions require at least ${CA_MIN_RESPONDENTS} respondents`,
       };
     }
-    return { valid: true, tier };
   }
   if (goalType === 'brand_lift') {
-    const c = Number(respondentCount) || 0;
-    if (c < BRAND_LIFT_MIN_RESPONDENTS) {
+    if ((Number(respondentCount) || 0) < BRAND_LIFT_MIN_RESPONDENTS) {
       return {
         valid: false,
         error: `brand_lift missions require at least ${BRAND_LIFT_MIN_RESPONDENTS} respondents. Below that the exposed/control split cannot detect a realistic lift.`,
       };
     }
-    return { valid: true, tier: resolveTier({ goalType, respondentCount: c }) };
   }
-  // Default ladder — accept any positive count.
+  // Every remaining goal type accepts any positive count. (creative_attention
+  // and brand_lift already cleared floors well above 1.)
   const c = Number(respondentCount) || 0;
   if (c < 1) {
     return { valid: false, error: 'respondentCount must be >= 1' };
   }
-  return { valid: true, tier: resolveTier({ goalType, respondentCount: c }) };
+
+  // ── Tier resolution — the only flag-aware part ──────────────────────────
+  //
+  // PRICING V2 (flag on): one canonical ladder for every goal type. The only
+  // additional gate is the Enterprise/custom tier (500+ respondents) — block
+  // self-serve checkout so a large mission never charges the $0 base.
+  if (PRICING_V2_ACTIVE) {
+    const tier = resolveCanonicalTierV2(c);
+    if (tier.custom) {
+      return { valid: false, error: 'Studies beyond 500 respondents require a custom quote, please contact sales.' };
+    }
+    return { valid: true, tier };
+  }
+  return { valid: true, tier: resolveTier({ goalType, respondentCount: c, mediaType }) };
 }
 
 // ── Pass 27 — Brand Lift uplift tiers (market + channel) ──────────
