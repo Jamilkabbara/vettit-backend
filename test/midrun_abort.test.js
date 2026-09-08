@@ -151,8 +151,19 @@ describe('recruitLoop mid-run abort', () => {
       require.resolve('../src/services/ai/recruitLoop'), 'utf8');
     // One combined projection, and no second .from('missions') read inside
     // the loop. If someone adds a dedicated status query later, this fails.
-    expect(src).toContain("select('ai_spend_usd_actual, status')");
+    //
+    // Pass 51 widened the projection to carry ai_spend_ceiling_usd as well, so
+    // an operator's mid-flight ceiling change is picked up without a second
+    // query. The invariant this test protects is UNCHANGED and is now asserted
+    // structurally rather than as one exact string: exactly one select on the
+    // mission row inside the loop, carrying all three columns.
+    const selects = src.match(/\.select\('[^']*'\)/g) || [];
+    const missionSelects = selects.filter((x) => x.includes('ai_spend_usd_actual'));
+    expect(missionSelects).toHaveLength(1);
+    expect(missionSelects[0]).toContain('status');
+    expect(missionSelects[0]).toContain('ai_spend_ceiling_usd');
     expect(src).not.toContain("select('status')");
+    expect(src).not.toContain("select('ai_spend_ceiling_usd')");
   });
 
   test('a mission that leaves processing mid-run stops the loop', async () => {
