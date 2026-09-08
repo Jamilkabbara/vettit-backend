@@ -35,54 +35,79 @@ const JOBS_DIR       = path.join(SRC, 'jobs');
 const MISSIONS_ROUTE = path.join(SRC, 'routes', 'missions.js');
 const RUN_MISSION    = path.join(JOBS_DIR, 'runMission.js');
 
-// ── comment stripper ──────────────────────────────────────────────────────
-// A first cut at this scan flagged a logger message and a prose comment that
-// merely QUOTED `.eq('status','processing')`, so comments have to come out
-// before anything is matched. Offsets are preserved (comment bytes become
-// spaces) so a hit can still be reported by line number.
-function stripComments(src) {
-  let out = '';
+// ── lexing ────────────────────────────────────────────────────────────────
+// The scan has to tell three lookalikes apart, because two of them are
+// harmless and one is the bug:
+//
+//   .eq('status', 'paid')                     ← CODE. the thing we care about
+//   // a comment describing .eq('status','paid')   ← prose
+//   logger.debug("... .eq('status','paid')")  ← a message ABOUT the query
+//
+// A plain substring or line grep flags all three. So each file is lexed once
+// into three same-length views (offsets preserved, so a hit still reports its
+// real line):
+//
+//   codeMask       1 where a byte is code (string delimiters included),
+//                  0 inside a comment or inside a string BODY
+//   noComments     comments blanked, string bodies kept  — used to MATCH the
+//                  filters, whose arguments are string literals
+//   codeOnly       comments AND string bodies blanked    — used to CLASSIFY
+//                  the surrounding chain, so a verb quoted in a message can
+//                  never be mistaken for a call
+// Views are built as UTF-16 code-unit arrays, not Buffers: these files are
+// full of box-drawing characters and em dashes, and byte offsets would not
+// line up with the string indices the regexes report.
+function lex(src) {
+  const mask       = new Uint8Array(src.length);
+  const noComments = src.split('');
+  const codeOnly   = src.split('');
+  const blank = (buf, i) => { if (i < src.length && src[i] !== '\n') buf[i] = ' '; };
+
   let state = 'code'; // code | line | block | sq | dq | tpl
   for (let i = 0; i < src.length; ) {
     const c = src[i];
     const d = src[i + 1];
     if (state === 'code') {
-      if (c === '/' && d === '/') { state = 'line';  out += '  '; i += 2; continue; }
-      if (c === '/' && d === '*') { state = 'block'; out += '  '; i += 2; continue; }
-      if (c === "'")      state = 'sq';
-      else if (c === '"') state = 'dq';
-      else if (c === '`') state = 'tpl';
-      out += c; i += 1; continue;
+      if (c === '/' && d === '/') { state = 'line';  continue; }
+      if (c === '/' && d === '*') { state = 'block'; blank(noComments, i); blank(codeOnly, i); i += 1; continue; }
+      if (c === "'" || c === '"' || c === '`') {
+        mask[i] = 1;
+        state = c === "'" ? 'sq' : c === '"' ? 'dq' : 'tpl';
+        i += 1; continue;
+      }
+      mask[i] = 1; i += 1; continue;
     }
     if (state === 'line') {
-      if (c === '\n') { state = 'code'; out += c; i += 1; continue; }
-      out += ' '; i += 1; continue;
+      if (c === '\n') { state = 'code'; mask[i] = 1; i += 1; continue; }
+      blank(noComments, i); blank(codeOnly, i); i += 1; continue;
     }
     if (state === 'block') {
-      if (c === '*' && d === '/') { state = 'code'; out += '  '; i += 2; continue; }
-      out += (c === '\n' ? '\n' : ' '); i += 1; continue;
+      blank(noComments, i); blank(codeOnly, i);
+      if (c === '*' && d === '/') { blank(noComments, i + 1); blank(codeOnly, i + 1); state = 'code'; i += 2; continue; }
+      i += 1; continue;
     }
-    // inside a string / template literal — kept verbatim, escapes respected
-    if (c === '\\') { out += c + (src[i + 1] || ''); i += 2; continue; }
+    // string / template body
+    if (c === '\\') { blank(codeOnly, i); blank(codeOnly, i + 1); i += 2; continue; }
     if ((state === 'sq'  && c === "'")
      || (state === 'dq'  && c === '"')
-     || (state === 'tpl' && c === '`')) state = 'code';
-    out += c; i += 1; continue;
+     || (state === 'tpl' && c === '`')) { mask[i] = 1; state = 'code'; i += 1; continue; }
+    blank(codeOnly, i); i += 1; continue;
   }
-  return out;
+  return { mask, noComments: noComments.join(''), codeOnly: codeOnly.join('') };
 }
 
 /**
- * The stripper is the weakest link in this suite: if it silently mangled a
- * file (a mis-parsed string, an unbalanced state) the scan below would read
- * garbage and pass on everything. So every stripped file is re-parsed. A
- * stripper bug becomes a loud failure here instead of a quiet all-clear.
+ * The lexer is the weakest link in this suite: if it silently desynced on a
+ * file the scan would read garbage and pass on everything. So the blanked
+ * views are re-parsed. A lexer bug becomes a loud failure here instead of a
+ * quiet all-clear.
  */
-function stripAndVerify(file) {
-  const stripped = stripComments(fs.readFileSync(file, 'utf8'));
-  expect(() => new vm.Script(`(async function(){\n${stripped}\n})`, { filename: file }))
-    .not.toThrow();
-  return stripped;
+function lexAndVerify(file) {
+  const views = lex(fs.readFileSync(file, 'utf8'));
+  for (const view of [views.noComments, views.codeOnly]) {
+    expect(() => new vm.Script(`(async function(){\n${view}\n})`, { filename: file })).not.toThrow();
+  }
+  return views;
 }
 
 function listJsFiles(dir) {
@@ -108,31 +133,38 @@ function lineOf(src, index) {
 // is still caught.
 const WRITE_VERBS = ['.update(', '.upsert(', '.delete(', '.insert('];
 
-function chainSegment(stripped, matchIndex) {
-  const from = stripped.lastIndexOf('.from(', matchIndex);
-  return stripped.slice(from === -1 ? 0 : from, matchIndex);
-}
-
-function isWriteChain(segment) {
-  return WRITE_VERBS.some((v) => segment.includes(v));
+function chainSegment(codeOnly, matchIndex) {
+  const from = codeOnly.lastIndexOf('.from(', matchIndex);
+  return codeOnly.slice(from === -1 ? 0 : from, matchIndex);
 }
 
 /** Every place a file filters a query to status='paid', classified. */
-function findPaidStatusFilters(stripped) {
+function findPaidStatusFilters(views) {
+  const { mask, noComments, codeOnly } = views;
   const hits = [];
   const record = (kind, index) => {
-    const segment = chainSegment(stripped, index);
-    hits.push({ kind, index, line: lineOf(stripped, index), segment, write: isWriteChain(segment) });
+    if (!mask[index]) return; // the match starts inside a comment or a message string
+    // Classify off codeOnly so a verb quoted in a log message cannot pass for
+    // a call; inspect literals off noComments, where the payload survives.
+    const segment = chainSegment(codeOnly, index);
+    hits.push({
+      kind, index, segment,
+      payload: chainSegment(noComments, index),
+      line:    lineOf(noComments, index),
+      write:   WRITE_VERBS.some((v) => segment.includes(v)),
+    });
   };
-  for (const m of stripped.matchAll(/\.eq\(\s*(['"])status\1\s*,\s*(['"])paid\2\s*\)/g)) {
+  for (const m of noComments.matchAll(/\.eq\(\s*(['"])status\1\s*,\s*(['"])paid\2\s*\)/g)) {
     record('eq', m.index);
   }
   // `.in('status', [...])` including 'paid' is the same door with a wider frame.
-  for (const m of stripped.matchAll(/\.in\(\s*(['"])status\1\s*,\s*(\[[^\]]*\])/g)) {
+  for (const m of noComments.matchAll(/\.in\(\s*(['"])status\1\s*,\s*(\[[^\]]*\])/g)) {
     if (/['"]paid['"]/.test(m[2])) record('in', m.index);
   }
   return hits;
 }
+
+const scan = (source) => findPaidStatusFilters(lex(source));
 
 describe('the scanner itself is looking at real files', () => {
   test('src/jobs is discovered and contains the two known job files', () => {
@@ -146,18 +178,21 @@ describe('the scanner itself is looking at real files', () => {
     // for everything cannot make the real scan below pass by accident.
     const read  = `supabase.from('missions').select('id').eq('status', 'paid');`;
     const write = `supabase.from('missions').update({ status: 'processing' }).eq('id', id).eq('status', 'paid');`;
-    expect(findPaidStatusFilters(read)[0].write).toBe(false);
-    expect(findPaidStatusFilters(write)[0].write).toBe(true);
+    expect(scan(read)[0].write).toBe(false);
+    expect(scan(write)[0].write).toBe(true);
   });
 
-  test('the stripper removes comments and keeps code', () => {
-    const stripped = stripComments(
-      `const a = 1; // .eq('status', 'paid')\n/* .eq('status','paid') */\nconst b = ".eq('status','paid')";\n`,
-    );
-    expect(stripped).toMatch(/const a = 1;/);
-    expect(stripped).toMatch(/const b =/);
-    // Two of the three occurrences were commentary; the string literal is code.
-    expect(findPaidStatusFilters(stripped)).toHaveLength(1);
+  test('prose and log messages that merely QUOTE the query are not flagged', () => {
+    // This is the false-positive class that made a first attempt at this scan
+    // useless. All four of these are noise; only the last line is a query.
+    const noise = [
+      `// never .eq('status', 'paid') to find work`,
+      `/* .eq('status','paid') and .in('status',['paid']) */`,
+      `logger.error("recovery must not .eq('status','paid')");`,
+      "logger.warn(`saw .in('status', ['paid'])`);",
+    ].join('\n');
+    expect(scan(noise)).toHaveLength(0);
+    expect(scan(`${noise}\nsupabase.from('m').select('id').eq('status', 'paid');`)).toHaveLength(1);
   });
 });
 
@@ -176,12 +211,12 @@ describe('reason 1 — the route treats paid as terminal-or-running', () => {
 
   test('the set is actually consulted by the generate-responses guard', () => {
     // A Set nobody reads gates nothing.
-    expect(stripAndVerify(MISSIONS_ROUTE)).toMatch(/TERMINAL_OR_RUNNING\.has\(/);
+    expect(lexAndVerify(MISSIONS_ROUTE).codeOnly).toMatch(/TERMINAL_OR_RUNNING\.has\(/);
   });
 });
 
 describe("reason 2 — runMission's claim is scoped to status='paid'", () => {
-  const hits = findPaidStatusFilters(stripAndVerify(RUN_MISSION));
+  const hits = findPaidStatusFilters(lexAndVerify(RUN_MISSION));
 
   test('the claim exists and is a WRITE, not a scan', () => {
     expect(hits.filter((h) => h.write).length).toBeGreaterThan(0);
@@ -190,7 +225,7 @@ describe("reason 2 — runMission's claim is scoped to status='paid'", () => {
   test("the claim flips the row to 'processing' only from 'paid'", () => {
     const claim = hits.find((h) => h.write);
     expect(claim.segment).toMatch(/\.update\(/);
-    expect(claim.segment).toMatch(/status:\s*['"]processing['"]/);
+    expect(claim.payload).toMatch(/status:\s*['"]processing['"]/);
   });
 });
 
@@ -200,7 +235,7 @@ describe('reason 3 — no job SCANS for paid in order to trigger a run', () => {
   test.each(jobFiles.map((f) => [path.relative(SRC, f), f]))(
     'src/%s does not read-scan missions by status=paid',
     (rel, file) => {
-      const reads = findPaidStatusFilters(stripAndVerify(file)).filter((h) => !h.write);
+      const reads = findPaidStatusFilters(lexAndVerify(file)).filter((h) => !h.write);
       const detail = reads.map((h) => `  ${rel}:${h.line} (${h.kind})`).join('\n');
       expect(reads.length === 0 ? '' : `\n${detail}`).toBe('');
     },
@@ -209,9 +244,9 @@ describe('reason 3 — no job SCANS for paid in order to trigger a run', () => {
   test('the pollers that DO exist scan the statuses they are documented to scan', () => {
     // Pins the shape of the recovery sweeps, so "job2 now scans paid instead
     // of pending_payment" is a failure here and not a silent money door.
-    const recovery = stripAndVerify(path.join(JOBS_DIR, 'missionRecovery.js'));
-    expect(recovery).toMatch(/\.eq\(\s*['"]status['"]\s*,\s*['"]processing['"]\s*\)/);
-    expect(recovery).toMatch(/\.eq\(\s*['"]status['"]\s*,\s*['"]pending_payment['"]\s*\)/);
+    const recovery = lexAndVerify(path.join(JOBS_DIR, 'missionRecovery.js'));
+    expect(recovery.noComments).toMatch(/\.eq\(\s*['"]status['"]\s*,\s*['"]processing['"]\s*\)/);
+    expect(recovery.noComments).toMatch(/\.eq\(\s*['"]status['"]\s*,\s*['"]pending_payment['"]\s*\)/);
     expect(findPaidStatusFilters(recovery)).toHaveLength(0);
   });
 });
