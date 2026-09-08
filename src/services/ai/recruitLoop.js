@@ -64,12 +64,43 @@ function shouldUseRecruitLoop(mission) {
 }
 
 /**
- * Conservative estimate of the marginal cost of running a full
- * survey for one persona. Used pre-emptively to avoid breaching the
- * ceiling on the *next* call. Sourced from Pass 27 vendor cost
- * audit p95 + 50% headroom.
+ * Conservative estimate of the marginal cost of running a full survey for one
+ * persona. Used PRE-EMPTIVELY: if the next persona's worst-case cost would
+ * breach the ceiling, exit now rather than pay for work we would discard.
+ *
+ * Pass 51 — lowered from 0.15 to 0.03 against measured production data.
+ *
+ * 0.15 came from the Pass 27 vendor cost audit p95 plus 50% headroom, which
+ * was an estimate made before any mission had run at scale. Measured across
+ * 31 completed missions:
+ *
+ *   n <= 5      18 missions, 90 personas    $0.0302 / persona
+ *   n 6-20       9 missions, 90 personas    $0.0095 / persona
+ *   n 21-100     3 missions, 190 personas   $0.0095 / persona
+ *   n > 100      1 mission, 300 personas    $0.0078 / persona
+ *
+ * The n<=5 figure is a fixed-cost artefact: survey generation and synthesis
+ * are per-mission, so at five personas they are amortised over five people.
+ * Past n=20 the curve flattens to the marginal rate of roughly $0.009.
+ *
+ * 0.15 was therefore 15 to 19x the marginal cost at any sellable size, which
+ * made this check decorative: the hard ceiling comparison above it always
+ * fired first, so the pre-emptive exit this constant exists to trigger never
+ * happened. A guard that cannot fire is not a guard.
+ *
+ * 0.03 is deliberately still conservative: about 3x the measured marginal
+ * rate, and above the n<=5 worst case of $0.0302, so small missions stay
+ * covered. It is NOT the measured value and should not be tuned down to one.
+ *
+ * NOT COVERED BY THIS MEASUREMENT: creative_attention, which has no personas
+ * and is exempted from the ceiling check entirely (see shouldEnforceCeiling
+ * above). Its image pipeline measures ~$0.042 per creative across six
+ * completed missions; its VIDEO pipeline is unmeasured and runs up to 30
+ * vision calls per creative rather than 3, so do not extrapolate.
  */
-const ESTIMATED_FULL_SURVEY_COST_USD = 0.15;
+const ESTIMATED_FULL_SURVEY_COST_USD = Number(
+  process.env.ESTIMATED_FULL_SURVEY_COST_USD || 0.03,
+);
 
 /**
  * Hard cap on iterations regardless of ceiling. Prevents runaway
