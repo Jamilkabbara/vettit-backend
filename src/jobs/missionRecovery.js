@@ -138,6 +138,7 @@ const LOCK_STALE_MINUTES = 15;
 // ─── State ─────────────────────────────────────────────────────────────────
 
 let _job1Timer = null;
+let _job4Timer = null;
 let _job2Timer = null;
 let _job1InFlight = false;
 let _job2InFlight = false;
@@ -759,6 +760,76 @@ async function runJob3BootResume() {
 /**
  * Start both interval loops. Idempotent — calling twice resets timers.
  */
+
+// ─── Job 4: daily unresolved-alert digest ────────────────────────────────
+//
+// alertAdmin() writes to admin_alerts and stops. When this shipped the table
+// held 26 unresolved rows, the oldest four months old, including a
+// mission_stuck_processing from six days earlier. The alerts were right;
+// nobody was reading them.
+//
+// Scoped to alerts raised in the WINDOW, not to every unresolved row. Two
+// reasons: a first run would otherwise mail the whole historical backlog in
+// one go, and an alert that has sat unresolved for four months is a backlog
+// item to work through once, not something to re-report every morning.
+
+const DIGEST_WINDOW_HOURS = Number(process.env.ADMIN_DIGEST_WINDOW_HOURS || 24);
+const DIGEST_INTERVAL_MS  = Number(process.env.ADMIN_DIGEST_INTERVAL_MS || 24 * 60 * 60 * 1000);
+const DIGEST_TO           = process.env.ADMIN_ALERT_EMAIL || 'kabbarajamil@gmail.com';
+
+let _job4Running = false;
+
+async function runJob4() {
+  if (_job4Running) return { skipped: true, reason: 'overlap' };
+  _job4Running = true;
+  try {
+    if (!(await tryAcquireLock('admin_alert_digest'))) {
+      return { skipped: true, reason: 'lock' };
+    }
+    try {
+      const since = new Date(Date.now() - DIGEST_WINDOW_HOURS * 3600 * 1000).toISOString();
+      const { data, error } = await supabase
+        .from('admin_alerts')
+        .select('id, alert_type, mission_id, payload, created_at')
+        .eq('resolved', false)
+        .gte('created_at', since)
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: true });
+      if (error) throw error;
+
+      const alerts = Array.isArray(data) ? data : [];
+      if (alerts.length === 0) {
+        logger.debug('[cron] job4: no unresolved alerts in window, no email sent');
+        return { sent: false, reason: 'empty' };
+      }
+
+      // Lazily required: services/email.js constructs a Resend client at
+      // module load and throws without RESEND_API_KEY. Requiring it at the
+      // top would make this whole recovery cron unimportable wherever that
+      // key is absent, which is every unit test and any deploy that has not
+      // configured mail yet. The digest is the only thing that should break
+      // when mail is unconfigured.
+      const emailService = require('../services/email');
+      const res = await emailService.sendAdminAlertDigest({
+        to: DIGEST_TO, alerts, windowHours: DIGEST_WINDOW_HOURS,
+      });
+      logger.info('[cron] job4: admin alert digest sent', {
+        count: alerts.length, to: DIGEST_TO,
+      });
+      return res;
+    } finally {
+      await releaseLock('admin_alert_digest');
+    }
+  } catch (err) {
+    // Non-fatal by construction. A digest that cannot be delivered must never
+    // take down the recovery cron it shares a process with.
+    logger.error('[cron] job4 digest failed (non-fatal)', { err: err?.message });
+    return { sent: false, reason: 'error' };
+  } finally {
+    _job4Running = false;
+  }
+}
+
 function init(opts = {}) {
   const { job1IntervalMs = JOB1_INTERVAL_MS_DEFAULT,
           job2IntervalMs = JOB2_INTERVAL_MS_DEFAULT } = opts;
@@ -774,6 +845,7 @@ function init(opts = {}) {
 
   _job1Timer = setInterval(() => { runJob1().catch(() => {}); }, job1IntervalMs);
   _job2Timer = setInterval(() => { runJob2().catch(() => {}); }, job2IntervalMs);
+  _job4Timer = setInterval(() => { runJob4().catch(() => {}); }, DIGEST_INTERVAL_MS);
 
   // Pass 22 Bug 22.10c hotfix — kick off both jobs ~30s after init so the
   // first tick happens regardless of redeploy frequency. Without this,
@@ -813,10 +885,15 @@ function shutdown() {
     clearInterval(_job2Timer);
     _job2Timer = null;
   }
+  if (_job4Timer) {
+    clearInterval(_job4Timer);
+    _job4Timer = null;
+  }
 }
 
 module.exports = {
   init,
+  runJob4,
   shutdown,
   // exported for tests / one-off admin tooling
   runJob1,

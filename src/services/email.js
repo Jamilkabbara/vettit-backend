@@ -45,6 +45,72 @@ const card = (inner) =>
   `<div style="background:#111827;border:1px solid #1f2937;border-radius:12px;padding:22px;margin:16px 0;">${inner}</div>`;
 
 // ─── Welcome ──────────────────────────────────────────────
+/**
+ * Daily digest of unresolved admin alerts.
+ *
+ * alertAdmin() has always written to public.admin_alerts and stopped there.
+ * At the time this shipped the table held 26 unresolved rows, the oldest
+ * four months old, including a mission_stuck_processing from six days
+ * earlier. The alerts were correct; nobody was reading them.
+ *
+ * Deliberately a DIGEST, not per-event: alertAdmin already dedupes on
+ * (alert_type, mission_id) for unresolved rows, so per-event mail would not
+ * be noisy, but a once-daily summary is the right shape for something whose
+ * whole job is "notice this eventually".
+ *
+ * Returns { sent: false, reason: 'empty' } when there is nothing to report.
+ * A daily "nothing happened" email trains you to ignore the channel, which
+ * defeats the point of having one.
+ */
+async function sendAdminAlertDigest({ to, alerts, windowHours = 24 }) {
+  if (!Array.isArray(alerts) || alerts.length === 0) {
+    return { sent: false, reason: 'empty' };
+  }
+
+  const byType = new Map();
+  for (const a of alerts) {
+    const k = a.alert_type || 'unknown';
+    if (!byType.has(k)) byType.set(k, []);
+    byType.get(k).push(a);
+  }
+
+  const esc = (v) => String(v == null ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  const sections = [...byType.entries()].map(([type, rows]) => {
+    const items = rows.slice(0, 10).map((r) => {
+      const mid = r.mission_id ? String(r.mission_id).slice(0, 8) : null;
+      const action = r.payload && r.payload.action_required
+        ? `<div style="color:#8A8DA0;font-size:12px;margin-top:3px">${esc(r.payload.action_required)}</div>`
+        : '';
+      const link = mid
+        ? `<a href="${APP_URL}/results/${esc(r.mission_id)}" style="color:#BEF264;text-decoration:none">${esc(mid)}</a>`
+        : '<span style="color:#54576A">no mission</span>';
+      return `<li style="margin:0 0 9px">${link}${action}</li>`;
+    }).join('');
+    const more = rows.length > 10
+      ? `<div style="color:#54576A;font-size:12px">and ${rows.length - 10} more</div>`
+      : '';
+    return card(`<div style="font-weight:600;margin-bottom:8px">${esc(type)} (${rows.length})</div>`
+      + `<ul style="margin:0;padding-left:18px;font-size:13px">${items}</ul>${more}`);
+  }).join('');
+
+  const total = alerts.length;
+  await resend.emails.send({
+    from: FROM,
+    to,
+    subject: `VETT admin: ${total} unresolved alert${total === 1 ? '' : 's'}`,
+    html: shell({
+      preheader: `${total} unresolved alert${total === 1 ? '' : 's'} in the last ${windowHours}h`,
+      body: `<h2 style="margin:0 0 6px">Unresolved admin alerts</h2>`
+        + `<p style="color:#8A8DA0;margin:0 0 18px;font-size:13px">`
+        + `${total} raised in the last ${windowHours} hours. This email is only sent when there is something in it.</p>`
+        + sections,
+    }),
+  });
+  return { sent: true, count: total };
+}
+
 async function sendWelcomeEmail({ to, name }) {
   try {
     return await resend.emails.send({
@@ -315,6 +381,7 @@ async function sendChatOverageEmail({ to, name, messagesGranted = 50, priceUsd =
 }
 
 module.exports = {
+  sendAdminAlertDigest,
   sendWelcomeEmail,
   sendMissionLaunchedEmail,
   sendMissionCompletedEmail,
