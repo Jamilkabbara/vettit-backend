@@ -260,11 +260,19 @@ async function createCheckoutSession({
     cancel_url:  cancelUrl,
     // 1-hour expiry on Sessions; user can re-create via "Resume checkout".
     expires_at: Math.floor(Date.now() / 1000) + 60 * 60,
-    // Stripe-native promotion code field on the Checkout page. Pre-applied
-    // promos via our /api/pricing/quote bake into the unit_amount; this
-    // toggle lets users enter additional codes Stripe-side if we ever
-    // sync our promo_codes table to Stripe Coupons.
-    allow_promotion_codes: true,
+    // Stripe-native promotion code field on the Checkout page.
+    //
+    // Pass 51 — promo entry is now IN THE APP, at the pricing step, on every
+    // mission type. Leaving Stripe's box open would mean two entry points with
+    // two authorities: ours resolves the code against promo_codes and bakes
+    // the result into unit_amount below, while Stripe's applies its own coupon
+    // objects on top of a line item we have already discounted. The same code
+    // could be applied twice, once on each side.
+    //
+    // One entry point, one price authority. The four codes synced to Stripe
+    // keep their coupon objects but become unreachable, since this is the only
+    // thing that surfaced the box.
+    allow_promotion_codes: false,
     // Session-level metadata for checkout.session.* webhook events.
     metadata: {
       missionId: missionId || '',
