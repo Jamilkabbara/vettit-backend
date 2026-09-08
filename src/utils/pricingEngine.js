@@ -79,14 +79,68 @@ const TIER_RATES = {
 // anchorCount. Creative Attention tiers carry assetCount instead of anchor
 // count, with packagePrice as the flat charge.
 
-/** Default volume ladder — used by validate, naming_messaging, marketing. */
+/**
+ * Default volume ladder — used by validate, naming_messaging, marketing, and
+ * every goal not named in getPricingForGoalType.
+ *
+ * ── The 2026-09 reprice: round prices first, rates derived ──────────────────
+ *
+ * The old ladder was built rate-first and the anchor prices fell out of it.
+ * That produced a rate curve that was not monotone:
+ *
+ *     n=5    $1.80/resp      n=10   $3.50/resp      n=50   $1.98/resp
+ *
+ * A customer who moved the slider from 5 to 10 paid $9 -> $35, and their
+ * per-respondent rate nearly DOUBLED, then halved again by n=50. $3.50 was not
+ * a decision about what ten respondents are worth; it was the number that made
+ * 10 x rate land on $35. Every price between the anchors was whatever the
+ * multiplication produced.
+ *
+ * This ladder inverts the construction. The price at each anchor is chosen
+ * first, as a number a customer can read, and ratePerResp is DERIVED as
+ * price / anchorCount:
+ *
+ *   |  up to  |  price  |  derived rate  |
+ *   |       5 |      $9 |    9 /    5 = 1.8000 |
+ *   |      25 |     $39 |   39 /   25 = 1.5600 |
+ *   |     100 |    $149 |  149 /  100 = 1.4900 |
+ *   |     250 |    $299 |  299 /  250 = 1.1960 |
+ *   |     500 |    $499 |  499 /  500 = 0.9980 |
+ *   |   1,000 |    $899 |  899 / 1000 = 0.8990 |
+ *   |   1,250 |  $1,099 | 1099 / 1250 = 0.8792 |
+ *
+ * The rate is now monotone DECREASING across the whole ladder, which is what
+ * "buying more is cheaper per unit" is supposed to mean, and every anchor
+ * renders as a round price without a second hand-maintained copy of it.
+ * packagePrice is kept ONLY as documentation of the anchor that generated the
+ * rate — respondentLadderBase and getActiveTierTable both compute from
+ * ratePerResp, so the two can never drift.
+ *
+ * WHAT THIS COSTS. Removing the $3.50 spike makes n=10 cost $15.60 instead of
+ * $35, and n=50 cost $74.50 instead of $99. Against the 23 charged missions in
+ * production at the time of the change (all of them n=1, 5 or 10) this ladder
+ * bills 42.6% less. That is not an accident of the reprice, it IS the reprice:
+ * n=10 at $35 was the single most-bought price point and it was also the one
+ * charging double the surrounding rate. The ladder gets more expensive than
+ * today from n=75 upward, which is the range the un-gated methodologies sell
+ * into.
+ *
+ * THE TOP BRACKET IS OPEN-ENDED ON PURPOSE. Its anchor, 1,250, is
+ * MAX_SELF_SERVE_RESPONDENTS — the last count that is actually sellable. Above
+ * that, isAboveSelfServeCap flags customQuote and the routes capture a lead
+ * instead of charging. Leaving maxCount at Infinity means that if the cap is
+ * ever raised by env, price keeps rising at $0.8792/resp rather than flattening
+ * into a plateau. That is what retired the old 1,000 -> 5,000 linear bridge:
+ * the bridge existed to close a flat $900 band that this ladder cannot form.
+ */
 const VOLUME_TIERS = [
-  { id: 'sniff_test', name: 'Sniff Test', anchorCount: 5,    maxCount: 5,    ratePerResp: 1.80, packagePrice: 9    },
-  { id: 'validate',   name: 'Validate',   anchorCount: 10,   maxCount: 10,   ratePerResp: 3.50, packagePrice: 35   },
-  { id: 'confidence', name: 'Confidence', anchorCount: 50,   maxCount: 50,   ratePerResp: 1.98, packagePrice: 99   },
-  { id: 'deep_dive',  name: 'Deep Dive',  anchorCount: 250,  maxCount: 250,  ratePerResp: 1.20, packagePrice: 300  },
-  { id: 'scale',      name: 'Scale',      anchorCount: 1000, maxCount: 1000, ratePerResp: 0.90, packagePrice: 900  },
-  { id: 'enterprise', name: 'Enterprise', anchorCount: 5000, maxCount: Infinity, ratePerResp: 0.40, packagePrice: 2000 },
+  { id: 'sniff_test', name: 'Sniff Test', anchorCount: 5,    maxCount: 5,    ratePerResp: 9    / 5,    packagePrice: 9    },
+  { id: 'validate',   name: 'Validate',   anchorCount: 25,   maxCount: 25,   ratePerResp: 39   / 25,   packagePrice: 39   },
+  { id: 'confidence', name: 'Confidence', anchorCount: 100,  maxCount: 100,  ratePerResp: 149  / 100,  packagePrice: 149  },
+  { id: 'deep_dive',  name: 'Deep Dive',  anchorCount: 250,  maxCount: 250,  ratePerResp: 299  / 250,  packagePrice: 299  },
+  { id: 'scale',      name: 'Scale',      anchorCount: 500,  maxCount: 500,  ratePerResp: 499  / 500,  packagePrice: 499  },
+  { id: 'growth',     name: 'Growth',     anchorCount: 1000, maxCount: 1000, ratePerResp: 899  / 1000, packagePrice: 899  },
+  { id: 'enterprise', name: 'Enterprise', anchorCount: 1250, maxCount: Infinity, ratePerResp: 1099 / 1250, packagePrice: 1099 },
 ];
 
 /**
@@ -99,8 +153,7 @@ const VOLUME_TIERS = [
  *
  * RECONCILED AT 100 (owner decision). The product told users two different
  * numbers: this constant said 50, while src/lib/sampleSizeMinimums.ts in the
- * frontend and the PRICING_V2 block below both say >= 100. 100 is now the
- * single number.
+ * frontend says >= 100. 100 is now the single number.
  *
  * The power analysis, because the number alone is misleading. Brand lift is a
  * two-proportion comparison across an exposed/control split, so n splits into
@@ -172,39 +225,43 @@ const CREATIVE_ATTENTION_TIERS = [
   { id: 'deep_dive_xl', name: 'Deep Dive XL', anchorCount: 250, maxCount: Infinity, ratePerResp: 1.20, packagePrice: 299, minRespondents: CA_MIN_RESPONDENTS },
 ];
 
-// ── PRICING V2 — single canonical ladder (flag-gated) ───────────────────────
-//
-// One sample-size-anchored ladder for EVERY goal type (no goal-specific
-// ladders). Goal type is a free choice within a tier, not a separate price.
-// Prices are stored as AMOUNT-IN-CENTS (the single source of truth for both
-// display via GET /api/pricing/tiers and the Stripe charge via
-// calculateMissionPrice). The brand_lift / creative_attention >=100 sample
-// requirement survives as a methodology RECOMMENDATION, not a price.
-//
-// Cutover is gated by PRICING_V2 (default OFF). When OFF, calculateMissionPrice
-// and the tiers endpoint behave EXACTLY as the V1 ladders below — deploying this
-// file changes nothing Stripe charges until the owner flips the flag.
-const PRICING_V2_ACTIVE = process.env.PRICING_V2 === 'true' || process.env.PRICING_V2 === '1';
+/**
+ * ── PRICING_V2 was deleted 2026-09 ─────────────────────────────────────────
+ *
+ * It was a second, flag-gated canonical ladder (5/$9, 25/$39, 100/$149,
+ * 500/$499, then a custom-quote wall at 500) that never ran in production:
+ * PRICING_V2 was false on every deploy of its life. Two ladders meant every
+ * pricing change had to be made twice and reasoned about twice, and the flag
+ * had already coupled things that are not prices to itself — the brand_lift
+ * and creative_attention sample floors and the self-serve delivery ceiling all
+ * sat below its early return, so flipping a PRICING flag would have switched
+ * off three METHODOLOGY gates. That coupling was removed first (the floors now
+ * run unconditionally); this removes the flag itself.
+ *
+ * Its round numbers were not thrown away. The 5/$9, 25/$39, 100/$149 and
+ * 500/$499 brackets are exactly the anchors VOLUME_TIERS now carries, which is
+ * what the reprice above means by "round prices first": V2 had already picked
+ * them, it simply picked them in a branch nobody could reach.
+ *
+ * One V2-only behaviour was KEPT rather than deleted, and it is a live
+ * behaviour change: the flat-promo minimum-charge clamp below. See
+ * MIN_CHARGE_CENTS_AFTER_FLAT_DISCOUNT.
+ */
 
-const CANONICAL_TIERS_V2 = [
-  { id: 'sniff',      name: 'Sniff',      respondents: 5,    maxCount: 5,        priceCents: 900,   custom: false },
-  { id: 'validate',   name: 'Validate',   respondents: 25,   maxCount: 25,       priceCents: 3900,  custom: false },
-  { id: 'confidence', name: 'Confidence', respondents: 100,  maxCount: 100,      priceCents: 14900, custom: false },
-  { id: 'scale',      name: 'Scale',      respondents: 500,  maxCount: 500,      priceCents: 49900, custom: false },
-  { id: 'enterprise', name: 'Enterprise', respondents: 1500, maxCount: Infinity, priceCents: null,  custom: true  },
-];
-
-// A flat/fixed promo must never drive a charge to $0 or below (FRIEND10 = $10
-// off a $9 order). Cap the flat discount so the total stays at or above this
-// floor (comfortably above Stripe's $0.50 minimum charge). Percentage/free
-// promos are owner-controlled and may still reach $0 intentionally.
+/**
+ * A flat/fixed promo must never drive a charge to $0 or below (FRIEND10 = $10
+ * off a $9 order). Cap the flat discount so the total stays at or above this
+ * floor, comfortably above Stripe's $0.50 minimum charge. Percentage and free
+ * promos are owner-controlled and may still reach $0 intentionally.
+ *
+ * BEHAVIOUR CHANGE. Until the V2 deletion this clamp only applied when
+ * PRICING_V2 was on, i.e. never. In production a $10 flat promo on a $9 order
+ * produced a $0 total, and checkout then REFUSED the order under Stripe's
+ * minimum — the customer could not buy at all, and the promo looked broken.
+ * Deleting the flag forced a choice between the two branches and this is the
+ * one that lets the sale complete, so it is now unconditional.
+ */
 const MIN_CHARGE_CENTS_AFTER_FLAT_DISCOUNT = 100; // $1.00
-
-/** V2: resolve the canonical tier for a respondent count (bracket = first tier whose maxCount >= count). */
-function resolveCanonicalTierV2(count) {
-  const c = Math.max(0, Number(count) || 0);
-  return CANONICAL_TIERS_V2.find((t) => c <= t.maxCount) || CANONICAL_TIERS_V2[CANONICAL_TIERS_V2.length - 1];
-}
 
 /**
  * The flag-aware tier table for the display surfaces (GET /api/pricing/tiers).
@@ -214,17 +271,7 @@ function resolveCanonicalTierV2(count) {
  * Returns { version, flagActive, startingFromCents, tiers }.
  */
 function getActiveTierTable() {
-  if (PRICING_V2_ACTIVE) {
-    const tiers = CANONICAL_TIERS_V2.map((t) => ({
-      id: t.id, name: t.name, respondents: t.respondents,
-      priceCents: t.priceCents, priceUsd: t.priceCents == null ? null : t.priceCents / 100,
-      fromLabel: t.priceCents == null ? 'Custom' : `$${t.priceCents / 100}`,
-      custom: t.custom,
-    }));
-    const cheapest = tiers.find((t) => t.priceCents != null);
-    return { version: 'v2', flagActive: true, startingFromCents: cheapest ? cheapest.priceCents : null, tiers };
-  }
-  // V1: project the live VOLUME_TIERS into the same shape.
+  // Project the live VOLUME_TIERS into the published shape.
   //
   // The displayed price is DERIVED by calling the same function the charge
   // path calls (respondentLadderBase), not read off the tier's packagePrice
@@ -341,8 +388,6 @@ function getVolumeTier(count) {
  * Creative Attention is unaffected — it charges a flat packagePrice per tier
  * (19/39/69/129/299), which is already monotonic in count.
  *
- * PRICING_V2 is untouched by this: the V2 branch is a flat per-bracket package
- * price and never multiplies a rate by a count.
  */
 const TIER_PRICE_FLOORS = new WeakMap();
 
@@ -385,6 +430,25 @@ function respondentLadderBase(ladder, tier, count, rate) {
 }
 
 /**
+ * Render a per-respondent rate so that `count x rate` visibly reconciles with
+ * the base it produced.
+ *
+ * The reprice derives rates from round anchor prices, so four of the seven are
+ * not two-decimal numbers: 299/250 = 1.196, 499/500 = 0.998, 899/1000 = 0.899,
+ * 1099/1250 = 0.8792. `toFixed(2)` renders those as $1.20, $1.00, $0.90 and
+ * $0.88, and the checkout breakdown then reads "500 respondents x $1.00 =
+ * $499" — an arithmetic error on the customer's receipt, introduced purely by
+ * rounding the label. Show up to 4 decimals and trim the trailing zeros
+ * instead, with a 2-decimal minimum so $1.80 does not render as $1.8.
+ */
+function formatRatePerResp(rate) {
+  const r = Number(rate);
+  if (!Number.isFinite(r)) return null;
+  const four = r.toFixed(4).replace(/(\.\d{2}\d*?)0+$/, '$1');
+  return four;
+}
+
+/**
  * Display helper for fromLabel. Whole dollars render bare with thousands
  * separators ("2,000"); fractional amounts keep 2dp. fromLabel is rendered
  * verbatim into the public /terms price table, so it has to read as money.
@@ -398,49 +462,26 @@ function formatUsd(v) {
 }
 
 /**
- * ── The 1,000-2,250 price plateau, and the linear bridge that closes it ─────
+ * ── The plateau bridge was retired by the 2026-09 reprice ──────────────────
  *
- * The tier-floor fix above (PR #101) removed a $498 inversion by flooring the
- * Enterprise bracket at Scale's ceiling of $900. That left a FLAT price:
+ * PR #101 removed a $498 price INVERSION on the old ladder by flooring each
+ * bracket at the ceiling of the bracket below. On the old ladder that turned
+ * the inversion into a FLAT band: max(n x $0.40, $900) = $900 for every n in
+ * [1,000 .. 2,250], so 1,251 consecutive counts cost the same money. A linear
+ * bridge between the $900 and $2,000 anchors closed it.
  *
- *   base(n) = max(n × $0.40, $900) = $900   for every n in [1,000 .. 2,250]
+ * The reprice removes the cause instead. A plateau forms when a bracket's rate
+ * falls far enough that n x rate stays under the previous bracket's ceiling for
+ * a long stretch. The new ladder's rate steps are small (1.80 -> 1.56 -> 1.49
+ * -> 1.196 -> 0.998 -> 0.899 -> 0.8792) and its top bracket is open-ended, so
+ * the widest flat band anywhere below the self-serve cap is 56 counts
+ * (500..555) and there is no band at all above 1,022. The bridge had nothing
+ * left to bridge, and its far anchor (5,000 at $2,000) was a count no customer
+ * can buy — the cap is 1,250.
  *
- * $900 / $0.40 = 2,250, so 1,251 consecutive respondent counts all cost the
- * same. At the top of the plateau a 2,250-respondent study costs $0.40/resp —
- * the SAME marginal rate as a 5,000-respondent study, for less than half the
- * money. Monotonic, but not honest: the buyer who wants 2,250 is handed 1,250
- * respondents of free inventory, and the buyer who wants 1,050 pays for 2,250.
- *
- * FIX: interpolate linearly between the two PINNED anchors of the default
- * ladder instead of holding a floor.
- *
- *   base(n) = existing bracket price          n <= 1,000
- *           = 900 + (n - 1,000) × 0.275       1,000 < n <= 5,000
- *           = existing bracket price          n >  5,000
- *
- * $0.275 is not a chosen number — it is the ONLY marginal rate that lands on
- * both pinned anchors:
- *
- *   ($2,000 − $900) / (5,000 − 1,000) = $1,100 / 4,000 = $0.275
- *
- * so base(1,000) = $900 and base(5,000) = $2,000 are both unchanged, and the
- * bridge is strictly increasing in between. Every other anchor on the ladder
- * (5/$9, 10/$35, 50/$99, 100/$120, 250/$300) is outside the band and untouched.
- * Above 5,000 the Enterprise bracket resumes at n × $0.40, which is $2,000.40
- * at n = 5,001 — so the join is monotonic on both sides.
- *
- * SCOPE: the default (VOLUME_TIERS) ladder only. BRAND_LIFT_TIERS has its own
- * anchors and its own (smaller) plateau; CREATIVE_ATTENTION_TIERS is flat per
- * bracket and has no rate to interpolate. Neither is reachable above the
- * self-serve cap below, so neither is touched here.
+ * respondentLadderBase is therefore called directly again; bridgedRespondentBase,
+ * defaultLadderBridgeBase and the BRIDGE_* constants are gone.
  */
-const BRIDGE_FROM_COUNT = 1000;   // Scale anchor — $900
-const BRIDGE_TO_COUNT   = 5000;   // Enterprise anchor — $2,000
-const BRIDGE_FROM_PRICE = 900;
-const BRIDGE_TO_PRICE   = 2000;
-/** ($2,000 − $900) / (5,000 − 1,000). Kept as a literal so the anchors are auditable. */
-const BRIDGE_RATE_PER_RESP =
-  (BRIDGE_TO_PRICE - BRIDGE_FROM_PRICE) / (BRIDGE_TO_COUNT - BRIDGE_FROM_COUNT); // 0.275
 
 /**
  * ── The self-serve ceiling ──────────────────────────────────────────────────
@@ -475,7 +516,7 @@ const BRIDGE_RATE_PER_RESP =
  *            at n=100 understates n=1,250.
  *
  * Above the cap we CAPTURE THE LEAD, we do not sell: calculateMissionPrice still
- * returns a real (bridged) base so nothing downstream divides by zero, but flags
+ * returns a real base so nothing downstream divides by zero, but flags
  * customQuote — which the existing fail-closed guards in routes/payments.js and
  * routes/pricing.js already turn into "contact sales" without a charge.
  */
@@ -488,28 +529,6 @@ const SELF_SERVE_LEAD_CAPTURE = {
   page: 'mission_control_pricing',
   message: 'Studies above this size are run as a managed engagement. Leave an email and we will scope it with you.',
 };
-
-/**
- * Base price for the DEFAULT ladder inside the bridge band, or null when the
- * count is outside it (caller falls back to respondentLadderBase).
- */
-function defaultLadderBridgeBase(count) {
-  const n = Math.max(0, Number(count) || 0);
-  if (n <= BRIDGE_FROM_COUNT || n > BRIDGE_TO_COUNT) return null;
-  return round2(BRIDGE_FROM_PRICE + (n - BRIDGE_FROM_COUNT) * BRIDGE_RATE_PER_RESP);
-}
-
-/**
- * Monotonic base for a respondent ladder, with the default ladder's
- * 1,000 -> 5,000 plateau bridged. Every other ladder is unchanged.
- */
-function bridgedRespondentBase(ladder, tier, count, rate) {
-  if (ladder === VOLUME_TIERS) {
-    const bridged = defaultLadderBridgeBase(count);
-    if (bridged != null) return bridged;
-  }
-  return respondentLadderBase(ladder, tier, count, rate);
-}
 
 /** True when a respondent count is beyond what the pipeline can honestly deliver. */
 function isAboveSelfServeCap(count) {
@@ -566,8 +585,38 @@ function goalMinRespondents(goalType) {
   return null;
 }
 
-const EXTRA_QUESTION_PRICE = 20; // $ per question beyond the 5th
-const FREE_QUESTIONS        = 5;
+/**
+ * ── Extra-question surcharge: $20 beyond 5 -> $5 beyond 10 ─────────────────
+ *
+ * The old rule assumed the question count was a customer choice. It is not.
+ * A user can hand-add at most DRAFT_QUESTION_CAP = 3 questions; every other
+ * question on the instrument is generated by the methodology itself:
+ *
+ *   validate / naming / marketing / research / competitor / satisfaction  5
+ *   brand_lift                                                       10 - 14
+ *   pricing_research (Van Westendorp + Gabor-Granger)                     13
+ *   compare_concepts (5N + 3)                                        13 - 23
+ *   feature_roadmap (MaxDiff + Kano)                            13 - 23 typ.
+ *
+ * So a $99 Feature Roadmap study quoted $459 at checkout, and 78% of that was
+ * a line item the customer never chose and could not remove. On the generic
+ * 5-question instrument the same rule collected nothing at all. It was a
+ * purchase blocker aimed squarely at the specialist methodologies.
+ *
+ * $5 beyond 10 is also where the cost evidence lands. simulate.js budgets 220
+ * output tokens per question per respondent on claude-haiku-4-5 ($5/Mtok out),
+ * and insights.js adds ~500 tokens per question once per mission on sonnet, so
+ * one extra question costs $0.00116n + $0.0075. Holding the 70% margin floor
+ * needs $0.00387n + $0.025 -> $0.22 at n=50, $1.96 at n=500, $4.86 at n=1,250.
+ * $5 clears the floor across the entire self-serve range and breaks even just
+ * past the cap, at n=1,286. $20 was 305x marginal cost at n=50.
+ *
+ * Raising the free allowance from 5 to 10 does most of the work on its own: it
+ * takes "generic instrument plus three user drafts" and the low end of
+ * brand_lift to zero.
+ */
+const EXTRA_QUESTION_PRICE = 5;  // $ per question beyond FREE_QUESTIONS
+const FREE_QUESTIONS        = 10;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -655,15 +704,9 @@ function calculateMissionPrice({
   // so callers/breakdowns never multiply a stale V1 rate against a flat total.
   // V1 (flag off): byte-identical to before (rate×count, or CA flat package).
   let base, volumeTier, ratePerResp, customQuote = false;
-  if (PRICING_V2_ACTIVE) {
-    const v2 = resolveCanonicalTierV2(respondentCount);
-    customQuote = v2.custom;
-    base = v2.custom ? 0 : v2.priceCents / 100;
-    ratePerResp = null;
-    volumeTier = { id: v2.id, name: v2.name, anchorCount: v2.respondents, packagePrice: v2.custom ? null : v2.priceCents / 100 };
-  } else {
+  {
     // Creative Attention: flat package price per bracket.
-    // Other goals: rate × count. A null tier (brand_lift or creative_attention
+    // Other goals: rate x count. A null tier (brand_lift or creative_attention
     // below its floor) is REFUSED here; the route layer rejects the invalid
     // combo first, so this throw is a backstop, not the normal path.
     // A null tier is resolveTier saying the combo has no price on this goal's
@@ -680,11 +723,9 @@ function calculateMissionPrice({
     base = isCreative
       ? tier.packagePrice
       // Monotonic: never cheaper than the top of the tier below (see
-      // respondentLadderBase — V1 tier-boundary inversion fix).
-      // Monotonic AND plateau-free: the default ladder interpolates between
-      // its $900/$2,000 anchors across 1,000 < n <= 5,000 (see
-      // bridgedRespondentBase); every other ladder keeps the tier floor.
-      : bridgedRespondentBase(getPricingForGoalType(goalType), tier, respondentCount, ratePerResp);
+      // respondentLadderBase - V1 tier-boundary inversion fix). The default
+      // ladder's top bracket is open-ended, so there is no plateau to bridge.
+      : respondentLadderBase(getPricingForGoalType(goalType), tier, respondentCount, ratePerResp);
     volumeTier = tier;
     // Above the self-serve cap the price is still computed (so breakdowns and
     // logs stay sane) but is NOT sellable. routes/payments.js and
@@ -740,22 +781,14 @@ function calculateMissionPrice({
     } else if (promoCode.type === 'percentage') {
       discount = round2(subtotal * (promoCode.value / 100));
     } else if (promoCode.type === 'flat' || promoCode.type === 'fixed') {
-      if (PRICING_V2_ACTIVE) {
-        // Min-order clamp — PRICING_V2 money path ONLY, so deploying with the
-        // flag off is byte-identical to today. A flat promo can never drive the
-        // charge to $0 or below: cap the discount so the total stays >= the
-        // floor ($1.00, above Stripe's $0.50 min). FRIEND10 ($10) on a $9 order
-        // yields a $1 charge, not $0. Percentage/free promos are owner-controlled
-        // and may still reach $0 intentionally.
-        const minCharge = MIN_CHARGE_CENTS_AFTER_FLAT_DISCOUNT / 100;
-        const maxFlatDiscount = Math.max(0, subtotal - minCharge);
-        discount = round2(Math.min(promoCode.value, maxFlatDiscount));
-      } else {
-        // V1 (flag off): UNCHANGED. Flat discount caps at the subtotal and may
-        // reach $0 — the checkout route then rejects it under the $0.50 minimum,
-        // exactly as in production today. The clamp above rides the V2 cutover.
-        discount = round2(Math.min(promoCode.value, subtotal));
-      }
+      // Min-order clamp. A flat promo can never drive the charge to $0 or
+      // below: cap the discount so the total stays at or above the floor
+      // ($1.00, above Stripe's $0.50 minimum). FRIEND10 ($10) on a $9 order
+      // yields a $1 charge, not a $0 order that checkout then refuses.
+      // Percentage and free promos are owner-controlled and may still reach $0.
+      const minCharge = MIN_CHARGE_CENTS_AFTER_FLAT_DISCOUNT / 100;
+      const maxFlatDiscount = Math.max(0, subtotal - minCharge);
+      discount = round2(Math.min(promoCode.value, maxFlatDiscount));
     }
   }
 
@@ -811,12 +844,12 @@ function round2(val) {
  *     respondentCount in [5, 5000].
  *   - Other goal_types fall back to the default ladder (lenient).
  *
- * Structure: the METHODOLOGY gates run first and unconditionally; only the
- * TIER RESOLUTION below them is flag-aware. This split is deliberate. The
- * goal-specific blocks used to sit BELOW an `if (PRICING_V2_ACTIVE)` early
- * return, so flipping PRICING_V2 — a pricing flag — would have silently
- * switched off the brand_lift floor, the creative_attention floor and the
- * self-serve ceiling. Those three are not prices. The floors are the sample
+ * Structure: the METHODOLOGY gates run first and unconditionally, above the
+ * tier resolution. This split is deliberate and outlived the flag that forced
+ * it. The goal-specific blocks used to sit BELOW an `if (PRICING_V2_ACTIVE)`
+ * early return, so flipping a PRICING flag would have silently switched off
+ * the brand_lift floor, the creative_attention floor and the self-serve
+ * ceiling. Those three are not prices. The floors are the sample
  * sizes below which the analysis cannot produce the thing the customer is
  * buying (brand_lift's exposed/control split cannot detect a realistic lift
  * under 100; creative_attention's attention model has nothing to average
@@ -855,8 +888,7 @@ function validateMissionPricing({ goalType, respondentCount, mediaType }) {
     // CA tier from this function.
     //
     // resolveTier is used here as the FLOOR ORACLE (null = below
-    // CA_MIN_RESPONDENTS), not as the price source — under PRICING_V2 the
-    // tier that gets returned to the caller is the canonical V2 one below.
+    // CA_MIN_RESPONDENTS); the tier it returns is also what the caller gets.
     if (!resolveTier({ goalType, respondentCount: Number(respondentCount) || 0, mediaType })) {
       return {
         valid: false,
@@ -881,16 +913,6 @@ function validateMissionPricing({ goalType, respondentCount, mediaType }) {
 
   // ── Tier resolution — the only flag-aware part ──────────────────────────
   //
-  // PRICING V2 (flag on): one canonical ladder for every goal type. The only
-  // additional gate is the Enterprise/custom tier (500+ respondents) — block
-  // self-serve checkout so a large mission never charges the $0 base.
-  if (PRICING_V2_ACTIVE) {
-    const tier = resolveCanonicalTierV2(c);
-    if (tier.custom) {
-      return { valid: false, error: 'Studies beyond 500 respondents require a custom quote, please contact sales.' };
-    }
-    return { valid: true, tier };
-  }
   return { valid: true, tier: resolveTier({ goalType, respondentCount: c, mediaType }) };
 }
 
@@ -969,26 +991,20 @@ module.exports = {
   brandLiftMDE,
   goalMinRespondents,
   UnpriceableMissionError,
-  // Pricing V2 (flag-gated single canonical ladder)
-  PRICING_V2_ACTIVE,
-  CANONICAL_TIERS_V2,
   MIN_CHARGE_CENTS_AFTER_FLAT_DISCOUNT,
-  resolveCanonicalTierV2,
   getActiveTierTable,
+  formatRatePerResp,
+  EXTRA_QUESTION_PRICE_USD: EXTRA_QUESTION_PRICE,
+  FREE_QUESTIONS,
   // Default-ladder helper kept for backwards compat
   getVolumeTier,
   // V1 monotonicity helpers (tier-boundary price inversion fix)
   tierPriceFloor,
   respondentLadderBase,
-  // Plateau bridge + self-serve ceiling
-  bridgedRespondentBase,
-  defaultLadderBridgeBase,
+  // Self-serve ceiling
   isAboveSelfServeCap,
   MAX_SELF_SERVE_RESPONDENTS,
   SELF_SERVE_LEAD_CAPTURE,
-  BRIDGE_FROM_COUNT,
-  BRIDGE_TO_COUNT,
-  BRIDGE_RATE_PER_RESP,
   // Country-tier (legacy, no longer affects price; retained for analytics)
   resolveHighestTier,
   getCountryTier,

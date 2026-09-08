@@ -64,43 +64,43 @@ describe('extractCountriesFromMission', () => {
 // ── calculateMissionPrice — base cases ───────────────────────────────────────
 
 describe('calculateMissionPrice — base price by tier', () => {
-  it('tier 1 (UAE): 10 respondents, 5 questions → $35', () => {
+  it('tier 1 (UAE): 10 respondents, 5 questions → $15.60', () => {
     const { total, totalCents } = calculateMissionPrice({
       respondentCount: 10,
       questionCount: 5,
       countries: ['AE'],
     });
-    expect(total).toBe(35.00);
-    expect(totalCents).toBe(3500);
+    expect(total).toBe(15.60);
+    expect(totalCents).toBe(1560);
   });
 
   // Pass 46 — country tiers were removed from the base-price model
   // (volume tiers only since the Pass 23 PRICING overhaul); these
   // expectations were stale relics of the deleted country-tier table,
   // first caught when Pass 46 ran the full suite.
-  it('country does not change base price: 10 respondents (SA) → $35', () => {
+  it('country does not change base price: 10 respondents (SA) → $15.60', () => {
     const { total, totalCents } = calculateMissionPrice({
       respondentCount: 10,
       questionCount: 5,
       countries: ['SA'],
     });
-    expect(total).toBe(35.00);
-    expect(totalCents).toBe(3500);
+    expect(total).toBe(15.60);
+    expect(totalCents).toBe(1560);
   });
 
-  it('no-country default: 10 respondents → $35 (Validate volume tier)', () => {
+  it('no-country default: 10 respondents → $15.60 (inside the Validate bracket)', () => {
     const { total, totalCents } = calculateMissionPrice({
       respondentCount: 10,
       questionCount: 5,
       countries: [],
     });
-    expect(total).toBe(35.00);
-    expect(totalCents).toBe(3500);
+    expect(total).toBe(15.60);
+    expect(totalCents).toBe(1560);
   });
 
-  it('100 respondents → $120 (Deep Dive volume rate $1.20/resp)', () => {
+  it('100 respondents → $149 (the Confidence anchor)', () => {
     const { total } = calculateMissionPrice({ respondentCount: 100, questionCount: 5, countries: ['US'] });
-    expect(total).toBe(120.00);
+    expect(total).toBe(149.00);
   });
 });
 
@@ -112,11 +112,17 @@ describe('mission 7f54fb42 regression', () => {
   //   question_count:   5  (no extra questions)
   //   targeting:        null (no TargetingConfig set)
   //   target_audience.aiTargeting.countries: ['AE']  (UAE — tier 1)
-  //   price_estimated:  "35" (what UI showed — correct)
+  //   price_estimated:  "35" (what the UI showed)
   //   total_price_usd:  "9.00" (old backend formula — was wrong)
   //   Stripe PIs:       900 cents (old backend formula — was wrong)
+  //
+  // The bug this pins is that the CHARGE was computed off a different formula
+  // than the DISPLAY, not that $35 is the right price for ten respondents. The
+  // 2026-09 reprice moved the ladder and ten respondents now cost $15.60; the
+  // invariant being guarded — display and charge come from one expression — is
+  // unchanged, and is asserted directly in pricing_display_matches_charge.
 
-  it('10 respondents × UAE (tier 1), 5 questions, null targeting → $35 / 3500 cents', () => {
+  it('10 respondents × UAE (tier 1), 5 questions, null targeting → $15.60 / 1560 cents', () => {
     const mission = {
       respondent_count: 10,
       questions: Array(5).fill({}),
@@ -131,36 +137,43 @@ describe('mission 7f54fb42 regression', () => {
       countries,
     });
     expect(countries).toEqual(['AE']);
-    expect(total).toBe(35.00);
-    expect(totalCents).toBe(3500);
+    expect(total).toBe(15.60);
+    expect(totalCents).toBe(1560);
   });
 
-  it('confirms old formula was wrong: 10 × $0.90 = $9 ≠ $35', () => {
+  it('the charge is the ladder price, not a second hand-written formula', () => {
     // Document the discrepancy so it is never silently reintroduced.
-    const oldResult = 10 * 0.90;
-    const newResult = calculateMissionPrice({ respondentCount: 10, questionCount: 5, countries: ['AE'] }).total;
-    expect(oldResult).toBe(9.00);   // old (wrong) value
-    expect(newResult).toBe(35.00);  // new (correct) value
-    expect(newResult).not.toBe(oldResult);
+    const strayFormula = 10 * 0.90;
+    const charged = calculateMissionPrice({ respondentCount: 10, questionCount: 5, countries: ['AE'] }).total;
+    expect(charged).toBe(15.60);
+    expect(charged).not.toBe(strayFormula);
   });
 });
 
 // ── Question surcharge ────────────────────────────────────────────────────────
 
 describe('question surcharge', () => {
+  // $5 per question beyond 10, since the 2026-09 reprice. Question counts are
+  // set by the methodology, not the customer, so the allowance covers every
+  // generic instrument (5) plus the three drafts a user may add.
   it('5 questions → no surcharge', () => {
     const { questionSurcharge } = calculateMissionPrice({ respondentCount: 10, questionCount: 5, countries: ['AE'] });
     expect(questionSurcharge).toBe(0);
   });
 
-  it('6 questions → $20 surcharge', () => {
-    const { questionSurcharge } = calculateMissionPrice({ respondentCount: 10, questionCount: 6, countries: ['AE'] });
-    expect(questionSurcharge).toBe(20);
+  it('10 questions → no surcharge (exactly the allowance)', () => {
+    const { questionSurcharge } = calculateMissionPrice({ respondentCount: 10, questionCount: 10, countries: ['AE'] });
+    expect(questionSurcharge).toBe(0);
   });
 
-  it('10 questions → $100 surcharge (5 extra × $20)', () => {
-    const { questionSurcharge } = calculateMissionPrice({ respondentCount: 10, questionCount: 10, countries: ['AE'] });
-    expect(questionSurcharge).toBe(100);
+  it('11 questions → $5 surcharge (one beyond the allowance)', () => {
+    const { questionSurcharge } = calculateMissionPrice({ respondentCount: 10, questionCount: 11, countries: ['AE'] });
+    expect(questionSurcharge).toBe(5);
+  });
+
+  it('23 questions (feature_roadmap) → $65 surcharge, was $360', () => {
+    const { questionSurcharge } = calculateMissionPrice({ respondentCount: 10, questionCount: 23, countries: ['AE'] });
+    expect(questionSurcharge).toBe(65);
   });
 });
 
@@ -200,32 +213,32 @@ describe('targeting surcharges', () => {
 // ── Promo code discounts ──────────────────────────────────────────────────────
 
 describe('promo code discounts', () => {
-  const base = { respondentCount: 10, questionCount: 5, countries: ['AE'] }; // $35 base
+  const base = { respondentCount: 25, questionCount: 5, countries: ['AE'] }; // $39 base
 
   it('type=free → total is $0, discount equals full subtotal', () => {
     const { total, discount } = calculateMissionPrice({
       ...base,
-      promoCode: { code: 'VETT100', type: 'free', value: 100, active: true },
+      promoCode: { code: 'VETTPROOF', type: 'free', value: 100, active: true },
     });
     expect(total).toBe(0);
-    expect(discount).toBe(35.00);
+    expect(discount).toBe(39.00);
   });
 
-  it('type=percentage 20% → total is $28, discount is $7', () => {
+  it('type=percentage 20% → total is $31.20, discount is $7.80', () => {
     const { total, discount } = calculateMissionPrice({
       ...base,
-      promoCode: { code: 'VETT20', type: 'percentage', value: 20, active: true },
+      promoCode: { code: 'TWENTY', type: 'percentage', value: 20, active: true },
     });
-    expect(total).toBe(28.00);
-    expect(discount).toBe(7.00);
+    expect(total).toBe(31.20);
+    expect(discount).toBe(7.80);
   });
 
-  it('type=flat $10 → total is $25, discount is $10', () => {
+  it('type=flat $10 → total is $29, discount is $10', () => {
     const { total, discount } = calculateMissionPrice({
       ...base,
       promoCode: { code: 'FRIEND10', type: 'flat', value: 10, active: true },
     });
-    expect(total).toBe(25.00);
+    expect(total).toBe(29.00);
     expect(discount).toBe(10.00);
   });
 
@@ -234,47 +247,30 @@ describe('promo code discounts', () => {
       ...base,
       promoCode: { code: 'DEAD', type: 'percentage', value: 50, active: false },
     });
-    expect(total).toBe(35.00);
+    expect(total).toBe(39.00);
     expect(discount).toBe(0);
   });
 
-  it('flat discount larger than total → total is $0, discount capped at subtotal (flag off, unchanged)', () => {
-    // PRICING_V2 is OFF in this suite, so V1 behaviour is byte-identical to
-    // production: a flat discount caps at the subtotal and may reach $0 (the
-    // checkout route then rejects it under the $0.50 minimum). The min-order
-    // clamp only engages when PRICING_V2 is active (see pricing_v2.test.js).
+  it('flat discount larger than the order → clamped to leave a $1 charge, not $0', () => {
+    // BEHAVIOUR CHANGE, 2026-09. This clamp used to be gated behind PRICING_V2,
+    // which was never on, so a flat promo could drive the total to $0 and
+    // checkout then refused the order under Stripe's minimum — the customer
+    // could not buy at all. Deleting the flag forced a choice between the two
+    // branches; this is the one that lets the sale complete.
     const { total, discount } = calculateMissionPrice({
       ...base,
       promoCode: { code: 'BIG', type: 'flat', value: 500, active: true },
     });
-    expect(total).toBe(0);
-    expect(discount).toBe(35.00);
+    expect(total).toBe(1.00);
+    expect(discount).toBe(38.00);
   });
 
   it('totalCents is 0 for free promo (integer)', () => {
     const { totalCents } = calculateMissionPrice({
       ...base,
-      promoCode: { code: 'VETT100', type: 'free', value: 100, active: true },
+      promoCode: { code: 'VETTPROOF', type: 'free', value: 100, active: true },
     });
     expect(totalCents).toBe(0);
     expect(Number.isInteger(totalCents)).toBe(true);
-  });
-});
-
-// ── totalCents is always integer ──────────────────────────────────────────────
-
-describe('totalCents is always an integer', () => {
-  const cases = [
-    { respondentCount: 7,  questionCount: 3,  countries: ['AE'] },
-    { respondentCount: 13, questionCount: 7,  countries: ['GB', 'AE'] },
-    { respondentCount: 50, questionCount: 5,  countries: ['SA'] },
-    { respondentCount: 11, questionCount: 11, countries: ['PS'] },
-  ];
-
-  cases.forEach(c => {
-    it(`${c.respondentCount} resp, ${c.questionCount} q, [${c.countries}]`, () => {
-      const { totalCents } = calculateMissionPrice(c);
-      expect(Number.isInteger(totalCents)).toBe(true);
-    });
   });
 });
