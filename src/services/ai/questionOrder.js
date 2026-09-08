@@ -135,7 +135,16 @@
  *        `qs[i].funnel_stage !== expectedStages[i]`.
  *   LOCKED.
  *
- * LOCKED — sequential-monadic concept batteries (`concept_id`,
+ * ROTATABLE — sequential-monadic concept BLOCKS (`concept_id`)
+ *   Whole batteries permute; each battery keeps its emitted internal order,
+ *   so analysis/compare.js's positional stage fallback (L188-190) still sees
+ *   the index it expects WITHIN a concept. The forced-choice tail
+ *   (`is_final_choice`) is a separate LOCKED block and always stays last,
+ *   because it is only answerable once every concept has been seen.
+ *   This is what missions.rotation_strategy='random' has always claimed and,
+ *   before Pass 51, never did.
+ *
+ * (historical) LOCKED — sequential-monadic concept batteries (`concept_id`,
  *   `is_final_choice`)
  *   analysis/compare.js L188-190 contains a POSITIONAL FALLBACK:
  *   `VALID_STAGES.has(q.funnel_stage) ? q.funnel_stage : POSITIONAL_STAGES[i]`
@@ -327,9 +336,30 @@ function classifyQuestion(q) {
     return { zone: 'locked', block: 'gabor_granger' };
   }
 
-  // Sequential-monadic concept batteries + the forced-choice tail.
-  if (has(q.concept_id) || q.is_final_choice === true) {
-    return { zone: 'locked', block: 'concept_sequence' };
+  // Sequential-monadic concept batteries.
+  //
+  // ROTATABLE AT BLOCK LEVEL, LOCKED WITHIN A BLOCK. Sequential monadic
+  // without concept rotation gives concept 1 a systematic position
+  // advantage, and ranking concepts is the entire output of this
+  // instrument, so the bias lands squarely on the number the customer
+  // reads. claudeAI.js COMPARE_SURVEY_GEN_SYSTEM already told the model
+  // "the simulator handles per-respondent rotation"; until now it did not,
+  // and rotation_strategy was written on every mission and read by nothing.
+  //
+  // The unit key is the concept_id, so all five questions of one concept
+  // travel together AND keep their emitted order (appeal, relevance,
+  // uniqueness, intent, qualitative). That is what keeps the positional
+  // funnel_stage fallback in analysis/compare.js valid: the fallback reads
+  // the index WITHIN a concept battery, which block rotation never
+  // disturbs. Only the order of whole batteries changes.
+  if (has(q.concept_id) && q.is_final_choice !== true) {
+    return { zone: 'rotatable', block: 'concept', unit: `concept:${String(q.concept_id)}` };
+  }
+
+  // The forced-choice tail stays LOCKED and last. It is only answerable
+  // once every concept has been seen, so it can never join the rotation.
+  if (q.is_final_choice === true) {
+    return { zone: 'locked', block: 'concept_final_choice' };
   }
 
   // Every staged funnel instrument (brand_lift, ad_effectiveness,

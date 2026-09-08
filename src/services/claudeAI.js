@@ -1222,6 +1222,27 @@ function validateCompareSurvey(parsed, conceptCount) {
     for (const q of block) {
       if (q.concept_id !== cid) return `concept block ${c + 1}: concept_id inconsistent`;
     }
+    // Pass 51 — every question must carry its funnel_stage EXPLICITLY.
+    //
+    // analysis/compare.js falls back to inferring the stage from the
+    // question's index within its battery when funnel_stage is absent. That
+    // fallback is why concept batteries were locked against rotation: any
+    // order change could silently relabel appeal as relevance, and the
+    // customer would read a confidently wrong ranking with nothing looking
+    // broken.
+    //
+    // Rejecting a stage-less survey at GENERATION is the cheap half of
+    // carrying the stage explicitly: from here on the fallback is
+    // unreachable for new missions, so rotation cannot reach it either. The
+    // fallback stays in compare.js for surveys generated before this check
+    // existed, which are the only rows that can still need it.
+    const stages = block.map((q) => q.funnel_stage);
+    const expectedStages = ['appeal', 'relevance', 'uniqueness', 'intent', 'qualitative'];
+    for (let i = 0; i < expectedStages.length; i++) {
+      if (stages[i] !== expectedStages[i]) {
+        return `concept block ${c + 1}: question ${i + 1} must carry funnel_stage="${expectedStages[i]}", got ${stages[i] === undefined ? 'none' : `"${stages[i]}"`}`;
+      }
+    }
   }
   const final = qs[qs.length - 2];
   if (!final || final.is_final_choice !== true) return 'final-choice question missing or not flagged is_final_choice=true';

@@ -254,7 +254,13 @@ test('brand-lift funnel is not shuffled at all — unaided always precedes aided
   }
 });
 
-test('concept batteries and the forced-choice tail are locked', () => {
+test('concept BLOCKS rotate, but each battery and the forced choice do not', () => {
+  // Pass 51 changed this deliberately. Sequential monadic without concept
+  // rotation gives concept 1 a systematic position advantage, and ranking
+  // concepts is the entire output of the instrument. What stayed locked is
+  // what rotation would actually break: the order INSIDE a battery (which
+  // analysis/compare.js reads positionally when funnel_stage is absent) and
+  // the forced-choice tail (only answerable after every concept is seen).
   const qs = [
     { id: 'q1', isScreening: true, methodology: 'sequential_monadic' },
     { id: 'c1a', concept_id: 'c1', funnel_stage: 'appeal' },
@@ -263,10 +269,27 @@ test('concept batteries and the forced-choice tail are locked', () => {
     { id: 'c2b', concept_id: 'c2', funnel_stage: 'relevance' },
     { id: 'fin', is_final_choice: true },
   ];
-  const canonical = ids(qs);
+  const seen = new Set();
   for (let i = 0; i < 30; i += 1) {
-    expect(ids(orderQuestionsForPersona(qs, compareMission, P(`p${i}`)))).toEqual(canonical);
+    const out = orderQuestionsForPersona(qs, compareMission, P(`p${i}`));
+    const order = ids(out);
+    seen.add(order.join(','));
+
+    // Screener pinned first, forced choice pinned last, every question once.
+    expect(order[0]).toBe('q1');
+    expect(order[order.length - 1]).toBe('fin');
+    expect(new Set(order).size).toBe(qs.length);
+
+    // Each battery keeps appeal before relevance, and stays contiguous.
+    for (const cid of ['c1', 'c2']) {
+      const stages = out.filter((q) => q.concept_id === cid).map((q) => q.funnel_stage);
+      expect(stages).toEqual(['appeal', 'relevance']);
+      const first = order.indexOf(`${cid}a`);
+      expect(order[first + 1]).toBe(`${cid}b`);
+    }
   }
+  // And the blocks genuinely move.
+  expect(seen.size).toBeGreaterThan(1);
 });
 
 // ── 5. Rotatable blocks: units rotate, atoms stay intact ────────────────
@@ -333,7 +356,10 @@ test('classifyQuestion assigns the documented zone per methodology', () => {
   expect(z({ methodology: 'van_westendorp', vw_band: 'bargain' })).toBe('locked');
   expect(z({ methodology: 'gabor_granger', gg_anchor_index: 0 })).toBe('locked'); // index 0 is NOT "absent"
   expect(z({ funnel_stage: 'aided_ad_recall' })).toBe('locked');
-  expect(z({ concept_id: 'c1' })).toBe('locked');
+  // Pass 51: a concept battery is a rotatable UNIT; the forced-choice tail
+  // remains locked. See 'concept BLOCKS rotate' above.
+  expect(z({ concept_id: 'c1' })).toBe('rotatable');
+  expect(z({ is_final_choice: true })).toBe('locked');
   expect(z({ is_final_choice: true })).toBe('locked');
   expect(z({ churn_stage: 'reason' })).toBe('locked');
   expect(z({ methodology: 'turf' })).toBe('locked');
