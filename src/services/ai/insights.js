@@ -559,6 +559,9 @@ If chart_data cannot be reliably emitted (very small sample, malformed responses
     // every JSONB field stamped to missions.insights is clean.
     // Deterministic personas win unless a future LLM path supplies its own.
     if (!Array.isArray(parsed.personas) || !parsed.personas.length) parsed.personas = personas;
+    // Round over-precise figures in the KPI tiles before they are persisted.
+    // See roundHeadlineFigures.
+    parsed.kpis = roundHeadlineFigures(parsed.kpis);
     return sanitizeAIOutputDeep(parsed);
   } catch (err) {
     logger.error('Insight synthesis failed; using computed fallback', { missionId: mission.id, err: err.message });
@@ -583,6 +586,44 @@ If chart_data cannot be reliably emitted (very small sample, malformed responses
       personas,
     };
   }
+}
+
+/**
+ * Round over-precise numbers in the three KPI tiles.
+ *
+ * The KPI value is a STRING the narrator is told to copy verbatim from the
+ * computed figures. It mostly does. When it does not, it divides two counts
+ * itself and hands back the raw float, and that float goes straight into the
+ * largest numeral on the results page and into the PDF, PPT and XLS exports:
+ *
+ *   mission 10ecb820  "Desert Fuel Purchase Intent (Top-2-Box)"  93.3333%
+ *   mission 5a07eaf8  "Convenience of home delivery"             74.4186%
+ *   mission 5a07eaf8  "Understated pragmatists citing..."        94.1176%
+ *
+ * Three of the twenty-five most recent missions with a narrated report. Four
+ * decimal places on a percentage does not read as precision, it reads as
+ * unfinished software - and it is false precision besides: 93.3333% is 14 of
+ * 15 respondents, where the honest rendering is 93.3%.
+ *
+ * This rounds to ONE decimal and drops a trailing ".0", which is the same
+ * convention the deterministic analysis already uses. It deliberately does not
+ * touch integers, currency, ratings out of 5, or anything with two or fewer
+ * decimals - those are already the shape a person would write.
+ *
+ * Applied at synthesis, before persistence, so the stored value and every
+ * export agree. It cannot repair the missions already stored; those keep the
+ * value they were written with.
+ */
+function roundHeadlineFigures(kpis) {
+  if (!Array.isArray(kpis)) return kpis;
+  return kpis.map((k) => {
+    if (!k || typeof k.value !== 'string') return k;
+    const value = k.value.replace(/\d+\.\d{3,}/g, (num) => {
+      const rounded = Math.round(Number(num) * 10) / 10;
+      return Number.isFinite(rounded) ? String(rounded) : num;
+    });
+    return value === k.value ? k : { ...k, value };
+  });
 }
 
 /**
@@ -623,6 +664,7 @@ function sanitizeAIOutputDeep(value) {
 }
 
 module.exports = {
+  roundHeadlineFigures,
   synthesizeInsights,
   aggregate,
   computeRatingStats,
