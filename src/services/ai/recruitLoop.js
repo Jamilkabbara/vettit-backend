@@ -97,7 +97,10 @@ const PROGRESS_WRITE_EVERY_N = 5;
 async function runRecruitmentLoop(mission, supabase) {
   const missionId = mission.id;
   const target  = Number(mission.target_qualified_count);
-  const ceiling = Number(mission.ai_spend_ceiling_usd);
+  // The ceiling is re-read from the database each iteration, not captured
+  // here. It is refreshed from the per-iteration mission read below, so this
+  // binding is only the starting value and the fallback if a read ever fails.
+  let ceiling = Number(mission.ai_spend_ceiling_usd);
   const maxPersonas = target * MAX_PERSONAS_PER_TARGET;
 
   // ── Pass 46 Phase 2 — RESUME SUPPORT (audit P1-3) ──────────────────────
@@ -209,7 +212,7 @@ async function runRecruitmentLoop(mission, supabase) {
     // kill switch below costs ZERO extra queries.
     const { data: fresh, error: readErr } = await supabase
       .from('missions')
-      .select('ai_spend_usd_actual, status')
+      .select('ai_spend_usd_actual, status, ai_spend_ceiling_usd')
       .eq('id', missionId)
       .single();
     if (readErr) {
@@ -218,6 +221,21 @@ async function runRecruitmentLoop(mission, supabase) {
       });
     }
     const spentUsd = Number(fresh?.ai_spend_usd_actual ?? 0);
+
+    // Adopt an operator's mid-flight ceiling change. This value used to be
+    // captured once at loop entry, so raising it on a mission ALREADY RUNNING
+    // did nothing: both comparisons below kept using the entry value, and the
+    // operator got no signal their change was ignored.
+    //
+    // It rides the read that was already happening each iteration rather than
+    // issuing its own, so this costs no extra query.
+    //
+    // Guarded both ways on purpose. A transient read failure or a null column
+    // must not lower a ceiling and strand a paid run, nor raise one and
+    // overspend, so anything non-finite or non-positive keeps the last known
+    // good value.
+    const freshCeiling = Number(fresh?.ai_spend_ceiling_usd);
+    if (Number.isFinite(freshCeiling) && freshCeiling > 0) ceiling = freshCeiling;
 
     // ── Kill switch: is our claim still valid? ─────────────────────────
     // Pass 49 — nothing used to check this. A mission that missionRecovery
