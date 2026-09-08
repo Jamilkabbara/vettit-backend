@@ -156,7 +156,8 @@ async function analyzeFrame({ frame, mission, mediaType = 'image/jpeg' }) {
   const prompt = `You are analyzing frame at ${frame.timestamp}s of a marketing creative.
 
 Brand: ${mission.brand_name || 'unknown'}
-Target audience: ${mission.target_audience || 'general consumers'}
+Target audience: ${mission.target_audience || 'not specified'}
+Campaign brief: ${mission.brief || 'not specified'}
 Desired emotions: ${(mission.desired_emotions || []).join(', ') || 'not specified'}
 Key message/CTA: ${mission.key_message || 'not specified'}
 
@@ -280,7 +281,8 @@ async function synthesizeCreativeInsights({ frameAnalyses, mission }) {
   const prompt = `Synthesize these frame-by-frame analyses of a marketing creative.
 
 Brand: ${mission.brand_name || 'unknown'}
-Target audience: ${mission.target_audience || 'general'}
+Target audience: ${mission.target_audience || 'not specified'}
+Campaign brief: ${mission.brief || 'not specified'}
 Desired emotions: ${(mission.desired_emotions || []).join(', ') || 'not specified'}
 Key message: ${mission.key_message || 'not specified'}
 Total frames analyzed: ${framesSummary.length}
