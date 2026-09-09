@@ -2,7 +2,13 @@ const express = require('express');
 const router = express.Router();
 const { optionalAuthenticate } = require('../middleware/auth');
 const supabase = require('../db/supabase');
-const { calculateMissionPrice, extractCountriesFromMission, getActiveTierTable, PRICING_V2_ACTIVE } = require('../utils/pricingEngine');
+const {
+  calculateMissionPrice,
+  extractCountriesFromMission,
+  getActiveTierTable,
+  validateMissionPricing,
+  UnpriceableMissionError,
+} = require('../utils/pricingEngine');
 const logger = require('../utils/logger');
 
 /**
@@ -39,6 +45,8 @@ router.post('/quote', optionalAuthenticate, async (req, res, next) => {
       questions,
       questionCount,
       promoCode,
+      goalType:  bodyGoalType,
+      mediaType: bodyMediaType,
     } = req.body || {};
 
     let respCount;
@@ -72,7 +80,22 @@ router.post('/quote', optionalAuthenticate, async (req, res, next) => {
       qCount          = Array.isArray(mission.questions) ? mission.questions.length : 0;
     } else {
       respCount = bodyRespCount || 50;
-      missionRow = { targeting: targetingConfig || targeting || {} };
+      // The free-form branch is what the in-app promo field uses: it quotes a
+      // mission that does not exist yet, so there is no row to read the goal
+      // type off. It used to build this stub with ONLY targeting, so goal_type
+      // and media_type arrived at calculateMissionPrice as undefined and every
+      // free-form quote was priced off the DEFAULT ladder.
+      //
+      // On the Creative Attention pay step that is a live wrong number: the
+      // panel offers a promo against $35 (default ladder at ten respondents)
+      // while the button beside it says $19 and checkout charges $19. Brand
+      // Lift diverges the other way. Carrying the caller's goal_type through
+      // is what makes the promo field quote the ladder it is standing on.
+      missionRow = {
+        targeting:  targetingConfig || targeting || {},
+        goal_type:  bodyGoalType || null,
+        media_type: bodyMediaType || null,
+      };
       qCount = Array.isArray(questions)
         ? questions.length
         : (typeof questionCount === 'number' ? questionCount : 5);
@@ -94,6 +117,28 @@ router.post('/quote', optionalAuthenticate, async (req, res, next) => {
       }
     }
 
+    // The same fail-closed gate create-checkout-session and free-launch run.
+    // A quote is not a charge, but it is the number the customer decides on,
+    // and quoting a study the money path will refuse is its own defect: the
+    // Creative Attention floor is ten respondents, so a quote of $19 for one
+    // respondent is a price for a study that cannot be bought. Only applied
+    // when the caller told us the goal type; a bare respondent-count quote
+    // keeps its existing lenient default-ladder behaviour.
+    if (missionRow.goal_type) {
+      const gate = validateMissionPricing({
+        goalType:        missionRow.goal_type,
+        respondentCount: respCount,
+        mediaType:       missionRow.media_type,
+      });
+      if (!gate.valid) {
+        return res.status(400).json({
+          total: null, actualRate: null, breakdown: [],
+          error: gate.error,
+          ...(gate.leadCapture ? { leadCapture: gate.leadCapture } : {}),
+        });
+      }
+    }
+
     const countries = extractCountriesFromMission(missionRow);
     const details = calculateMissionPrice({
       respondentCount: respCount,
@@ -101,14 +146,21 @@ router.post('/quote', optionalAuthenticate, async (req, res, next) => {
       questionCount:   qCount,
       countries,
       promoCode:       promo,
-      // Pass the mission's goal_type/media_type so the quote uses the same
-      // ladder the charge does. GATED behind PRICING_V2 so the flag-off deploy
-      // is a strict no-op: with the flag off, /quote behaves byte-identically to
-      // production today (no goal_type passed -> default ladder). Under V2 all
-      // goals share one canonical ladder anyway, so this only affects the gated
-      // brand_lift/creative_attention goals, aligning their quote with the
-      // charge for when they eventually un-gate.
-      ...(PRICING_V2_ACTIVE ? { goalType: missionRow.goal_type, mediaType: missionRow.media_type } : {}),
+      // Quote off the ladder the CHARGE uses. Unconditional.
+      //
+      // This was gated behind PRICING_V2, which was false on every deploy of
+      // its life, so the gate meant "never pass it" and /quote priced every
+      // mission off the DEFAULT ladder while /payments and /missions/launch
+      // priced it off the goal's own:
+      //
+      //   brand_lift         n=200  quoted $239.20  charged $300.00
+      //   creative_attention n=10   quoted  $35.00  charged  $19.00
+      //
+      // The frontend takes the SERVER total whenever it differs from its own
+      // by more than $0.02, so the customer read the wrong figure right up to
+      // the Stripe page.
+      goalType:  missionRow.goal_type,
+      mediaType: missionRow.media_type,
     });
 
     // Enterprise / custom-tier (PRICING_V2): no self-serve price — return a
