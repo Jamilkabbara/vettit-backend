@@ -110,6 +110,59 @@ const MODEL_ROUTING = {
 };
 
 /**
+ * Roll one call's cost up onto the mission.
+ *
+ * Extracted from callClaude so the writers that CANNOT use callClaude can
+ * still report their spend. creativeAttention.js is the one that matters: its
+ * vision calls need raw image blocks, so it talks to the SDK directly, writes
+ * its own ai_calls row, and — until this was pulled out — never touched the
+ * mission counter at all.
+ *
+ * The result was that every vision call VETT has ever made was invisible to
+ * missions.ai_spend_usd_actual, which is what the margin dashboards read and
+ * what the recruit loop checks its ceiling against. Measured on the 30-frame
+ * video mission cff8a2ec: the row recorded $0.0694 (the single synthesis call,
+ * which does go through callClaude) against $0.4759 of real spend. Every
+ * completed image mission was wrong the same way, by 9x to 20x.
+ *
+ * Fire-and-forget by design, exactly as it was inside callClaude: a cost
+ * rollup must never fail the call that earned it.
+ *
+ * @param {string|null|undefined} missionId
+ * @param {number} costUsd
+ */
+function recordMissionAiSpend(missionId, costUsd) {
+  if (!missionId || !Number.isFinite(costUsd) || costUsd <= 0) return;
+  supabase.rpc('increment_mission_ai_spend', { p_mission_id: missionId, p_cost: costUsd })
+      .then(({ error: rpcErr }) => {
+        if (!rpcErr) return;
+        // RPC error path: try the legacy single-column RPC
+        supabase.rpc('increment_mission_ai_cost', { p_mission_id: missionId, p_cost: costUsd })
+          .then(({ error: legacyErr }) => {
+            if (!legacyErr) return;
+            // Final fallback: manual SELECT+UPDATE on both columns.
+            // Racy under high concurrency but better than dropping
+            // the cost entirely.
+            supabase.from('missions')
+              .select('ai_cost_usd, ai_spend_usd_actual')
+              .eq('id', missionId)
+              .single()
+              .then(({ data }) => {
+                if (!data) return;
+                supabase.from('missions')
+                  .update({
+                    ai_cost_usd:         (Number(data.ai_cost_usd) || 0) + costUsd,
+                    ai_spend_usd_actual: (Number(data.ai_spend_usd_actual) || 0) + costUsd,
+                  })
+                  .eq('id', missionId)
+                  .then(() => {})
+                  .catch((err) => logger.warn('ai cost manual fallback update failed', { missionId, err: err.message }));
+              });
+          });
+      });
+}
+
+/**
  * Low-level Claude call with cost logging.
  * @param {object} params
  * @param {string} params.callType   - Key of MODEL_ROUTING
@@ -193,35 +246,7 @@ async function callClaude({
     // ai_spend_usd_actual (new, recruit-loop reads this). Falls back
     // to the manual SELECT+UPDATE only if the RPC fails so writes
     // continue even during a migration gap.
-    if (missionId) {
-      supabase.rpc('increment_mission_ai_spend', { p_mission_id: missionId, p_cost: costUsd })
-        .then(({ error: rpcErr }) => {
-          if (!rpcErr) return;
-          // RPC error path: try the legacy single-column RPC
-          supabase.rpc('increment_mission_ai_cost', { p_mission_id: missionId, p_cost: costUsd })
-            .then(({ error: legacyErr }) => {
-              if (!legacyErr) return;
-              // Final fallback: manual SELECT+UPDATE on both columns.
-              // Racy under high concurrency but better than dropping
-              // the cost entirely.
-              supabase.from('missions')
-                .select('ai_cost_usd, ai_spend_usd_actual')
-                .eq('id', missionId)
-                .single()
-                .then(({ data }) => {
-                  if (!data) return;
-                  supabase.from('missions')
-                    .update({
-                      ai_cost_usd:         (Number(data.ai_cost_usd) || 0) + costUsd,
-                      ai_spend_usd_actual: (Number(data.ai_spend_usd_actual) || 0) + costUsd,
-                    })
-                    .eq('id', missionId)
-                    .then(() => {})
-                    .catch((err) => logger.warn('ai cost manual fallback update failed', { missionId, err: err.message }));
-                });
-            });
-        });
-    }
+    recordMissionAiSpend(missionId, costUsd);
 
     return { text, costUsd, inputTokens, outputTokens, cachedTokens, latencyMs, model };
   } catch (error) {
@@ -323,6 +348,7 @@ function extractJSON(text) {
 
 module.exports = {
   callClaude,
+  recordMissionAiSpend,
   streamClaude,
   extractJSON,
   MODEL_ROUTING,
