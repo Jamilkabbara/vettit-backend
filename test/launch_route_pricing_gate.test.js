@@ -118,7 +118,7 @@ describe('/launch runs the same fail-closed pricing gate as checkout', () => {
 // directions, so a regression to the default ladder cannot pass both.
 
 describe('/launch prices each goal off its own ladder, not the default one', () => {
-  test('brand_lift n=200 charges the Tracker price ($300), not the Deep Dive price ($240)', async () => {
+  test('brand_lift n=200 charges the Tracker price ($300), not the default-ladder $239.20', async () => {
     mockMissionRow = mission({ goal_type: 'brand_lift', respondent_count: 200 });
     const res = await launch();
     expect(res.status).toBe(200);
@@ -126,7 +126,7 @@ describe('/launch prices each goal off its own ladder, not the default one', () 
     expect(res.body.pricing.volumeTier.name).toBe('Tracker');
   });
 
-  test('creative_attention n=50 charges the CA flat price ($69), not the default $99', async () => {
+  test('creative_attention n=50 charges the CA flat price ($69), not the default-ladder $74.50', async () => {
     mockMissionRow = mission({ goal_type: 'creative_attention', respondent_count: 50, media_type: 'video' });
     const res = await launch();
     expect(res.status).toBe(200);
@@ -142,19 +142,19 @@ describe('/launch prices each goal off its own ladder, not the default one', () 
 // assertion above.
 
 describe('positive control - a legal mission still launches, at the same price as before', () => {
-  test('validate n=50 opens a PaymentIntent for $99', async () => {
+  test('validate n=50 opens a PaymentIntent for $74.50', async () => {
     mockMissionRow = mission({ goal_type: 'validate', respondent_count: 50 });
     const res = await launch();
     expect(res.status).toBe(200);
     expect(res.body.clientSecret).toBe('cs_secret');
     expect(mockCreatePaymentIntent).toHaveBeenCalledTimes(1);
-    expect(chargedCents()).toBe(9900);
+    expect(chargedCents()).toBe(7450);
   });
 
-  test('validate n=250 opens a PaymentIntent for $300', async () => {
+  test('validate n=250 opens a PaymentIntent for $299', async () => {
     mockMissionRow = mission({ goal_type: 'validate', respondent_count: 250 });
     const res = await launch();
     expect(res.status).toBe(200);
-    expect(chargedCents()).toBe(30000);
+    expect(chargedCents()).toBe(29900);
   });
 });

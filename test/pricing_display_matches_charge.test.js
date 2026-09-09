@@ -20,7 +20,7 @@ const {
   CREATIVE_ATTENTION_TIERS,
   calculateMissionPrice,
   getActiveTierTable,
-  PRICING_V2_ACTIVE,
+  MAX_SELF_SERVE_RESPONDENTS,
 } = require('../src/utils/pricingEngine');
 
 const round2 = (v) => Math.round(v * 100) / 100;
@@ -30,11 +30,12 @@ const baseFor = (goalType, n) =>
   calculateMissionPrice({ goalType, respondentCount: n, questionCount: 5, targeting: {} }).base;
 
 describe('public price display equals the charged price', () => {
-  test('the tiers endpoint is serving the V1 ladder (guards the assertions below)', () => {
-    // If PRICING_V2 is ever flipped on, these V1 assertions describe a ladder
-    // that is no longer served and would pass vacuously. Fail loudly instead.
-    expect(PRICING_V2_ACTIVE).toBe(false);
+  test('the tiers endpoint is serving the live ladder (guards the assertions below)', () => {
+    // If a second ladder is ever introduced behind a flag again, these
+    // assertions would describe a ladder that is no longer served and would
+    // pass vacuously. Fail loudly instead.
     expect(getActiveTierTable().version).toBe('v1');
+    expect(getActiveTierTable().tiers.map((t) => t.id)).toEqual(VOLUME_TIERS.map((t) => t.id));
   });
 
   test('every VOLUME_TIERS packagePrice equals anchorCount x ratePerResp', () => {
@@ -84,18 +85,45 @@ describe('public price display equals the charged price', () => {
     expect(priced).toBeGreaterThan(0); // no vacuous pass if every tier went custom
   });
 
-  test('the three tiers that actually drifted publish the corrected figures', () => {
+  test('every published anchor is a round dollar price', () => {
+    // The point of the 2026-09 reprice: the customer-facing number is chosen
+    // first and the rate is derived from it, so no published anchor may carry
+    // cents. This is the invariant that keeps a future rate tweak from
+    // reintroducing "$968.75".
+    const { tiers } = getActiveTierTable();
+    expect(tiers.length).toBeGreaterThan(0);
+    for (const t of tiers) {
+      if (t.custom) continue;
+      expect({ id: t.id, cents: t.priceCents % 100 }).toEqual({ id: t.id, cents: 0 });
+    }
+  });
+
+  test('the repriced ladder publishes its pinned figures', () => {
     // Pinned literals. If the ladder is repriced these must be updated
     // deliberately — that is the point of pinning them.
     const byId = Object.fromEntries(getActiveTierTable().tiers.map((t) => [t.id, t]));
-    expect(byId.deep_dive.priceUsd).toBe(300);
-    expect(byId.scale.priceUsd).toBe(900);
-    expect(byId.deep_dive.fromLabel).toBe('$300');
-    expect(byId.scale.fromLabel).toBe('$900'); // rendered verbatim into /terms
-    // Enterprise anchors at 5,000, above the self-serve ceiling, so it no
-    // longer carries a price. $1,990 was stale; $2,000 was correct but
-    // unsellable. "Custom" is the only honest third option.
-    expect(byId.enterprise.custom).toBe(true);
-    expect(byId.enterprise.priceUsd).toBeNull();
+    expect(byId.sniff_test.priceUsd).toBe(9);
+    expect(byId.validate.priceUsd).toBe(39);
+    expect(byId.confidence.priceUsd).toBe(149);
+    expect(byId.deep_dive.priceUsd).toBe(299);
+    expect(byId.scale.priceUsd).toBe(499);
+    expect(byId.growth.priceUsd).toBe(899);
+    expect(byId.enterprise.priceUsd).toBe(1099);
+    // fromLabel is rendered verbatim into /terms.
+    expect(byId.deep_dive.fromLabel).toBe('$299');
+    expect(byId.enterprise.fromLabel).toBe('$1,099');
+  });
+
+  test('the top bracket anchors AT the self-serve cap, so nothing published is unsellable', () => {
+    // The old ladder anchored Enterprise at 5,000 — above the cap — so the
+    // endpoint had to publish "Custom" for it. Anchoring at the cap means
+    // every published price is a price a customer can actually pay.
+    const byId = Object.fromEntries(getActiveTierTable().tiers.map((t) => [t.id, t]));
+    expect(byId.enterprise.respondents).toBe(MAX_SELF_SERVE_RESPONDENTS);
+    expect(byId.enterprise.custom).toBe(false);
+    for (const t of getActiveTierTable().tiers) {
+      expect({ id: t.id, sellable: t.respondents <= MAX_SELF_SERVE_RESPONDENTS })
+        .toEqual({ id: t.id, sellable: true });
+    }
   });
 });

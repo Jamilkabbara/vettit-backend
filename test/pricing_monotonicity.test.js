@@ -16,7 +16,7 @@ const {
   BRAND_LIFT_TIERS,
   BRAND_LIFT_MIN_RESPONDENTS,
   CREATIVE_ATTENTION_TIERS,
-  PRICING_V2_ACTIVE,
+  MAX_SELF_SERVE_RESPONDENTS,
 } = require('../src/utils/pricingEngine');
 
 const baseFor = (goalType, n, extra = {}) =>
@@ -39,9 +39,12 @@ function sweepCounts(ladder, lo, hi, step) {
   return [...pts].sort((a, b) => a - b);
 }
 
-describe('V1 price is monotonic non-decreasing in respondent count', () => {
-  it('sanity: PRICING_V2 is OFF, so these tests exercise the live V1 path', () => {
-    expect(PRICING_V2_ACTIVE).toBe(false);
+describe('price is monotonic non-decreasing in respondent count', () => {
+  it('sanity: there is exactly one ladder and these tests exercise it', () => {
+    // Guards against a second flag-gated ladder being reintroduced and making
+    // every assertion below vacuous.
+    expect(VOLUME_TIERS.length).toBeGreaterThan(0);
+    expect(baseFor('validate', VOLUME_TIERS[0].anchorCount)).toBe(VOLUME_TIERS[0].packagePrice);
   });
 
   it('default ladder (validate): price(n+1) >= price(n) across every boundary', () => {
@@ -109,22 +112,60 @@ describe('V1 price is monotonic non-decreasing in respondent count', () => {
 });
 
 describe('the specific reported arbitrage windows are closed', () => {
-  it('1,000 vs 1,005 respondents (Scale → Enterprise): the $498 hole is gone', () => {
-    expect(baseFor('validate', 1000)).toBe(900);
-    // was 1005 × $0.40 = $402.00.
+  it('1,000 vs 1,005 respondents (Growth -> Enterprise): the $498 hole is gone', () => {
+    expect(baseFor('validate', 1000)).toBe(899);
+    // The original defect: 1,005 x $0.40 = $402.00, i.e. $498 CHEAPER than
+    // 1,000. The previous-ceiling floor closed it but left a flat $900 band
+    // 1,251 counts wide, and a linear bridge closed that.
     //
-    // This line used to read `.toBe(900)`. That did not assert the invariant
-    // this file is named for — it pinned the FLAT $900 plateau that the
-    // previous-ceiling floor created across [1,000 .. 2,250], i.e. it asserted
-    // the defect. The linear bridge (900 + (n-1,000) × 0.275) now charges
-    // $901.38 here. The hole this test exists to close — 1,005 costing LESS
-    // than 1,000 — is still closed, and that is what is asserted.
-    expect(baseFor('validate', 1005)).toBeGreaterThanOrEqual(900);
+    // The 2026-09 reprice shrinks the cause instead of patching the symptom.
+    // The rate step across this boundary is $0.899 -> $0.8792, so the floor
+    // still holds a flat band here — but 23 counts (1,000..1,022) rather than
+    // 1,251, which is why the bridge could be retired. 1,005 is inside that
+    // band, so the honest assertion is not-cheaper, and the width is asserted
+    // separately below.
     expect(baseFor('validate', 1005)).toBeGreaterThanOrEqual(baseFor('validate', 1000));
+    expect(baseFor('validate', 1023)).toBeGreaterThan(baseFor('validate', 1000));
   });
 
   it('1,000 vs 1,001 respondents (the API-reachable version)', () => {
     expect(baseFor('validate', 1001)).toBeGreaterThanOrEqual(baseFor('validate', 1000));
+  });
+
+  it('no flat band below the self-serve cap is wider than 60 counts', () => {
+    // The plateau the retired bridge existed to close was 1,251 counts wide.
+    // Flat bands are inherent to a floored bracket ladder, but a WIDE one is
+    // an arbitrage window: everyone in it pays the same money for materially
+    // different inventory. 60 is a deliberate ceiling on that, not a
+    // description of the current ladder (its widest band is 56).
+    let widest = 0;
+    let widestAt = null;
+    let start = 1;
+    let prev = baseFor('validate', 1);
+    for (let n = 2; n <= MAX_SELF_SERVE_RESPONDENTS; n += 1) {
+      const p = baseFor('validate', n);
+      if (p !== prev) {
+        if (n - start > widest) { widest = n - start; widestAt = `${start}..${n - 1}`; }
+        start = n;
+        prev = p;
+      }
+    }
+    if (MAX_SELF_SERVE_RESPONDENTS + 1 - start > widest) {
+      widest = MAX_SELF_SERVE_RESPONDENTS + 1 - start;
+      widestAt = `${start}..${MAX_SELF_SERVE_RESPONDENTS}`;
+    }
+    expect({ widest: widest <= 60, at: widest <= 60 ? widestAt : `${widestAt} is ${widest} counts wide` })
+      .toEqual({ widest: true, at: widestAt });
+  });
+
+  it('the per-respondent rate never rises as the count rises', () => {
+    // The defect the reprice was built to remove: the old ladder charged
+    // $1.80/resp at n=5, $3.50 at n=10 and $1.98 at n=50. Buying more was
+    // more expensive per unit across a boundary a slider could cross.
+    for (let i = 1; i < VOLUME_TIERS.length; i += 1) {
+      expect({ from: VOLUME_TIERS[i - 1].id, rises: VOLUME_TIERS[i].ratePerResp > VOLUME_TIERS[i - 1].ratePerResp })
+        .toEqual({ from: VOLUME_TIERS[i - 1].id, rises: false });
+    }
   });
 
   it('every default-ladder boundary: maxCount+1 is never cheaper than maxCount', () => {
@@ -151,14 +192,22 @@ describe('the specific reported arbitrage windows are closed', () => {
   });
 });
 
-describe('the fix does not raise prices at the tier anchor / preset counts', () => {
-  // These are the counts the setup UI snaps to (tier markers + preset cards)
-  // and the counts every existing pricing test asserts. They must be
-  // byte-identical to pre-fix `count × rate`.
+describe('the ladder anchors are pinned', () => {
+  // These are the counts the setup UI snaps to (tier markers + preset cards).
+  // They were repriced in 2026-09; changing one again must be deliberate.
   it.each([
-    [5, 9], [10, 35], [50, 99], [100, 120], [250, 300], [1000, 900], [5000, 2000],
-  ])('validate n=%i → $%s (unchanged)', (n, expected) => {
+    [5, 9], [25, 39], [100, 149], [250, 299], [500, 499], [1000, 899], [1250, 1099],
+  ])('validate n=%i → $%s (the repriced anchors)', (n, expected) => {
     expect(baseFor('validate', n)).toBe(expected);
+  });
+
+  it('every anchor price is a whole dollar', () => {
+    // The reprice picks the customer-facing number first and derives the rate
+    // from it. If a future edit moves a rate instead of a price, this fails.
+    for (const t of VOLUME_TIERS) {
+      expect({ id: t.id, cents: Math.round(baseFor('validate', t.anchorCount) * 100) % 100 })
+        .toEqual({ id: t.id, cents: 0 });
+    }
   });
 
   it.each([

@@ -7,6 +7,7 @@ const {
   extractCountriesFromMission,
   getActiveTierTable,
   validateMissionPricing,
+  formatRatePerResp,
   UnpriceableMissionError,
 } = require('../utils/pricingEngine');
 const logger = require('../utils/logger');
@@ -163,8 +164,8 @@ router.post('/quote', optionalAuthenticate, async (req, res, next) => {
       mediaType: missionRow.media_type,
     });
 
-    // Enterprise / custom-tier (PRICING_V2): no self-serve price — return a
-    // custom-quote response, never a $0 or per-respondent breakdown.
+    // Above the self-serve ceiling: no self-serve price — return a
+    // custom-quote response, never a per-respondent breakdown.
     if (details.customQuote) {
       return res.json({
         total: null, actualRate: null, breakdown: [], details, customQuote: true,
@@ -172,10 +173,13 @@ router.post('/quote', optionalAuthenticate, async (req, res, next) => {
       });
     }
 
-    // Build the human-readable breakdown the UI renders line-by-line. V2 is flat
-    // tier pricing (ratePerResp null), so label the base by tier, not "× $rate".
+    // Build the human-readable breakdown the UI renders line-by-line. Creative
+    // Attention is flat per bracket (ratePerResp null), so label the base by
+    // tier rather than "x $rate". formatRatePerResp, not toFixed(2): the
+    // reprice derives rates from round anchors, so $0.998 x 500 = $499 must not
+    // render as "$1.00 x 500".
     const baseLabel = details.ratePerResp != null
-      ? `${respCount} respondents × $${details.ratePerResp.toFixed(2)}`
+      ? `${respCount} respondents × $${formatRatePerResp(details.ratePerResp)}`
       : `${(details.volumeTier && details.volumeTier.name) || 'Base'} tier (${respCount} respondents)`;
     const breakdown = [
       { label: baseLabel, amount: details.base },
@@ -217,7 +221,7 @@ router.post('/quote', optionalAuthenticate, async (req, res, next) => {
  * THE single, flag-aware source of truth for every price DISPLAY surface
  * (pricing section, per-card "from" prices, setup tier picker, Terms table).
  * Returns the active tier ladder — V1 today, the canonical V2 ladder after the
- * owner flips PRICING_V2 — so display can never drift from what Stripe charges
+ * ladder changes — so display can never drift from what Stripe charges
  * (both read this same module). Public (no auth): prices are not sensitive and
  * the landing page renders them pre-login. Cache lightly at the edge.
  *

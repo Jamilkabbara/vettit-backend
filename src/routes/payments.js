@@ -170,11 +170,11 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
     });
 
     // PR A — fail-closed guard. An Enterprise/custom-tier mission has no
-    // self-serve price (base $0 under PRICING_V2). validateMissionPricing above
+    // self-serve price. validateMissionPricing above
     // already rejects it, but this never lets a $0-base charge (or a surcharge-
     // only charge on a $0 base) reach Stripe even if that gate ever changes.
     //
-    // customQuote is ALSO set (flag off) for any mission above
+    // customQuote is set for any mission above
     // MAX_SELF_SERVE_RESPONDENTS, so this is the money-side backstop for a
     // draft that was created before the cap existed. The response carries the
     // lead-capture destination so the client has somewhere to send the buyer.

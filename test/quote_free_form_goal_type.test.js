@@ -76,10 +76,23 @@ describe('free-form quote honours the caller goal type', () => {
     expect(res.body.total).not.toBe(239.20);
   });
 
-  test('the two goals diverge from the default ladder in OPPOSITE directions', async () => {
-    // So a regression to the default ladder cannot satisfy both by coincidence.
+  test('neither goal can be satisfied by the default ladder', async () => {
+    // Originally "diverge in OPPOSITE directions": brand_lift above the default,
+    // creative_attention below it. The 2026-09 reprice flipped the second one.
+    // The default ladder at ten respondents was $35 and is now $15.60, so
+    // Creative Attention's $19 went from cheaper than the default to dearer
+    // than it. That is a real consequence of pricing a per-creative product on
+    // a respondent ladder, and it is why the CA ladder is being replaced.
+    //
+    // What this test is for is unchanged: a regression to the default ladder
+    // must not satisfy both goals by coincidence. Pinning both distances does
+    // that regardless of sign.
     expect(charged('brand_lift', 200)).toBeGreaterThan(charged('validate', 200));
-    expect(charged('creative_attention', 10, 'image')).toBeLessThan(charged('validate', 10));
+    expect(charged('creative_attention', 10, 'image')).not.toBe(charged('validate', 10));
+    expect(charged('validate', 10)).toBe(15.60);
+    expect(charged('creative_attention', 10, 'image')).toBe(19);
+    expect(charged('brand_lift', 200)).toBe(300);
+    expect(charged('validate', 200)).toBe(239.20);
   });
 
   test('omitting goalType keeps the old lenient default-ladder behaviour', async () => {
