@@ -1303,7 +1303,7 @@ router.get('/revenue', async (req, res, next) => {
 
     const [missionsRes, priorMissionsRes, bucketsRes] = await Promise.all([
       supabase.from('missions')
-        .select('total_price_usd, ai_cost_usd, status, goal_type, user_id')
+        .select('id, total_price_usd, ai_cost_usd, status, goal_type, user_id')
         .in('status', ['paid', 'completed'])
         .gte('paid_at', start.toISOString())
         .lt('paid_at', end.toISOString()),
@@ -1318,9 +1318,34 @@ router.get('/revenue', async (req, res, next) => {
     const curr = missionsRes.data      || [];
     const prev = priorMissionsRes.data || [];
 
+    // Cost comes from the ai_calls LOG, not the denormalised mission column.
+    //
+    // The column is a running sum maintained at the call site, and it has been
+    // wrong three separate ways: vision calls never rolled up at all, the newer
+    // spend column was added late and never backfilled, and float drift. On the
+    // 36 affected missions it understated real spend by $1.80 on $10.25 - and
+    // gross profit here is revenue MINUS that number, so every margin figure
+    // this endpoint has ever served was flattering.
+    //
+    // The missions-list handler above already takes the log as truth and falls
+    // back to the column only when a mission has no logged calls. This does the
+    // same, so the two admin surfaces agree and neither depends on the backfill
+    // having been run.
+    const currIds = curr.map((m) => m.id).filter(Boolean);
+    const { data: currCalls } = currIds.length
+      ? await supabase.from('ai_calls').select('mission_id, cost_usd').in('mission_id', currIds)
+      : { data: [] };
+    const loggedCostByMission = {};
+    for (const c of (currCalls || [])) {
+      if (!c.mission_id) continue;
+      loggedCostByMission[c.mission_id] = (loggedCostByMission[c.mission_id] || 0) + Number(c.cost_usd || 0);
+    }
+
     const currRevenue = curr.reduce((s, m) => s + Number(m.total_price_usd || 0), 0);
     const prevRevenue = prev.reduce((s, m) => s + Number(m.total_price_usd || 0), 0);
-    const currCost    = curr.reduce((s, m) => s + Number(m.ai_cost_usd    || 0), 0);
+    const currCost    = curr.reduce((s, m) => s + (
+      loggedCostByMission[m.id] != null ? loggedCostByMission[m.id] : Number(m.ai_cost_usd || 0)
+    ), 0);
     const currGross   = currRevenue - currCost;
     const avgOrder    = curr.length > 0 ? currRevenue / curr.length : 0;
 
