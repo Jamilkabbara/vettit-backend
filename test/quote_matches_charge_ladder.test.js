@@ -123,10 +123,16 @@ describe('POST /api/pricing/quote uses the mission goal type', () => {
   });
 
   test('above the self-serve cap the quote refuses instead of publishing a price', async () => {
+    // This asserted 200 + customQuote until the fail-closed gate was added to
+    // this route. A refusal is now a 400 carrying the reason and the
+    // lead-capture destination, which is the same answer create-checkout-session
+    // and free-launch give. Either way the invariant this test exists for holds:
+    // no price is published for a study that cannot be bought.
     mockMissionRow = row('validate', 3000);
     const res = await quote();
-    expect(res.status).toBe(200);
-    expect(res.body.customQuote).toBe(true);
+    expect(res.status).toBe(400);
     expect(res.body.total).toBeNull();
+    expect(res.body.error).toMatch(/managed engagement|contact sales/i);
+    expect(res.body.leadCapture).toBeTruthy();
   });
 });
