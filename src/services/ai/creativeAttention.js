@@ -8,7 +8,11 @@
  *   4. Synthesizing per-frame data into an executive insight report
  *
  * Claude vision is called directly (not via callClaude) because it requires
- * multimodal message content (image blocks). Cost is logged manually.
+ * multimodal message content (image blocks), so this file writes its own
+ * ai_calls row AND calls recordMissionAiSpend itself. Both halves matter: the
+ * row is the audit trail, the rollup is what the margin dashboards and the
+ * recruit-loop ceiling actually read. Logging only the row is what made every
+ * vision call VETT has ever made invisible to the mission's spend total.
  * The synthesis step uses callClaude normally.
  */
 
@@ -17,7 +21,7 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const supabase  = require('../../db/supabase');
 const { updateMission, stampMissionHeartbeat } = require('../../db/missionSchema');
-const { callClaude, extractJSON } = require('./anthropic');
+const { callClaude, extractJSON, recordMissionAiSpend } = require('./anthropic');
 // Pass 23 — em-dash sanitizer shared with insights.js. Applied to every
 // creative_analysis JSONB write so CA reports have the same prose
 // hygiene as the survey insights.
@@ -233,6 +237,16 @@ Use fractions, never pixels, and never a percentage above 1.0. Box the region ti
     latency_ms:    latencyMs,
     success:       true,
   }).then(() => {}).catch((e) => logger.warn('ai_calls insert failed', e));
+
+  // Roll the cost onto the mission. This writer bypasses callClaude because
+  // vision needs raw image blocks, and the mission-spend rollup used to live
+  // INSIDE callClaude — so every frame call VETT has ever made logged an
+  // ai_calls row and then vanished from missions.ai_spend_usd_actual, which is
+  // what the margin dashboards read and what the recruit loop checks its
+  // ceiling against. The 30-frame video mission cff8a2ec recorded $0.0694 (its
+  // one synthesis call) against $0.4759 of real spend; every completed image
+  // mission was wrong the same way, by 9x to 20x.
+  recordMissionAiSpend(mission.id, costUsd);
 
   try {
     const text    = response.content[0]?.text || '';
