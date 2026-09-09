@@ -50,6 +50,12 @@ jest.mock('../src/services/ai/insights', () => ({
 jest.mock('../src/services/ai/anthropic', () => ({
   callClaude: jest.fn(),
   extractJSON: (t) => JSON.parse(t),
+  // The frame writer rolls its own cost onto the mission, because it bypasses
+  // callClaude and so cannot inherit callClaude's rollup. Stubbed rather than
+  // omitted: leaving it out makes every creative-attention test fail on
+  // "recordMissionAiSpend is not a function", which says nothing about the
+  // behaviour under test.
+  recordMissionAiSpend: jest.fn(),
 }));
 
 // The vision client is constructed at module load, so the SDK itself is the
