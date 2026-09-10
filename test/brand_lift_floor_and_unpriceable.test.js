@@ -156,10 +156,20 @@ describe('no brand_lift or CA price can carry a tier from another ladder', () =>
     expect(BRAND_LIFT_TIERS.find(t => t.id === p.volumeTier.id).anchorCount).toBe(p.volumeTier.anchorCount);
   });
 
-  test.each([10, 25, 50, 100, 250, 1000])('creative_attention n=%i lands on a CA tier', (n) => {
+  // Creative Attention is priced PER CREATIVE, so the count no longer picks a
+  // tier - the media type does. Every count above the CHECK-constraint floor
+  // lands on the same tier and the same price.
+  test.each([10, 25, 50, 100, 250, 1000])('creative_attention n=%i lands on the image tier at $19', (n) => {
     const p = calculateMissionPrice({ goalType: 'creative_attention', respondentCount: n, mediaType: 'image' });
     expect(caIds.has(p.volumeTier.id)).toBe(true);
-    expect(CREATIVE_ATTENTION_TIERS.find(t => t.id === p.volumeTier.id).anchorCount).toBe(p.volumeTier.anchorCount);
+    expect(p.volumeTier.id).toBe('image');
+    expect(p.total).toBe(19);
+  });
+
+  test.each([10, 250, 1000])('creative_attention video n=%i lands on the video tier at $49', (n) => {
+    const p = calculateMissionPrice({ goalType: 'creative_attention', respondentCount: n, mediaType: 'video' });
+    expect(p.volumeTier.id).toBe('video');
+    expect(p.total).toBe(49);
   });
 });
 
@@ -256,7 +266,8 @@ describe('positive control - legal missions still price, on their own ladder', (
     expect(calculateMissionPrice({ goalType, respondentCount: n }).total).toBe(expected);
   });
 
-  test.each([[10, 19], [25, 39], [50, 69], [100, 129], [250, 299]])(
+  // Per-creative pricing: the count is irrelevant, the media type is the price.
+  test.each([[10, 19], [25, 19], [50, 19], [100, 19], [250, 19]])(
     'creative_attention n=%i still prices at $%i', (n, expected) => {
       expect(calculateMissionPrice({
         goalType: 'creative_attention', respondentCount: n, mediaType: 'image',

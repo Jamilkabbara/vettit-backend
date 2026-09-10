@@ -80,13 +80,19 @@ describe('POST /api/pricing/quote uses the mission goal type', () => {
     expect(res.body.total).not.toBe(239.20);
   });
 
-  test('creative_attention n=50 quotes $69, the CA flat price', async () => {
+  test('creative_attention quotes the per-creative price, not a respondent tier', async () => {
+    // Was $69 at n=50 on the retired respondent ladder. Creative Attention is
+    // priced per creative now, so the count does not move the number.
     mockMissionRow = row('creative_attention', 50, 'image');
-    const res = await quote();
-    expect(res.status).toBe(200);
-    expect(res.body.total).toBe(69);
-    expect(res.body.total).toBe(charged('creative_attention', 50, 'image'));
-    expect(res.body.total).not.toBe(74.50);
+    const img = await quote();
+    expect(img.status).toBe(200);
+    expect(img.body.total).toBe(19);
+    expect(img.body.total).toBe(charged('creative_attention', 50, 'image'));
+    expect(img.body.total).not.toBe(74.50);   // the default ladder at n=50
+
+    mockMissionRow = row('creative_attention', 50, 'video');
+    const vid = await quote();
+    expect(vid.body.total).toBe(49);
   });
 
   test('the two goals diverge from the default ladder in OPPOSITE directions', async () => {

@@ -216,15 +216,83 @@ const BRAND_LIFT_TIERS = [
  *   Deep Dive   100 $129  $1.29/resp
  *   Deep Dive XL 250 $299 $1.20/resp
  */
+/**
+ * ── Creative Attention prices per CREATIVE, not per respondent ─────────────
+ *
+ * It used to charge a respondent ladder: 10/$19, 25/$39, 50/$69, 100/$129,
+ * 250+/$299. That ladder was wrong in a way no reprice could fix, because it
+ * priced by a quantity the product does not have.
+ *
+ * The analysis NEVER reads respondent_count - verified by grep across
+ * services/ai/creativeAttention.js, which has zero references to it - and the
+ * results page never mentions respondents. A Creative Attention mission
+ * produces no respondents and no response rows: it downloads one creative,
+ * samples frames from it, and scores them. So a customer paying $299 for "250
+ * respondents" received byte-identical work to one paying $19 for "10": the
+ * same video, the same 30 frames, the same report. Fifteen times the money for
+ * the same thing, labelled with a number that does not exist.
+ *
+ * COST DRIVES PER CREATIVE, AND IT IS BOUNDED. Measured on production:
+ *
+ *   image   3 vision calls          $0.028 - $0.063   (six completed missions)
+ *   video   30 frames + synthesis    $0.476            (mission cff8a2ec)
+ *
+ * Video is 7.5x an image, not because it is longer but because the extractor
+ * samples one frame per second and stops at 30. A 35-second and a ten-minute
+ * video cost the same. So there is no long-video tail to price against.
+ *
+ * THE PRICES ARE CHOSEN, NOT DERIVED. $19 keeps the entry price customers
+ * already see advertised. $49 says the harder analysis costs more without
+ * pretending the ratio should track cost - 11x cost would be an $209 video,
+ * which is not what a frame-by-frame attention read is worth to a buyer.
+ * Margin is 99.7% and 99.0%, so margin is not the constraint and should not be
+ * the author.
+ *
+ * NO VOLUME TIERS. A mission takes exactly one creative today: the form holds
+ * a single file and analyzeCreative downloads one attachment with no loop over
+ * assets. Someone testing five videos creates five missions. A bundle price is
+ * the right conversation when multi-creative actually exists.
+ */
+const CREATIVE_ATTENTION_PRICES = Object.freeze({
+  image: 19,
+  video: 49,
+});
+
+/**
+ * Creative Attention's respondent floor.
+ *
+ * Retained ONLY because a NOT VALID CHECK constraint on missions enforces
+ * respondent_count >= 10 for this goal type, and Postgres re-checks a NOT VALID
+ * constraint on any subsequent update to the row - including updates that touch
+ * unrelated columns. Dropping the number from the product without dropping the
+ * constraint would make every Creative Attention row unwritable.
+ *
+ * It is no longer a customer-facing input. The setup form does not ask for it
+ * and nothing downstream reads it.
+ */
 const CA_MIN_RESPONDENTS = 10;
+
+/** The count written on a CA mission so the CHECK constraint is satisfied. */
+const CA_FIXED_RESPONDENT_COUNT = CA_MIN_RESPONDENTS;
+
+/**
+ * Legacy shape, kept so the /terms table, the landing ladder and any stored
+ * breakdown that names a CA tier keep resolving. Both entries carry the flat
+ * per-creative price; anchorCount is the constraint floor, not a choice a
+ * customer makes.
+ */
 const CREATIVE_ATTENTION_TIERS = [
-  { id: 'sniff_test',   name: 'Sniff Test',   anchorCount: 10,  maxCount: 10,  ratePerResp: 1.90, packagePrice: 19,  minRespondents: CA_MIN_RESPONDENTS },
-  { id: 'validate',     name: 'Validate',     anchorCount: 25,  maxCount: 25,  ratePerResp: 1.56, packagePrice: 39,  minRespondents: CA_MIN_RESPONDENTS },
-  { id: 'confidence',   name: 'Confidence',   anchorCount: 50,  maxCount: 50,  ratePerResp: 1.38, packagePrice: 69,  minRespondents: CA_MIN_RESPONDENTS },
-  { id: 'deep_dive',    name: 'Deep Dive',    anchorCount: 100, maxCount: 100, ratePerResp: 1.29, packagePrice: 129, minRespondents: CA_MIN_RESPONDENTS },
-  { id: 'deep_dive_xl', name: 'Deep Dive XL', anchorCount: 250, maxCount: Infinity, ratePerResp: 1.20, packagePrice: 299, minRespondents: CA_MIN_RESPONDENTS },
+  { id: 'image', name: 'Image',  anchorCount: CA_FIXED_RESPONDENT_COUNT, maxCount: Infinity, ratePerResp: null, packagePrice: CREATIVE_ATTENTION_PRICES.image, minRespondents: CA_MIN_RESPONDENTS },
+  { id: 'video', name: 'Video',  anchorCount: CA_FIXED_RESPONDENT_COUNT, maxCount: Infinity, ratePerResp: null, packagePrice: CREATIVE_ATTENTION_PRICES.video, minRespondents: CA_MIN_RESPONDENTS },
 ];
 
+/** The flat price for a creative of this media type. Video and image only. */
+function creativeAttentionPrice(mediaType) {
+  const m = String(mediaType || '').toLowerCase();
+  if (m === 'video') return CREATIVE_ATTENTION_PRICES.video;
+  // image, bundle and series all analyse as stills today.
+  return CREATIVE_ATTENTION_PRICES.image;
+}
 /**
  * ── PRICING_V2 was deleted 2026-09 ─────────────────────────────────────────
  *
@@ -331,12 +399,15 @@ function resolveTier({ goalType, respondentCount, mediaType }) {
   // mediaType still tracked for the analysis pipeline but doesn't pick the
   // pricing tier any more.
   if (goalType === 'creative_attention') {
+    // Priced per creative. respondentCount is still floor-checked because the
+    // database CHECK constraint requires it, but it does not pick the tier -
+    // the media type does.
     const c = Math.max(0, Number(respondentCount) || 0);
     if (c < CA_MIN_RESPONDENTS) {
-      return null; // signal: CA requires >= 10
+      return null; // signal: the row would violate the CHECK constraint
     }
-    return CREATIVE_ATTENTION_TIERS.find(t => c <= t.maxCount)
-        || CREATIVE_ATTENTION_TIERS[CREATIVE_ATTENTION_TIERS.length - 1];
+    const isVideo = String(mediaType || '').toLowerCase() === 'video';
+    return CREATIVE_ATTENTION_TIERS.find(t => t.id === (isVideo ? 'video' : 'image'));
   }
   const ladder = getPricingForGoalType(goalType);
   const c = Math.max(0, Number(respondentCount) || 0);

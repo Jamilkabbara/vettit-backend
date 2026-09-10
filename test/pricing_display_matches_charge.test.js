@@ -54,13 +54,18 @@ describe('public price display equals the charged price', () => {
     }
   });
 
-  test('Creative Attention packagePrice IS the charge, so it is exempt from the rate identity', () => {
-    // CA charges the flat packagePrice per bracket; anchorCount x ratePerResp
-    // is descriptive there, not the formula. Assert the charge directly.
-    expect(CREATIVE_ATTENTION_TIERS.length).toBeGreaterThan(0);
+  test('Creative Attention charges its flat per-creative price, keyed by media type', () => {
+    // CA is priced per creative, not per respondent: anchorCount is the
+    // database CHECK floor, not a customer choice, and ratePerResp is null.
+    // The tier is selected by media type, so assert the charge that way.
+    expect(CREATIVE_ATTENTION_TIERS.length).toBe(2);
     for (const t of CREATIVE_ATTENTION_TIERS) {
-      expect({ id: t.id, charged: baseFor('creative_attention', t.anchorCount) })
-        .toEqual({ id: t.id, charged: t.packagePrice });
+      const charged = calculateMissionPrice({
+        goalType: 'creative_attention', mediaType: t.id,
+        respondentCount: t.anchorCount, questionCount: 0, targeting: {},
+      }).base;
+      expect({ id: t.id, charged }).toEqual({ id: t.id, charged: t.packagePrice });
+      expect(t.ratePerResp).toBeNull();
     }
   });
 

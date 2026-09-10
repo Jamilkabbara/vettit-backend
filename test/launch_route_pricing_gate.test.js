@@ -9,7 +9,7 @@
  *   1. Ladder. Until PR #122 this route also omitted goalType/mediaType from
  *      calculateMissionPrice, so every goal was priced off the DEFAULT
  *      VOLUME_TIERS ladder. brand_lift n=200 charged $240 instead of $300;
- *      creative_attention n=50 charged $99 instead of $69. #122 fixed the
+ *      creative_attention n=50 charged $99 instead of its own price. #122 fixed the
  *      arguments; nothing pinned them, so the "prices off its own ladder"
  *      tests below exist to keep them fixed.
  *
@@ -126,11 +126,11 @@ describe('/launch prices each goal off its own ladder, not the default one', () 
     expect(res.body.pricing.volumeTier.name).toBe('Tracker');
   });
 
-  test('creative_attention n=50 charges the CA flat price ($69), not the default-ladder $74.50', async () => {
+  test('creative_attention video charges the per-creative $49, not the default-ladder $74.50', async () => {
     mockMissionRow = mission({ goal_type: 'creative_attention', respondent_count: 50, media_type: 'video' });
     const res = await launch();
     expect(res.status).toBe(200);
-    expect(chargedCents()).toBe(6900);
+    expect(chargedCents()).toBe(4900);
     expect(res.body.pricing.ratePerResp).toBeNull();
   });
 });

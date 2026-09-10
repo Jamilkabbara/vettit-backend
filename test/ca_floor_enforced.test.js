@@ -74,19 +74,23 @@ describe('validateMissionPricing never returns valid: true with a null tier', ()
 // mission - or every mission - would satisfy every assertion above.
 
 describe('positive control - legal missions still validate, with a real tier', () => {
-  test.each([
-    [10,  'sniff_test',   19],
-    [25,  'validate',     39],
-    [50,  'confidence',   69],
-    [100, 'deep_dive',    129],
-    [250, 'deep_dive_xl', 299],
-  ])('creative_attention n=%i is valid on tier %s at $%i', (n, tierId, price) => {
+  // The respondent tiers (sniff_test 19 / validate 39 / confidence 69 /
+  // deep_dive 129 / deep_dive_xl 299) are retired. Creative Attention is
+  // priced per creative, so every count above the CHECK-constraint floor is
+  // valid, lands on the media-type tier, and charges the same.
+  test.each([10, 25, 50, 100, 250])('creative_attention n=%i is valid on the image tier at $19', (n) => {
     const v = ca(n);
     expect(v.valid).toBe(true);
-    expect(v.tier.id).toBe(tierId);
+    expect(v.tier.id).toBe('image');
     expect(calculateMissionPrice({
       goalType: 'creative_attention', respondentCount: n, mediaType: 'image',
-    }).total).toBe(price);
+    }).total).toBe(19);
+  });
+
+  test.each([10, 250])('creative_attention video n=%i is valid on the video tier at $49', (n) => {
+    expect(calculateMissionPrice({
+      goalType: 'creative_attention', respondentCount: n, mediaType: 'video',
+    }).total).toBe(49);
   });
 
   test('brand_lift keeps its own floor and its own ladder', () => {
