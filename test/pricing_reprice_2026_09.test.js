@@ -76,7 +76,8 @@ describe('2. the extra-question surcharge', () => {
     // choice: at n=50 the old rule quoted $99 base + $360 of questions.
     const roadmap = priceOf(50, 23);
     expect(roadmap.questionSurcharge).toBe(65);
-    expect(roadmap.total).toBe(139.50);
+    expect(roadmap.exactTotal).toBe(139.50);  // the ladder arithmetic
+    expect(roadmap.total).toBe(140);          // charged as a whole dollar
     // The surcharge is now a minority of the bill, where it was 78% of it.
     expect(roadmap.questionSurcharge / roadmap.total).toBeLessThan(0.5);
   });
@@ -100,5 +101,53 @@ describe('3. the flat-promo minimum-charge clamp is unconditional', () => {
   test('free and percentage promos may still reach $0 (owner-controlled)', () => {
     expect(priceOf(25, 5, { promoCode: { active: true, type: 'free' } }).total).toBe(0);
     expect(priceOf(25, 5, { promoCode: { active: true, type: 'percentage', value: 100 } }).total).toBe(0);
+  });
+});
+
+describe('4. the charge is a whole dollar', () => {
+  // The ladder picks round numbers at its ANCHORS and derives a rate from each,
+  // so an anchor count lands round - but the slider steps by 5, so most
+  // customers land BETWEEN anchors and used to get the raw multiplication:
+  // 10 at $1.56 was $15.60, 50 at $1.49 was $74.50. "From $9" followed by a
+  // checkout reading $15.60 is the same credibility problem the round anchors
+  // were chosen to avoid, one step further in.
+  test.each([
+    [5,    9,      9],
+    [10,   15.60,  16],
+    [25,   39,     39],
+    [50,   74.50,  75],
+    [75,   111.75, 112],
+    [100,  149,    149],
+    [250,  299,    299],
+    [1250, 1099,   1099],
+  ])('n=%i: ladder $%s, charged $%i', (n, exact, charged) => {
+    const p = priceOf(n);
+    expect(p.exactTotal).toBe(exact);
+    expect(p.total).toBe(charged);
+    expect(Number.isInteger(p.total)).toBe(true);
+    expect(p.totalCents % 100).toBe(0);
+  });
+
+  test('every count the slider can reach is charged in whole dollars', () => {
+    // The slider is min 5, max 1250, step 5.
+    for (let n = 5; n <= 1250; n += 5) {
+      const t = priceOf(n).total;
+      expect(Number.isInteger(t)).toBe(true);
+    }
+  });
+
+  test('a positive charge never rounds down to free', () => {
+    // 95% off a $9 mission is $0.45. Rounding that to $0 would turn a paid
+    // mission into a free one. Checkout refuses both at Stripe's $0.50
+    // minimum, but "free" and "refused" are different states.
+    const p = priceOf(5, 5, { promoCode: { active: true, type: 'percentage', value: 95 } });
+    expect(p.exactTotal).toBeLessThan(1);
+    expect(p.total).toBe(1);
+  });
+
+  test('a genuinely free mission is still $0', () => {
+    const p = priceOf(5, 5, { promoCode: { active: true, type: 'free' } });
+    expect(p.total).toBe(0);
+    expect(p.totalCents).toBe(0);
   });
 });

@@ -88,7 +88,7 @@ describe('Creative Attention: all three surfaces agree per media type', () => {
 describe('the other ladders still agree', () => {
   test.each([
     ['validate', 250, 299],
-    ['validate', 10, 15.60],
+    ['validate', 10, 16],
     ['brand_lift', 200, 300],
   ])('%s n=%i is $%s on preview, quote and charge', async (goalType, n, expected) => {
     const body = { goalType, respondentCount: n, questionCount: 5 };

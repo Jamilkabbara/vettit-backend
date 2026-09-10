@@ -256,8 +256,8 @@ describe('the price-preview endpoints answer 400, not 500', () => {
 describe('positive control - legal missions still price, on their own ladder', () => {
   test.each([
     ['validate',   5,   9],
-    ['validate',   10,  15.60],  // repriced 2026-09; was $35 on the old $3.50/resp bracket
-    ['validate',   50,  74.50],  // repriced 2026-09; was $99
+    ['validate',   10,  16],     // $15.60 on the ladder, charged as a whole dollar
+    ['validate',   50,  75],     // $74.50 on the ladder, charged as a whole dollar
     ['validate',   250, 299],    // repriced 2026-09; was $300
     ['brand_lift', 100, 150],    // was [50, 99]; the floor moved and Pulse is unbuyable
     ['brand_lift', 200, 300],    // brand_lift ladder untouched by the reprice
@@ -291,7 +291,7 @@ describe('positive control - legal missions still price, on their own ladder', (
     const res = await request(app).post('/api/missions/draft')
       .send({ goalType: 'validate', brief: 'x', respondentCount: 50 });
     expect(res.status).toBe(200);   // /draft answers 200, unlike POST / which answers 201
-    expect(lastInsert.total_price_usd).toBe(74.50);
+    expect(lastInsert.total_price_usd).toBe(75);
   });
 
   test('PATCH still re-prices a legal edit', async () => {

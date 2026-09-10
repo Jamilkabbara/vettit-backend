@@ -863,7 +863,11 @@ function calculateMissionPrice({
     }
   }
 
-  const total = round2(Math.max(0, subtotal - discount));
+  // The exact arithmetic, before the customer-facing rounding.
+  const exactTotal = round2(Math.max(0, subtotal - discount));
+  // What is actually charged. See roundChargeToWholeDollar: the ladder's round
+  // numbers are its anchors, and the slider lets a customer land between them.
+  const total = roundChargeToWholeDollar(exactTotal);
 
   return {
     // Mirror the frontend PricingBreakdown field names so verifyServerQuote() works:
@@ -875,6 +879,9 @@ function calculateMissionPrice({
     discount,
     total,
     totalCents: Math.round(total * 100),
+    // The pre-rounding figure, so a breakdown can show its own arithmetic and
+    // a caller that needs the exact ladder value is not forced to recompute it.
+    exactTotal,
     // Extra metadata for logging / breakdown lines:
     tier:         countryTier,                  // legacy alias = country tier
     countryTier,                                // new explicit name
@@ -888,6 +895,33 @@ function calculateMissionPrice({
     baseCost:             round2(base),
     extraQuestionsCost:   round2(questionSurcharge),
   };
+}
+
+/**
+ * The amount a customer is actually charged, in whole dollars.
+ *
+ * The ladder picks round numbers at its ANCHORS and derives a per-respondent
+ * rate from each one, so an anchor count lands on a round price - but the
+ * slider steps by 5, so most customers land BETWEEN anchors and got the raw
+ * multiplication: 10 respondents at $1.56 is $15.60, 50 at $1.49 is $74.50.
+ * "From $9" followed by a checkout reading $15.60 is the same credibility
+ * problem the round anchors were chosen to avoid, one step further in.
+ *
+ * Rounding the TOTAL rather than the base is deliberate: it is the last number
+ * before the card, so every surcharge, promo and clamp is already inside it and
+ * nothing downstream can un-round it.
+ *
+ * A positive charge never rounds to zero. A 95%-off promo on a $9 mission is
+ * $0.45, and rounding that to $0 would turn a paid mission into a free one -
+ * checkout would refuse it either way at Stripe's $0.50 minimum, but "free"
+ * and "refused" are different states and the engine should not invent one.
+ * Genuinely free missions reach 0 through a free-type promo, which zeroes the
+ * total before this runs.
+ */
+function roundChargeToWholeDollar(exactTotal) {
+  const t = Number(exactTotal);
+  if (!Number.isFinite(t) || t <= 0) return 0;
+  return Math.max(1, Math.round(t));
 }
 
 function round2(val) {
@@ -1065,6 +1099,7 @@ module.exports = {
   MIN_CHARGE_CENTS_AFTER_FLAT_DISCOUNT,
   getActiveTierTable,
   formatRatePerResp,
+  roundChargeToWholeDollar,
   EXTRA_QUESTION_PRICE_USD: EXTRA_QUESTION_PRICE,
   FREE_QUESTIONS,
   // Default-ladder helper kept for backwards compat

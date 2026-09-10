@@ -64,38 +64,38 @@ describe('extractCountriesFromMission', () => {
 // ── calculateMissionPrice — base cases ───────────────────────────────────────
 
 describe('calculateMissionPrice — base price by tier', () => {
-  it('tier 1 (UAE): 10 respondents, 5 questions → $15.60', () => {
+  it('tier 1 (UAE): 10 respondents, 5 questions → $16 charged, $15.60 exact', () => {
     const { total, totalCents } = calculateMissionPrice({
       respondentCount: 10,
       questionCount: 5,
       countries: ['AE'],
     });
-    expect(total).toBe(15.60);
-    expect(totalCents).toBe(1560);
+    expect(total).toBe(16);
+    expect(totalCents).toBe(1600);
   });
 
   // Pass 46 — country tiers were removed from the base-price model
   // (volume tiers only since the Pass 23 PRICING overhaul); these
   // expectations were stale relics of the deleted country-tier table,
   // first caught when Pass 46 ran the full suite.
-  it('country does not change base price: 10 respondents (SA) → $15.60', () => {
+  it('country does not change base price: 10 respondents (SA) → $16', () => {
     const { total, totalCents } = calculateMissionPrice({
       respondentCount: 10,
       questionCount: 5,
       countries: ['SA'],
     });
-    expect(total).toBe(15.60);
-    expect(totalCents).toBe(1560);
+    expect(total).toBe(16);
+    expect(totalCents).toBe(1600);
   });
 
-  it('no-country default: 10 respondents → $15.60 (inside the Validate bracket)', () => {
+  it('no-country default: 10 respondents → $16 (inside the Validate bracket)', () => {
     const { total, totalCents } = calculateMissionPrice({
       respondentCount: 10,
       questionCount: 5,
       countries: [],
     });
-    expect(total).toBe(15.60);
-    expect(totalCents).toBe(1560);
+    expect(total).toBe(16);
+    expect(totalCents).toBe(1600);
   });
 
   it('100 respondents → $149 (the Confidence anchor)', () => {
@@ -122,7 +122,7 @@ describe('mission 7f54fb42 regression', () => {
   // invariant being guarded — display and charge come from one expression — is
   // unchanged, and is asserted directly in pricing_display_matches_charge.
 
-  it('10 respondents × UAE (tier 1), 5 questions, null targeting → $15.60 / 1560 cents', () => {
+  it('10 respondents × UAE (tier 1), 5 questions, null targeting → $16 / 1600 cents', () => {
     const mission = {
       respondent_count: 10,
       questions: Array(5).fill({}),
@@ -137,15 +137,17 @@ describe('mission 7f54fb42 regression', () => {
       countries,
     });
     expect(countries).toEqual(['AE']);
-    expect(total).toBe(15.60);
-    expect(totalCents).toBe(1560);
+    expect(total).toBe(16);
+    expect(totalCents).toBe(1600);
   });
 
   it('the charge is the ladder price, not a second hand-written formula', () => {
     // Document the discrepancy so it is never silently reintroduced.
     const strayFormula = 10 * 0.90;
-    const charged = calculateMissionPrice({ respondentCount: 10, questionCount: 5, countries: ['AE'] }).total;
-    expect(charged).toBe(15.60);
+    const r = calculateMissionPrice({ respondentCount: 10, questionCount: 5, countries: ['AE'] });
+    const charged = r.total;
+    expect(charged).toBe(16);          // what the card is charged
+    expect(r.exactTotal).toBe(15.60);  // the ladder arithmetic behind it
     expect(charged).not.toBe(strayFormula);
   });
 });
@@ -224,12 +226,12 @@ describe('promo code discounts', () => {
     expect(discount).toBe(39.00);
   });
 
-  it('type=percentage 20% → total is $31.20, discount is $7.80', () => {
+  it('type=percentage 20% → total is $31 charged, $31.20 exact', () => {
     const { total, discount } = calculateMissionPrice({
       ...base,
       promoCode: { code: 'TWENTY', type: 'percentage', value: 20, active: true },
     });
-    expect(total).toBe(31.20);
+    expect(total).toBe(31);
     expect(discount).toBe(7.80);
   });
 

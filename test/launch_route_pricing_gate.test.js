@@ -126,7 +126,7 @@ describe('/launch prices each goal off its own ladder, not the default one', () 
     expect(res.body.pricing.volumeTier.name).toBe('Tracker');
   });
 
-  test('creative_attention video charges the per-creative $49, not the default-ladder $74.50', async () => {
+  test('creative_attention video charges the per-creative $49, not the default-ladder $75', async () => {
     mockMissionRow = mission({ goal_type: 'creative_attention', respondent_count: 50, media_type: 'video' });
     const res = await launch();
     expect(res.status).toBe(200);
@@ -142,13 +142,13 @@ describe('/launch prices each goal off its own ladder, not the default one', () 
 // assertion above.
 
 describe('positive control - a legal mission still launches, at the same price as before', () => {
-  test('validate n=50 opens a PaymentIntent for $74.50', async () => {
+  test('validate n=50 opens a PaymentIntent for $75', async () => {
     mockMissionRow = mission({ goal_type: 'validate', respondent_count: 50 });
     const res = await launch();
     expect(res.status).toBe(200);
     expect(res.body.clientSecret).toBe('cs_secret');
     expect(mockCreatePaymentIntent).toHaveBeenCalledTimes(1);
-    expect(chargedCents()).toBe(7450);
+    expect(chargedCents()).toBe(7500);
   });
 
   test('validate n=250 opens a PaymentIntent for $299', async () => {
