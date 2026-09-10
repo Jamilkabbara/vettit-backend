@@ -91,6 +91,72 @@ async function runMission(missionId, opts = {}) {
     return;
   }
 
+  // ─── Spend-ceiling gate ───────────────────────────────────────────────────
+  //
+  // No mission runs without a budget. ai_spend_ceiling_usd is the ONLY cost
+  // governor the pipeline has, and a falsy value does not mean "unlimited" by
+  // design - it means the column was never written, and it silently changes
+  // which code path executes:
+  //
+  //   shouldUseRecruitLoop() requires a truthy ceiling. Without one the run
+  //   falls to the legacy BATCH branch, which generates exactly
+  //   mission.respondent_count personas and never checks spend at all.
+  //
+  // A 100%-off PERCENTAGE promo produces exactly this: total $0, so
+  // ceiling = total x 0.30 = 0, which is falsy. (free-type promos divert to
+  // /free-launch before that write, which is why the live free code never
+  // triggered it and this went unnoticed.)
+  //
+  // NO EXCEPTION FOR FREE MISSIONS, deliberately. A free mission still spends
+  // real money on compute, and it already carries a ceiling: both create
+  // routes derive one from the LIST price before any promo exists, so free to
+  // the customer is still budgeted. An "unless it is free" carve-out would
+  // protect nothing real and would reopen the exact path above.
+  //
+  // Placed BEFORE the claim so it covers the resume path too. Resume
+  // deliberately bypasses the status='paid' claim, so a check that lived
+  // inside the claim would not cover a resumed run.
+  //
+  // Refuses loudly: an admin_alerts row and an error log, never a silent skip.
+  const spendCeiling = Number(mission.ai_spend_ceiling_usd);
+  if (!Number.isFinite(spendCeiling) || spendCeiling <= 0) {
+    logger.error('Mission run: REFUSED — no spend ceiling', {
+      missionId,
+      resume,
+      status:          mission.status,
+      goal_type:       mission.goal_type,
+      respondent_count: mission.respondent_count,
+      ai_spend_ceiling_usd: mission.ai_spend_ceiling_usd,
+      promo_code:      mission.promo_code,
+    });
+    try {
+      await supabase.from('admin_alerts').insert({
+        alert_type: 'mission_missing_spend_ceiling',
+        mission_id: missionId,
+        user_id:    mission.user_id,
+        payload: {
+          reason: 'ai_spend_ceiling_usd is null or zero. Without it the run takes the '
+                + 'legacy batch path, which generates respondent_count personas with no '
+                + 'spend check. Refused rather than run uncapped.',
+          status:               mission.status,
+          goal_type:            mission.goal_type,
+          respondent_count:     mission.respondent_count,
+          ai_spend_ceiling_usd: mission.ai_spend_ceiling_usd,
+          promo_code:           mission.promo_code,
+          action_required:      'Set ai_spend_ceiling_usd from the mission list price '
+                              + '(price x 0.30) and re-trigger, or investigate why checkout '
+                              + 'did not write one.',
+        },
+        resolved: false,
+      });
+    } catch (alertErr) {
+      logger.warn('Mission run: missing_spend_ceiling alert insert failed', {
+        missionId, err: alertErr.message,
+      });
+    }
+    return { skipped: true, reason: 'no_spend_ceiling' };
+  }
+
   // ─── Idempotency guard ────────────────────────────────────────────────────
   // Both /api/payments/confirm and the payment_intent.succeeded webhook set
   // status='paid' before calling runMission(). Without this guard, a race
