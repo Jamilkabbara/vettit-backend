@@ -79,10 +79,12 @@ describe('creative_attention floor and media gate', () => {
     const v = validateMissionPricing({ goalType: 'creative_attention', respondentCount: CA_MIN_RESPONDENTS, mediaType: 'image' });
     expect(v.valid).toBe(true);
     expect(v.tier).not.toBeNull();
-    // The CA ladder is deliberately held out of the 2026-09 reprice pending a
-    // video cost measurement; these are its untouched prices.
+    // Creative Attention is priced PER CREATIVE since the video cost was
+    // measured: $19 an image, $49 a video, flat. The respondent count no
+    // longer picks a price, so both counts below charge the same.
     expect(calculateMissionPrice({ goalType: 'creative_attention', respondentCount: 10, questionCount: 0, mediaType: 'image' }).base).toBe(19);
-    expect(calculateMissionPrice({ goalType: 'creative_attention', respondentCount: 250, questionCount: 0, mediaType: 'image' }).base).toBe(299);
+    expect(calculateMissionPrice({ goalType: 'creative_attention', respondentCount: 250, questionCount: 0, mediaType: 'image' }).base).toBe(19);
+    expect(calculateMissionPrice({ goalType: 'creative_attention', respondentCount: 10, questionCount: 0, mediaType: 'video' }).base).toBe(49);
   });
 
   test('still requires a media type', () => {

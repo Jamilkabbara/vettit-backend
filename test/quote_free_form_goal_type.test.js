@@ -91,6 +91,7 @@ describe('free-form quote honours the caller goal type', () => {
     expect(charged('creative_attention', 10, 'image')).not.toBe(charged('validate', 10));
     expect(charged('validate', 10)).toBe(15.60);
     expect(charged('creative_attention', 10, 'image')).toBe(19);
+    expect(charged('creative_attention', 10, 'video')).toBe(49);
     expect(charged('brand_lift', 200)).toBe(300);
     expect(charged('validate', 200)).toBe(239.20);
   });
