@@ -1,0 +1,72 @@
+-- Pass 52 — retire the MMS Sales Intelligence leftovers.
+--
+-- WHAT THIS IS
+-- In May 2026 a short-lived "MMS Sales Intelligence" dashboard stored a weekly
+-- impressions snapshot in this project. Four migrations built it, all applied
+-- straight to the remote database. NONE of them was ever committed to this
+-- repo or to the frontend repo: a full-history search of both (git log --all
+-- -S) returns zero commits for mms_data, mms-data, mmsData, "Sales
+-- Intelligence" or brand_count, and no data file (CSV/XLSX/TSV/Parquet) has
+-- ever been committed to either. The schema carried changes no repo recorded.
+--
+--   20260505091552  create_mms_dashboard_data          created public.mms_dashboard_data
+--   20260505091643  add_chunk_index_to_dashboard_data  chunking columns
+--   20260505092133  switch_to_storage_approach         removed mms_dashboard_data,
+--                                                      created the 'mms-data' bucket
+--   20260505092251  create_mms_dashboard_data          created public.mms_data
+--
+-- WHY IT MATTERED
+-- The rows and files were gone (0 and 0), but the containers were not, and both
+-- were world-readable:
+--
+--   public.mms_data      policy anyone_can_read_mms_data  SELECT to anon, authenticated
+--   bucket 'mms-data'    public = true
+--   storage.objects      policy mms_data_public_read      SELECT to anon, authenticated
+--
+-- An empty public container is not a leak, but it is a loaded one: anything
+-- written to it afterwards is readable by the whole internet the moment it
+-- lands, with no further mistake required. That is what is being removed.
+--
+-- STATE WHEN THIS WAS WRITTEN (2026-09-10, verified against production)
+--   public.mms_data ......... already removed by migration 20260910161717
+--                             ("drop_mms_data_table", applied 16:17:17 UTC).
+--                             The statement below is idempotent so this file is
+--                             the repo's record of that change as well as its
+--                             own, and is safe to re-run.
+--   bucket 'mms-data' ....... still present, public = true, 0 objects
+--   mms_data_public_read .... still present
+--
+-- THE BUCKET IS NOT DELETED BY THIS FILE
+-- Supabase blocks it. A DELETE on storage.buckets raises from
+-- storage.protect_delete():
+--
+--   42501: Direct deletion from storage tables is not allowed.
+--          Use the Storage API instead.
+--   HINT:  This prevents accidental data loss from orphaned objects.
+--
+-- So the bucket was removed through the Storage API
+-- (DELETE /storage/v1/bucket/mms-data, 200 "Successfully deleted"), after an
+-- explicit check that it held 0 objects. What SQL CAN do, and what this file
+-- therefore does, is remove the table and the policy that made the bucket
+-- world-readable. Re-running this file on a restored database would leave the
+-- bucket itself behind; delete it via the Storage API as above.
+--
+-- SAFETY
+-- Nothing here touches vett-creatives, vett-uploads or vettit-uploads, nor any
+-- of the eleven other storage policies. Verified after applying: those three
+-- buckets, their 26 objects and all 11 policies are intact.
+--
+-- NOT RECOVERABLE FROM A BACKUP
+-- The Supabase organisation is on the FREE plan, which has no Point-in-Time
+-- Recovery (a paid add-on) and no managed backup to restore from. There is no
+-- undo for this beyond re-running the original creates, which are reproduced
+-- above.
+
+-- 1. The table. Already gone; kept here so the repo records it.
+drop table if exists public.mms_data;
+
+-- 2. The storage read policy that made the bucket world-readable.
+drop policy if exists "mms_data_public_read" on storage.objects;
+
+-- 3. The bucket is removed via the Storage API, not from here. See above.
+--    delete from storage.buckets where id = 'mms-data';   <-- raises 42501
