@@ -227,6 +227,11 @@ const creativeMission = (over = {}) => ({
   title: 'Creative attention run',
   status: 'processing',
   goal_type: 'creative_attention',
+  // Every real mission carries a spend ceiling: both create routes derive one
+  // from the list price. runMission now REFUSES a run without it, because a
+  // falsy ceiling silently selects the uncapped batch branch. A fixture with
+  // no ceiling is not a realistic mission.
+  ai_spend_ceiling_usd: 5.7,
   brand_name: 'Acme',
   brief_attachment: { path: 'user-1/creatives/ad.mp4', mimeType: 'video/mp4' },
   creative_analysis: null,

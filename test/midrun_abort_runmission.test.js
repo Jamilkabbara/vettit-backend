@@ -128,6 +128,11 @@ const baseMission = (over = {}) => ({
   status: 'processing',
   goal_type: 'research',
   respondent_count: PERSONA_COUNT,
+  // Every real mission carries a spend ceiling: both create routes derive one
+  // from the list price. runMission now REFUSES a run without it, because a
+  // falsy ceiling silently selects the uncapped batch branch. A fixture with
+  // no ceiling is not a realistic mission.
+  ai_spend_ceiling_usd: 2.7,
   questions: [{ id: 'q1', text: 'Why?', type: 'open_ended' }],
   started_at: new Date().toISOString(),
   completed_at: null,
