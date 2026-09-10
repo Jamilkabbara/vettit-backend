@@ -89,11 +89,11 @@ describe('free-form quote honours the caller goal type', () => {
     // that regardless of sign.
     expect(charged('brand_lift', 200)).toBeGreaterThan(charged('validate', 200));
     expect(charged('creative_attention', 10, 'image')).not.toBe(charged('validate', 10));
-    expect(charged('validate', 10)).toBe(15.60);
+    expect(charged('validate', 10)).toBe(16);
     expect(charged('creative_attention', 10, 'image')).toBe(19);
     expect(charged('creative_attention', 10, 'video')).toBe(49);
     expect(charged('brand_lift', 200)).toBe(300);
-    expect(charged('validate', 200)).toBe(239.20);
+    expect(charged('validate', 200)).toBe(239);
   });
 
   test('omitting goalType keeps the old lenient default-ladder behaviour', async () => {
@@ -155,7 +155,7 @@ describe('promo applied to a free-form quote', () => {
       questionCount: 0, promoCode: 'HALF',
     });
     expect(res.status).toBe(200);
-    expect(res.body.total).toBe(9.50);
-    expect(res.body.total).not.toBe(17.50);
+    expect(res.body.total).toBe(10);       // 50% of $19 is $9.50, charged as $10
+    expect(res.body.total).not.toBe(17.50); // what the wrong ladder would have given
   });
 });
