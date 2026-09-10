@@ -770,6 +770,15 @@ router.post('/calculate-price', optionalAuthenticate, async (req, res, next) => 
       promoCode:       promo,
       countries:       extractCountriesFromMission({ targeting: targeting || {} }),
       goalType:        req.body.goalType || req.body.goal || 'validate',
+      // mediaType was never passed here. It did not matter while Creative
+      // Attention was priced on a respondent ladder - media type tracked the
+      // analysis pipeline but not the price - so the omission sat dormant.
+      // Per-creative pricing made it live: without this, every Creative
+      // Attention preview answered $19, the image price, even for a video that
+      // checkout charges $49 for. create-checkout-session and /missions/launch
+      // both read media_type off the mission row and always have; this is the
+      // one surface that takes it from the body and was dropping it.
+      mediaType:       req.body.mediaType || req.body.media_type || null,
     });
     res.json(pricing);
   } catch (err) {
