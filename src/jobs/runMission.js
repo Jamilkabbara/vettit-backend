@@ -212,7 +212,18 @@ async function runMission(missionId, opts = {}) {
   // Stripe-sourced amount before it falls to zero.
   const cover = await checkPaymentCoversRun(supabase, mission);
   if (!cover.ok) {
-    logger.error('Mission run: REFUSED — captured payment does not cover the run', {
+    // Two different facts, never merged: "they underpaid" and "we could not
+    // ask Stripe". Both refuse the run, because we do not spend money we
+    // cannot account for - but an expired API key would otherwise refuse every
+    // mission at once and report each as an underpayment, sending whoever is on
+    // call after a fraud instead of after the key.
+    const unverifiable = cover.unverifiable === true;
+    const alertType = unverifiable
+      ? 'mission_payment_unverifiable'
+      : 'mission_payment_does_not_cover_run';
+    logger.error(unverifiable
+      ? 'Mission run: REFUSED — could not verify payment with Stripe'
+      : 'Mission run: REFUSED — captured payment does not cover the run', {
       missionId,
       resume,
       status:        mission.status,
@@ -223,30 +234,39 @@ async function runMission(missionId, opts = {}) {
     });
     try {
       await supabase.from('admin_alerts').insert({
-        alert_type: 'mission_payment_does_not_cover_run',
+        alert_type: alertType,
         mission_id: missionId,
         user_id:    mission.user_id,
         payload: {
-          reason: 'Recomputed price for the mission as it would run exceeds the '
-                + 'payment captured for it. The usual cause is the mission being '
-                + 'edited between checkout-session creation and payment capture, '
-                + 'which RLS permits while the mission is unpaid.',
+          reason: unverifiable
+            ? 'Stripe did not answer for this mission\'s payment intent, so the '
+            + 'captured amount is unknown. This is NOT evidence the customer '
+            + 'underpaid. Check the Stripe API key first: retrievePaymentIntent '
+            + 'returns null on ANY failure, so an expired key looks identical to '
+            + 'a payment intent with no amount, and would refuse every mission.'
+            : 'Recomputed price for the mission as it would run exceeds the '
+            + 'payment captured for it. The usual cause is the mission being '
+            + 'edited between checkout-session creation and payment capture, '
+            + 'which RLS permits while the mission is unpaid.',
           owed_cents:     cover.owedCents,
           captured_cents: cover.capturedCents,
           captured_from:  cover.source,
           ...cover.detail,
-          action_required: 'Confirm the mission against its Stripe payment. Either '
-                         + 'collect the difference and re-trigger, or reset the '
-                         + 'mission to the size that was actually paid for.',
+          action_required: unverifiable
+            ? 'Verify the Stripe API key is current, then re-trigger. Do not '
+            + 'contact the customer about payment until Stripe answers.'
+            : 'Confirm the mission against its Stripe payment. Either collect '
+            + 'the difference and re-trigger, or reset the mission to the size '
+            + 'that was actually paid for.',
         },
         resolved: false,
       });
     } catch (alertErr) {
-      logger.warn('Mission run: payment_does_not_cover_run alert insert failed', {
+      logger.warn('Mission run: payment-gate alert insert failed', {
         missionId, err: alertErr.message,
       });
     }
-    return { skipped: true, reason: 'payment_does_not_cover_run' };
+    return { skipped: true, reason: unverifiable ? 'payment_unverifiable' : 'payment_does_not_cover_run' };
   }
 
   if (resume && mission.status === 'processing') {

@@ -41,6 +41,17 @@
  *   2. paid_amount_cents when NOT flagged estimated        (Stripe-sourced copy)
  *   3. zero                                                (assume nothing)
  *
+ * "Stripe could not be reached" is NOT the same fact as "Stripe says nothing
+ * was captured", and this module must never collapse the two.
+ * stripeService.retrievePaymentIntent swallows every error and returns null -
+ * an expired API key looks exactly like a PI with no amount. Left undistinguished,
+ * a Stripe credential problem refuses every mission at once and reports each one
+ * as an underpayment, pointing whoever is on call at a fraud that is not
+ * happening instead of at the key. So an unreachable Stripe produces its own
+ * reason (payment_unverifiable) and its own alert type. The run is still
+ * refused - we do not spend money we cannot account for - but the refusal says
+ * what is actually true.
+ *
  * WHAT COUNTS AS OWED
  * The LOWEST amount that could have been a correct charge for this mission
  * under any pricing version we have shipped. That is min(exact ladder total,
@@ -107,28 +118,44 @@ async function resolvePromo(supabase, promoCode) {
  */
 async function resolveCapturedCents(mission) {
   const piId = mission.latest_payment_intent_id;
+  let stripeUnreachable = false;
+
   if (piId) {
+    let pi = null;
     try {
-      const pi = await stripeService.retrievePaymentIntent(piId);
-      if (pi && Number.isFinite(pi.amount_received)) {
-        return { capturedCents: pi.amount_received, source: 'stripe', paymentIntentId: piId };
-      }
+      pi = await stripeService.retrievePaymentIntent(piId);
     } catch (err) {
-      // A Stripe outage must not become a free run, and must not become a
-      // false refusal on a mission whose row already carries a Stripe-sourced
-      // amount. Fall through to that copy; fall to zero only if there is none.
-      logger.warn('paymentCoversRun: Stripe lookup failed, falling back to mission row', {
+      // Defensive: the helper is documented to swallow and return null, but a
+      // throw must not become a free run either.
+      logger.warn('paymentCoversRun: Stripe lookup threw', {
         missionId: mission.id, paymentIntentId: piId, err: err.message,
       });
     }
+
+    if (pi && Number.isFinite(pi.amount_received)) {
+      return { capturedCents: pi.amount_received, source: 'stripe', paymentIntentId: piId, stripeUnreachable: false };
+    }
+
+    // The mission points at a PI and Stripe did not answer with one. That is
+    // an unanswered question, not a zero. Recorded so the caller can say so.
+    stripeUnreachable = true;
+    logger.warn('paymentCoversRun: Stripe did not answer for a mission that has a PI', {
+      missionId: mission.id, paymentIntentId: piId,
+    });
   }
 
+  // A Stripe-sourced copy on the row can still answer it.
   const rowCents = Number(mission.paid_amount_cents);
   if (Number.isFinite(rowCents) && rowCents > 0 && mission.paid_amount_estimated !== true) {
-    return { capturedCents: rowCents, source: 'mission.paid_amount_cents', paymentIntentId: piId || null };
+    return {
+      capturedCents: rowCents,
+      source: 'mission.paid_amount_cents',
+      paymentIntentId: piId || null,
+      stripeUnreachable: false,
+    };
   }
 
-  return { capturedCents: 0, source: 'none', paymentIntentId: piId || null };
+  return { capturedCents: 0, source: stripeUnreachable ? 'stripe_unreachable' : 'none', paymentIntentId: piId || null, stripeUnreachable };
 }
 
 /**
@@ -155,6 +182,7 @@ async function checkPaymentCoversRun(supabase, mission) {
   } catch (err) {
     return {
       ok: false,
+      unverifiable: false,
       owedCents: null,
       capturedCents: null,
       source: 'unpriced',
@@ -174,12 +202,13 @@ async function checkPaymentCoversRun(supabase, mission) {
   // correct payment.
   const owedCents = Math.min(exactCents, chargedCents);
 
-  const { capturedCents, source, paymentIntentId } = await resolveCapturedCents(mission);
+  const { capturedCents, source, paymentIntentId, stripeUnreachable } = await resolveCapturedCents(mission);
 
   const ok = capturedCents + TOLERANCE_CENTS >= owedCents;
 
   return {
     ok,
+    unverifiable: !ok && stripeUnreachable === true,
     owedCents,
     capturedCents,
     source,

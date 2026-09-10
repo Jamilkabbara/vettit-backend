@@ -287,17 +287,62 @@ describe('CONTROL — missions that were genuinely paid for still run', () => {
   });
 });
 
-test('a Stripe outage falls back to the row, it does not become a free run', async () => {
-  missionRow = { ...base, respondent_count: 1000, paid_amount_cents: 89900 };
-  stripeService.retrievePaymentIntent.mockRejectedValue(new Error('stripe down'));
-  const out = await pastTheGate();
-  expect(out).not.toEqual({ skipped: true, reason: 'payment_does_not_cover_run' });
-  expect(logger.warn).toHaveBeenCalled();
-});
+describe('when Stripe cannot be reached', () => {
+  // retrievePaymentIntent SWALLOWS every error and returns null - an expired
+  // API key is indistinguishable from a PI with no amount. These use that real
+  // contract (resolves null) rather than a rejection, because a rejection is
+  // not what the helper does, and a test that mocks one proves nothing about
+  // the code path that actually executes. This was found by replaying the gate
+  // against production with an expired key in .env: all 26 priceable missions
+  // came back as "captured $0.00", i.e. as underpayments.
 
-test('a Stripe outage with NO row evidence still refuses', async () => {
-  missionRow = { ...base, respondent_count: 1000, paid_amount_cents: null };
-  stripeService.retrievePaymentIntent.mockRejectedValue(new Error('stripe down'));
-  const out = await pastTheGate();
-  expect(out).toEqual({ skipped: true, reason: 'payment_does_not_cover_run' });
+  test('falls back to a Stripe-sourced amount on the row, and still runs', async () => {
+    missionRow = { ...base, respondent_count: 1000, paid_amount_cents: 89900 };
+    stripeService.retrievePaymentIntent.mockResolvedValue(null);
+    const out = await pastTheGate();
+    expect(out).not.toEqual({ skipped: true, reason: 'payment_does_not_cover_run' });
+    expect(out).not.toEqual({ skipped: true, reason: 'payment_unverifiable' });
+  });
+
+  test('with no row evidence it refuses as UNVERIFIABLE, not as underpayment', async () => {
+    missionRow = { ...base, respondent_count: 1000, paid_amount_cents: null };
+    stripeService.retrievePaymentIntent.mockResolvedValue(null);
+    const out = await pastTheGate();
+    expect(out).toEqual({ skipped: true, reason: 'payment_unverifiable' });
+  });
+
+  test('the alert points at the API key, not at the customer', async () => {
+    missionRow = { ...base, respondent_count: 1000, paid_amount_cents: null };
+    stripeService.retrievePaymentIntent.mockResolvedValue(null);
+    await pastTheGate();
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].alert_type).toBe('mission_payment_unverifiable');
+    expect(alerts[0].payload.reason).toMatch(/NOT evidence the customer underpaid/i);
+    expect(alerts[0].payload.action_required).toMatch(/API key/i);
+    expect(alerts[0].payload.action_required).toMatch(/[Dd]o not contact the customer/);
+  });
+
+  test('a genuine underpayment is still reported as one, not as unverifiable', async () => {
+    // Stripe ANSWERED. $9 against $899 is a real shortfall and must not be
+    // softened into "we could not check".
+    missionRow = { ...base, respondent_count: 1000 };
+    stripeService.retrievePaymentIntent.mockResolvedValue({ amount_received: 900 });
+    const out = await pastTheGate();
+    expect(out).toEqual({ skipped: true, reason: 'payment_does_not_cover_run' });
+    expect(alerts[0].alert_type).toBe('mission_payment_does_not_cover_run');
+  });
+
+  test('a throw is handled too, even though the helper does not throw today', async () => {
+    missionRow = { ...base, respondent_count: 1000, paid_amount_cents: null };
+    stripeService.retrievePaymentIntent.mockRejectedValue(new Error('stripe down'));
+    const out = await pastTheGate();
+    expect(out).toEqual({ skipped: true, reason: 'payment_unverifiable' });
+  });
+
+  test('a mission with NO payment intent at all is not "unverifiable" — there was nothing to ask', async () => {
+    missionRow = { ...base, respondent_count: 1000, latest_payment_intent_id: null, paid_amount_cents: null };
+    const out = await pastTheGate();
+    expect(out).toEqual({ skipped: true, reason: 'payment_does_not_cover_run' });
+    expect(alerts[0].payload.captured_from).toBe('none');
+  });
 });
