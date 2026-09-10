@@ -179,6 +179,11 @@ const baseMission = (over = {}) => ({
   // falsy ceiling silently selects the uncapped batch branch. A fixture with
   // no ceiling is not a realistic mission.
   ai_spend_ceiling_usd: 2.7,
+  // The payment-covers-run gate prices the mission as it will run and
+  // refuses if Stripe captured less. A fixture standing in for a real paid
+  // mission has to carry what a real paid mission carries, or it is stopped
+  // at that gate and this suite measures the gate instead of its subject.
+  paid_amount_cents: 400,
   questions: [{ id: 'q1', text: 'Why?', type: 'open_ended' }],
   started_at: null,
   completed_at: null,
