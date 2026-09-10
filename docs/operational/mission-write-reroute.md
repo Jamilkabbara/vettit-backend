@@ -118,3 +118,81 @@ the four remaining UPDATE columns. Only after Phase 4 reads zero.
   not stop a client setting its own `ai_spend_ceiling_usd` or
   `target_qualified_count`, and it never will - that is what routing the writes
   is for.
+
+---
+
+## The three original holes: where each stands today
+
+Checked against `origin/main` on 2026-09-10, not from memory.
+
+**1. Reusable PaymentIntent — CLOSED, and closed well.**
+`reconcileOrphanPendingPayment` will not accept a succeeded PI as proof that
+THIS mission was paid. It requires `pi.metadata.missionId` to equal the
+mission's own id, raises an admin alert on a mismatch rather than skipping
+quietly, refuses a PI carrying no mission metadata at all, and checks the
+captured amount actually covers what the mission owes. The code comment
+describes the exact attack it defends: take your own succeeded PI id, paste it
+onto a brand-new expensive mission, wait for the cron.
+
+**2. Client-side paid marking — CLOSED.**
+Two layers. The UPDATE grant on `missions` covers exactly four columns
+(`price_estimated`, `questions`, `respondent_count`, `targeting`) — no status,
+no money. And since 2026-09-09 the INSERT policy refuses a row that arrives
+already carrying a status other than `draft`, a `paid_at`, a
+`paid_amount_cents`, a `promo_code`, a `completed_at`, a `started_at`, or any
+recorded spend.
+
+**3. Creative Attention bypassing Stripe — NOT TRUE AS STATED, and the real
+version is what this document is about.**
+Creative Attention posts to the same `create-checkout-session`, gets the same
+hosted Stripe Checkout, and is marked paid by the same webhook as every other
+goal type. It never bypassed Stripe.
+
+What it bypasses — along with the main setup flow — is the server-side mission
+CREATE route. That is the actual defect, it is wider than Creative Attention,
+and it is why the guards on `PATCH /api/missions/:id` are dead code.
+
+## A cheaper option, evaluated: verify payment at the start of a run
+
+Proposed as an alternative to, or a stepping stone before, the full re-route:
+the backend refuses to start OR resume any mission unless it can verify payment
+server-side, before any AI spend.
+
+**What already exists.** `runMission` claims atomically on `status = 'paid'`, so
+it does already refuse to run an unpaid row. The weaknesses are that `paid` is a
+database flag rather than a verification, and that the resume path
+(`runMission(id, {resume: true})`) bypasses the claim entirely by design —
+that was the vector behind the forged-status hole.
+
+**What the change is.** A single gate at the top of `runMission`, covering the
+resume path too, that requires one of: a PaymentIntent whose metadata binds it
+to this mission, whose status is succeeded, and whose captured amount covers
+the price; or a free promo validated at the time it was applied and recorded on
+the row; or an explicit admin override that is logged. The verification result
+is cached on the row so a Stripe outage cannot become a mission-start outage.
+
+**Cost: about three days.** Roughly one for the gate and its tests, half for
+wiring it into the three entry points (normal start, resume, admin reanalyze),
+half for the free-promo case which has no PaymentIntent to check, half for
+validating it against every already-paid mission so it does not refuse
+legitimate reruns, and half for live verification.
+
+**What it does NOT close, and this is the point.** It stops free compute. It
+does not stop the mission that RUNS from being a different mission than the one
+that was PRICED:
+
+- Roughly 110 columns are still writable at INSERT, including
+  `target_qualified_count` and `ai_spend_ceiling_usd`. Someone can pay $9 and
+  set the target to 1,250. Spend stays bounded, because checkout overwrites the
+  ceiling server-side, but delivery is wrong and the customer is short-changed
+  rather than the business being robbed.
+- `respondent_count`, `questions` and `targeting` remain client-updatable after
+  pricing, so the instrument that runs need not be the instrument that was
+  quoted.
+- Every guard on the API routes stays dead code, so the next person to add a
+  money column has to remember a denylist nothing exercises.
+
+**Recommendation.** Worth doing, and it is the right thing to reach for if the
+re-route slips — three days buys the free-compute guarantee outright. But bank
+it as containment, not as the fix. It makes the money safe while leaving the
+correctness of what customers receive resting on the client behaving.
