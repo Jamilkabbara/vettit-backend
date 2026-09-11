@@ -3,6 +3,7 @@ const router = express.Router();
 const { constructWebhookEvent } = require('../services/stripe');
 const supabase = require('../db/supabase');
 const logger = require('../utils/logger');
+const { recordPaidRedemption } = require('../services/promo/promoCodes');
 const { runMission } = require('../jobs/runMission');
 const { updateMission } = require('../db/missionSchema');
 const { logPaymentError, shapeStripeError } = require('../services/paymentErrors');
@@ -280,7 +281,18 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
 
           // Funnel event: mission_paid (server-side, authoritative)
           const { data: paidMission } = await supabase
-            .from('missions').select('user_id').eq('id', missionId).maybeSingle();
+            .from('missions').select('user_id, promo_code').eq('id', missionId).maybeSingle();
+
+          // The redemption itself. A promo on the Stripe path was never
+          // counted anywhere, so max_uses did nothing for percentage and
+          // flat-amount codes. Counted at payment confirmation, once per
+          // mission via the pass-53 ledger (this handler and the success-page
+          // poll both run for the same payment). Never blocks the mission.
+          if (paidMission?.promo_code) {
+            await recordPaidRedemption(supabase, {
+              code: paidMission.promo_code, missionId, source: 'stripe_webhook',
+            });
+          }
           if (paidMission?.user_id) {
             supabase.from('funnel_events').insert({
               user_id:    paidMission.user_id,

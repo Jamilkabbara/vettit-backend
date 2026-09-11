@@ -82,6 +82,7 @@
 
 const stripeService = require('../stripe');
 const logger = require('../../utils/logger');
+const { isExpired } = require('../promo/promoCodes');
 const {
   calculateMissionPrice,
   extractCountriesFromMission,
@@ -92,10 +93,25 @@ const {
 const TOLERANCE_CENTS = 1;
 
 /**
- * Resolve the mission's promo the same way create-checkout-session does:
- * from the promo_codes table, active, unexpired, unexhausted. Never from the
- * mission row alone - mission.promo_code is only the NAME of a code, and the
- * terms have to come from the table a client cannot write.
+ * Resolve the mission's promo from the promo_codes table: active and
+ * unexpired. Never from the mission row alone - mission.promo_code is only the
+ * NAME of a code, and the terms have to come from the table a client cannot
+ * write.
+ *
+ * WHY "OUT OF USES" IS NOT CHECKED HERE, UNLIKE AT CHECKOUT
+ * This function does not decide whether a code may be USED. It decides what
+ * this mission was SOLD under, so the run gate can tell a real shortfall from
+ * a legitimately discounted price. Those are different questions, and now that
+ * max_uses is actually enforced they have different answers: the 25th and last
+ * redemption of a code fills it up, and the mission that made the 25th
+ * redemption would then be refused its own resume - $0 captured against a
+ * full-price "owed" - because the code it was bought with is now finished.
+ * Availability is enforced at the till (see services/promo/promoCodes.js);
+ * here we only read the terms.
+ *
+ * Expiry is still honoured, unchanged, and carries the same hazard in a milder
+ * form for a mission resumed after its code's expiry date. That is pre-existing
+ * behaviour and is deliberately left alone rather than widened here.
  */
 async function resolvePromo(supabase, promoCode) {
   if (!promoCode) return null;
@@ -106,9 +122,7 @@ async function resolvePromo(supabase, promoCode) {
     .eq('active', true)
     .maybeSingle();
   if (!data) return null;
-  const expired   = data.expires_at && new Date(data.expires_at) < new Date();
-  const exhausted = data.max_uses && data.uses_count >= data.max_uses;
-  if (expired || exhausted) return null;
+  if (isExpired(data)) return null;
   return data;
 }
 

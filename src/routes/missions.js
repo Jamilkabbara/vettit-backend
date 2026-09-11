@@ -39,6 +39,7 @@ const {
 } = require('../db/missionSchema');
 const { isComingSoon, notAvailableError } = require('../config/comingSoon');
 const logger = require('../utils/logger');
+const { resolveUsablePromo } = require('../services/promo/promoCodes');
 
 // ── Generate-responses idempotency guard ──────────────────────────────
 // runMission is already triggered from /api/payments/confirm on successful
@@ -752,16 +753,7 @@ router.post('/calculate-price', optionalAuthenticate, async (req, res, next) => 
     // directly (activeFilters was only ever derived FROM targeting).
     const qCount = Array.isArray(questions) ? questions.length : (req.body.questionCount || 5);
 
-    let promo = null;
-    if (promoCode) {
-      const { data } = await supabase
-        .from('promo_codes').select('*').eq('code', promoCode).eq('active', true).single();
-      if (data) {
-        const expired = data.expires_at && new Date(data.expires_at) < new Date();
-        const exhausted = data.max_uses && data.uses_count >= data.max_uses;
-        if (!expired && !exhausted) promo = data;
-      }
-    }
+    const promo = await resolveUsablePromo(supabase, promoCode);
 
     const pricing = calculateMissionPrice({
       respondentCount: respCount,
@@ -812,12 +804,10 @@ router.post('/launch', authenticate, async (req, res, next) => {
       .single();
     if (!mission) return res.status(404).json({ error: 'Mission not found' });
 
-    let promo = null;
-    if (promoCode) {
-      const { data } = await supabase
-        .from('promo_codes').select('*').eq('code', promoCode).eq('active', true).single();
-      if (data) promo = data;
-    }
+    // Was: any row with active=true, with neither the expiry nor the
+    // uses-left check the other routes ran. An expired or fully redeemed code
+    // discounted the PaymentIntent this route creates. One authority now.
+    const promo = await resolveUsablePromo(supabase, promoCode);
 
     // ── Self-serve ceiling, BEFORE any Stripe object exists ─────────────────
     //
@@ -1225,12 +1215,10 @@ router.post('/pricing/calculate', optionalAuthenticate, async (req, res, next) =
     const resolvedTargeting = targetingConfig || targeting || {};
     const qCount = Array.isArray(questions) ? questions.length : 5;
 
-    let promo = null;
-    if (promoCode) {
-      const { data } = await supabase
-        .from('promo_codes').select('*').eq('code', promoCode).eq('active', true).single();
-      if (data) promo = data;
-    }
+    // Was: any row with active=true, with neither the expiry nor the
+    // uses-left check the other routes ran, so this preview quoted a discount
+    // the checkout route would refuse to honour. One authority now.
+    const promo = await resolveUsablePromo(supabase, promoCode);
 
     const pricing = calculateMissionPrice({
       respondentCount: respCount,

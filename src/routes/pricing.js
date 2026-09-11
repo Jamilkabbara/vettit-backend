@@ -11,6 +11,7 @@ const {
   UnpriceableMissionError,
 } = require('../utils/pricingEngine');
 const logger = require('../utils/logger');
+const { resolveUsablePromo } = require('../services/promo/promoCodes');
 
 /**
  * POST /api/pricing/quote
@@ -102,21 +103,9 @@ router.post('/quote', optionalAuthenticate, async (req, res, next) => {
         : (typeof questionCount === 'number' ? questionCount : 5);
     }
 
-    // Resolve promo (optional)
-    let promo = null;
-    if (promoCode) {
-      const { data } = await supabase
-        .from('promo_codes')
-        .select('*')
-        .eq('code', promoCode)
-        .eq('active', true)
-        .single();
-      if (data) {
-        const expired = data.expires_at && new Date(data.expires_at) < new Date();
-        const exhausted = data.max_uses && data.uses_count >= data.max_uses;
-        if (!expired && !exhausted) promo = data;
-      }
-    }
+    // Resolve promo (optional). Same authority the charge uses, so a quote
+    // never shows a discount a code no longer has the uses left to give.
+    const promo = await resolveUsablePromo(supabase, promoCode);
 
     // The same fail-closed gate create-checkout-session and free-launch run.
     // A quote is not a charge, but it is the number the customer decides on,
