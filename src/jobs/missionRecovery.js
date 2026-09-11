@@ -53,6 +53,7 @@ const {
   noteHeartbeatColumnMissing,
 } = require('../db/missionSchema');
 const logger = require('../utils/logger');
+const { recordPaidRedemption } = require('../services/promo/promoCodes');
 const { sanitizeDashesString } = require('../utils/textSanitize');
 const os = require('os');
 
@@ -480,7 +481,7 @@ async function runJob2() {
       const cutoff = new Date(Date.now() - JOB2_RECOVER_AFTER_MINUTES * 60 * 1000).toISOString();
       const { data: stuck, error } = await supabase
         .from('missions')
-        .select('id, status, latest_payment_intent_id, checkout_session_id, user_id, total_price_usd, title, created_at')
+        .select('id, status, latest_payment_intent_id, checkout_session_id, user_id, total_price_usd, title, promo_code, created_at')
         .eq('status', 'pending_payment')
         .lt('created_at', cutoff);
       if (error) throw error;
@@ -686,6 +687,15 @@ async function reconcileOrphanPendingPayment(m) {
         : (Number.isFinite(pi.amount) ? pi.amount : null),
       paid_amount_estimated: false,
     }, { caller: 'cron:missionRecovery:job2:webhook_miss_recovered' });
+
+    // Same redemption the webhook would have counted had it arrived. Once per
+    // mission via the pass-53 ledger, so recovering a payment the poll already
+    // confirmed does not spend a second use.
+    if (m.promo_code) {
+      await recordPaidRedemption(supabase, {
+        code: m.promo_code, missionId: m.id, source: 'webhook_miss_recovery',
+      });
+    }
 
     setImmediate(() => {
       runMission(m.id).catch((err) => {

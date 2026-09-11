@@ -19,6 +19,7 @@
 
 const logger = require('../../utils/logger');
 const { updateMission } = require('../../db/missionSchema');
+const { recordPaidRedemption } = require('../promo/promoCodes');
 
 /**
  * Statuses past which a payment trigger is a duplicate/replay.
@@ -44,7 +45,7 @@ async function confirmCheckoutSessionPaid({ supabase, runMission }, session) {
 
   const { data: mission, error } = await supabase
     .from('missions')
-    .select('id, status, user_id')
+    .select('id, status, user_id, promo_code')
     .eq('id', missionId)
     .single();
   if (error || !mission) {
@@ -71,6 +72,22 @@ async function confirmCheckoutSessionPaid({ supabase, runMission }, session) {
   logger.warn('checkout-session fallback CONFIRMED payment → triggering pipeline', {
     missionId, sessionId: session.id, pi: piId,
   });
+
+  // A paid mission that carries a promo code has now actually redeemed it.
+  // Nothing else on the Stripe path ever counted that, which is why a
+  // percentage code with max_uses set behaved as unlimited. Counted here,
+  // where the money is confirmed, rather than when the Session was opened -
+  // an abandoned checkout must not spend somebody's use.
+  //
+  // This is the ledger-backed claim: this path and the webhook can confirm the
+  // same mission at the same moment, and only a per-mission ledger turns that
+  // into one use. Until migrations/pass-53 is applied it records nothing and
+  // says so in the log. It never blocks the mission either way.
+  if (mission.promo_code) {
+    await recordPaidRedemption(supabase, {
+      code: mission.promo_code, missionId, source: 'checkout_session_poll',
+    });
+  }
 
   // Funnel event — server-side, mirrors the webhook handler.
   try {

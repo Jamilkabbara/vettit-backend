@@ -36,6 +36,15 @@ const { logPaymentError, shapeStripeError } = require('../services/paymentErrors
 // started until the 6h recovery cron).
 const { confirmCheckoutSessionPaid } = require('../services/payments/confirmCheckoutSession');
 const { isComingSoon, notAvailableError } = require('../config/comingSoon');
+// One authority for "may this code be used" and for spending a use of it.
+// See src/services/promo/promoCodes.js for why the increment cannot be done
+// here with a read, an addition and an un-awaited write.
+const {
+  resolveUsablePromo,
+  recordFreeLaunchRedemption,
+  releasePromoUse,
+  promoUnusableReason,
+} = require('../services/promo/promoCodes');
 const logger = require('../utils/logger');
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://www.vettit.ai';
@@ -96,16 +105,10 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
 
     // Resolve promo code (if any). Validation happens server-side; the
     // promo_codes table is RLS-locked from clients (Pass 23 Bug 23.1).
-    let promo = null;
-    if (promoCode) {
-      const { data } = await supabase
-        .from('promo_codes').select('*').eq('code', promoCode).eq('active', true).single();
-      if (data) {
-        const expired = data.expires_at && new Date(data.expires_at) < new Date();
-        const exhausted = data.max_uses && data.uses_count >= data.max_uses;
-        if (!expired && !exhausted) promo = data;
-      }
-    }
+    // "Usable" (active, unexpired, uses left) is decided in one place now, so
+    // a code that is out of uses cannot be honoured on one route and refused
+    // on the next.
+    const promo = await resolveUsablePromo(supabase, promoCode);
 
     // Pass 23 Bug 23.61 — fail-closed pricing validation. Reject
     // mismatched {goal_type, tier, media_type} BEFORE computing price
@@ -380,9 +383,10 @@ router.post('/free-launch', authenticate, async (req, res, next) => {
     if (promo.type !== 'free') {
       return res.status(403).json({ error: 'This promo code cannot be used for free launch' });
     }
-    const expired   = promo.expires_at && new Date(promo.expires_at) < new Date();
-    const exhausted = promo.max_uses && promo.uses_count >= promo.max_uses;
-    if (expired || exhausted) {
+    // Cheap early refusal on the row we just read. It is NOT the enforcement -
+    // two requests can read the same count - it just saves the work below for
+    // a code that is plainly finished. The claim further down is what decides.
+    if (promoUnusableReason(promo)) {
       return res.status(403).json({ error: 'Promo code is no longer valid' });
     }
 
@@ -439,16 +443,52 @@ router.post('/free-launch', authenticate, async (req, res, next) => {
       });
     }
 
-    await updateMission(supabase, missionId, {
-      status:    'paid',
-      paid_at:   new Date().toISOString(),
-      promo_code: promoCode.toUpperCase(),
-    }, { caller: 'POST /payments/free-launch' });
+    // ── Spend the use BEFORE the mission is marked paid ─────────────────────
+    //
+    // The old code marked the mission paid and then fired an un-awaited
+    // read-modify-write at uses_count. Two launches in the same second both
+    // read the same count, both wrote the same count back, and both ran: the
+    // 26th use of a 25-use code was free. This claim is a single conditional
+    // statement the database arbitrates, so of two requests racing the last
+    // use exactly one is told it got it.
+    //
+    // Order matters, and both orders can lose something. Claim first and a
+    // launch that then fails to be marked paid would burn a use - so the
+    // failure path hands it straight back below. Mark paid first and a code
+    // that filled up in between would have already run the mission for free,
+    // which is the loss that cannot be undone. So: claim, then pay, then run.
+    //
+    // A retried request never reaches here: the status guard above returns
+    // already_running for a mission that is already paid.
+    const claim = await recordFreeLaunchRedemption(supabase, {
+      code: promo.code, missionId,
+    });
+    if (!claim.claimed) {
+      logger.warn('Free-launch: promo claim refused', {
+        missionId, promoCode: promo.code, reason: claim.reason,
+      });
+      return res.status(403).json({
+        error: claim.reason === 'exhausted'
+          ? 'This promo code has been fully redeemed'
+          : 'Promo code is no longer valid',
+        reason: claim.reason,
+      });
+    }
 
-    supabase.from('promo_codes')
-      .update({ uses_count: (promo.uses_count || 0) + 1 })
-      .eq('code', promo.code)
-      .then(() => {}).catch(() => {});
+    try {
+      await updateMission(supabase, missionId, {
+        status:    'paid',
+        paid_at:   new Date().toISOString(),
+        promo_code: promoCode.toUpperCase(),
+      }, { caller: 'POST /payments/free-launch' });
+    } catch (err) {
+      // The mission did not become paid, so the customer did not get the
+      // launch they spent the use on. Give it back before rethrowing.
+      await releasePromoUse(supabase, {
+        code: promo.code, missionId, source: 'free_launch_rollback',
+      });
+      throw err;
+    }
 
     setImmediate(() => {
       runMission(missionId).catch(err => {
