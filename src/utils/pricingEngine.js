@@ -10,18 +10,19 @@
  * artifact of the panel-recruitment era. The new ladder anchors price-per-
  * mission at four named packages:
  *
- *   Sniff Test  — 5 resp     · $9    · $1.80/resp
- *   Validate    — 10 resp    · $35   · $3.50/resp   (the default first mission)
- *   Confidence  — 50 resp    · $99   · $1.98/resp
- *   Deep Dive   — 250 resp   · $299  · $1.20/resp   (also covers 250+)
+ * DO NOT QUOTE PRICES FROM THIS HEADER. The ladders below are the only
+ * numbers that bill. This header carried the 2026-04 four-package ladder
+ * (5/$9, 10/$35, 50/$99, 250/$299) and "$20 per extra question beyond the
+ * first 5" for months after the 2026-09 reprice replaced both, so anyone who
+ * read the top of the file and stopped got figures Stripe had never charged.
+ * The live numbers live at VOLUME_TIERS, BRAND_LIFT_TIERS,
+ * CREATIVE_ATTENTION_PRICES, EXTRA_QUESTION_PRICE and FREE_QUESTIONS, each
+ * with its own comment. GET /api/pricing/tiers projects the default ladder
+ * for any display surface that needs it.
  *
- * Bracket pricing applies the rate of the tier the count falls in. Boundary
- * effect: counts that straddle a tier boundary (e.g. 49 vs 50) can produce
- * non-monotonic totals because the per-respondent rate jumps. This is a
- * known consequence of value-based packaging — users who pick a non-anchor
- * count generally land within one tier and the boundary is a small minority.
- *
- * Extra questions:  $20 each beyond the first 5 (free)
+ * Bracket pricing applies the rate of the tier the count falls in, floored so
+ * a count is never cheaper than the top of the tier below it - see
+ * respondentLadderBase for the inversion that floor fixes.
  *
  * Per-respondent targeting surcharges (capped per category):
  *   Professional B2B  min(count × $0.50, $1.50) / respondent
@@ -41,11 +42,29 @@
  *   - 2026-04-28 (this file): volume-tier 4-package ladder.
  */
 
-// ── Country tier registry — kept for backwards-compat only ──────────────────
-// Pass 23 Bug 23.PRICING: country tier is no longer used in the price
-// calculation. The sets and helpers below are retained because callers
-// elsewhere may import getCountryTier or resolveHighestTier for analytics
-// or country grouping. New code should use getVolumeTier instead.
+// ── Country tier registry - DEAD. Geography does not affect any price ──────
+//
+// Pass 23 Bug 23.PRICING retired country-tier pricing on 2026-04-28 and
+// nothing has replaced it. calculateMissionPrice never reads a country rate:
+// it calls resolveHighestTier only to stamp an informational `countryTier`
+// on the breakdown, and the number it produces is multiplied by nothing.
+// The same ten countries cost the same as one; US costs the same as SD.
+// pricing.test.js pins that with an explicit geography-does-not-price test.
+//
+// CONSUMER AUDIT, 2026-09-11, both repos at origin/main:
+//   TIER_RATES          exported, ZERO importers - backend, frontend, tests,
+//                       scripts and docs all return nothing. The comment this
+//                       block replaces claimed it was "retained so analytics
+//                       callers don't break"; there are no analytics callers.
+//   getCountryTier      exported, only caller is resolveHighestTier + tests.
+//   resolveHighestTier  exported, only caller is calculateMissionPrice (for
+//                       the informational field) + tests.
+//   TIER_1 / TIER_2     exported, no importers; read only by getCountryTier.
+//
+// Kept, not deleted, because whether VETT should price geography at all is an
+// open PRODUCT decision and these sets are the only country grouping in the
+// repo. Until that decision lands, treat every symbol below as reference data
+// with no effect on money. New code should use getVolumeTier instead.
 
 /** Tier 1 — premium research markets (legacy, no longer affects price) */
 const TIER_1 = new Set([
@@ -60,7 +79,15 @@ const TIER_2 = new Set([
   'TW','UA','VN','ZA',
 ]);
 
-/** Country-tier rates — legacy, retained so analytics callers don't break. */
+/**
+ * Country-tier rates from the retired 2026-04-23 to 2026-04-28 model.
+ *
+ * DEAD NUMBERS. Nothing reads this object - not this module, not a route, not
+ * a test, not the frontend. It is a historical record of what the three tiers
+ * charged per respondent before the volume ladder replaced them, and it is
+ * NOT a live price list. Do not put these dollar figures in a deck, a quote or
+ * a customer email: no mission has been billed off them since 2026-04-28.
+ */
 const TIER_RATES = {
   1: 3.50,
   2: 2.75,
@@ -205,17 +232,6 @@ const BRAND_LIFT_TIERS = [
   { id: 'enterprise', name: 'Enterprise', anchorCount: 2000, maxCount: Infinity, ratePerResp: 0.75, packagePrice: 1500, minRespondents: BRAND_LIFT_MIN_RESPONDENTS },
 ];
 
-/**
- * Pass 25 Phase 0.3 — Creative Attention is now a respondent ladder.
- * 1-respondent missions yield no statistical signal; floor is 10. Per-
- * respondent rate is slightly higher than the validate ladder because
- * CA runs frame-by-frame Claude Vision per respondent (more compute).
- *   Sniff Test  10  $19   $1.90/resp
- *   Validate    25  $39   $1.56/resp
- *   Confidence  50  $69   $1.38/resp
- *   Deep Dive   100 $129  $1.29/resp
- *   Deep Dive XL 250 $299 $1.20/resp
- */
 /**
  * ── Creative Attention prices per CREATIVE, not per respondent ─────────────
  *
@@ -882,9 +898,27 @@ function calculateMissionPrice({
     // The pre-rounding figure, so a breakdown can show its own arithmetic and
     // a caller that needs the exact ladder value is not forced to recompute it.
     exactTotal,
-    // Extra metadata for logging / breakdown lines:
-    tier:         countryTier,                  // legacy alias = country tier
-    countryTier,                                // new explicit name
+    // Extra metadata for logging / breakdown lines.
+    //
+    // ── `tier` and `countryTier` DO NOT AFFECT THIS TOTAL ──────────────────
+    // Both are the same number: resolveHighestTier(countries), stamped so a
+    // log line can say which geography bucket a mission fell in. Neither is
+    // multiplied by anything, and TIER_RATES - the rates these buckets once
+    // charged - is read by nothing. Change the countries on a mission and the
+    // total does not move. A breakdown carrying `countryTier: 1` is NOT
+    // evidence that VETT prices geography; see the dead-country-tier registry
+    // at the top of this file and the "geography does not price" test in
+    // pricing.test.js. If you are about to describe geographic pricing in a
+    // deck or a rate card, that feature does not exist yet.
+    //
+    // They are returned rather than dropped because both are on the wire
+    // today: POST /api/missions/calculate-price serialises this whole object
+    // and POST /api/pricing/quote nests it under `details`. A consumer audit
+    // on 2026-09-11 found ZERO readers in either repo, so removing them is
+    // believed safe - but that removal belongs with the product decision on
+    // whether geography should price at all, not ahead of it.
+    tier:         countryTier,                  // legacy alias = countryTier
+    countryTier,                                // informational only
     volumeTier:   { id: volumeTier.id, name: volumeTier.name, anchorCount: volumeTier.anchorCount, packagePrice: volumeTier.packagePrice },
     customQuote,  // true above MAX_SELF_SERVE_RESPONDENTS (V1) or in the V2 Enterprise tier — routes block self-serve checkout
     ratePerResp,
