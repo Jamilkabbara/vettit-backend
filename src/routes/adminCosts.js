@@ -6,6 +6,10 @@ const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const { adminOnly } = require('../middleware/adminOnly');
 const supabase = require('../db/supabase');
+// PostgREST returns at most 1000 rows for an unbounded select, silently. Every
+// aggregate read of ai_calls here is summed into a money figure, so every one
+// of them pages. See src/db/fetchAllRows.js.
+const fetchAllRows = require('../db/fetchAllRows');
 const logger = require('../utils/logger');
 
 router.use(authenticate, adminOnly);
@@ -18,12 +22,16 @@ function monthRange(yearOffset = 0, monthOffset = 0) {
 }
 
 async function aggregateMonth(rangeStart, rangeEnd) {
-  const { data: missions } = await supabase
-    .from('missions')
-    .select('id, goal_type, paid_at, paid_amount_cents, total_price_usd')
-    .gte('paid_at', rangeStart)
-    .lt('paid_at', rangeEnd)
-    .not('paid_at', 'is', null);
+  const { data: missions, error: missionsErr } = await fetchAllRows(supabase, {
+    table: 'missions',
+    columns: 'id, goal_type, paid_at, paid_amount_cents, total_price_usd',
+    build: (q) => q
+      .gte('paid_at', rangeStart)
+      .lt('paid_at', rangeEnd)
+      .not('paid_at', 'is', null),
+    label: 'costs monthly revenue',
+  });
+  if (missionsErr) throw missionsErr;
 
   let revenue_cents = 0;
   for (const m of (missions || [])) {
@@ -32,11 +40,13 @@ async function aggregateMonth(rangeStart, rangeEnd) {
   const revenue_usd = revenue_cents / 100;
   const paid_missions = (missions || []).length;
 
-  const { data: aiCalls } = await supabase
-    .from('ai_calls')
-    .select('cost_usd')
-    .gte('created_at', rangeStart)
-    .lt('created_at', rangeEnd);
+  const { data: aiCalls, error: aiCallsErr } = await fetchAllRows(supabase, {
+    table: 'ai_calls',
+    columns: 'id, cost_usd',
+    build: (q) => q.gte('created_at', rangeStart).lt('created_at', rangeEnd),
+    label: 'costs monthly ai spend',
+  });
+  if (aiCallsErr) throw aiCallsErr;
   const ai_cost_usd = (aiCalls || []).reduce((s, c) => s + Number(c.cost_usd || 0), 0);
 
   const { data: vendors } = await supabase
@@ -79,13 +89,20 @@ router.get('/dashboard', async (req, res, next) => {
       aggregateMonth(lastMonth.start, lastMonth.end),
       supabase.from('vendor_costs').select('vendor, display_name, category, cost_usd, cost_unit, notes')
         .is('effective_to', null).order('display_name'),
-      supabase.from('ai_calls').select('model, cost_usd')
-        .gte('created_at', last30.start).lt('created_at', last30.end),
+      fetchAllRows(supabase, {
+        table: 'ai_calls',
+        columns: 'id, model, cost_usd',
+        build: (q) => q.gte('created_at', last30.start).lt('created_at', last30.end),
+        label: 'costs 30d model mix',
+      }),
       supabase.from('ai_calls').select('id', { count: 'exact', head: true })
         .eq('success', false).gte('created_at', new Date(Date.now() - 7 * 86400000).toISOString()),
-      supabase.from('missions')
-        .select('goal_type, paid_at, paid_amount_cents, total_price_usd')
-        .not('paid_at', 'is', null),
+      fetchAllRows(supabase, {
+        table: 'missions',
+        columns: 'id, goal_type, paid_at, paid_amount_cents, total_price_usd',
+        build: (q) => q.not('paid_at', 'is', null),
+        label: 'costs per-goal revenue',
+      }),
       supabase.rpc('pg_database_size', { db: 'postgres' }).then(r => r, () => null),
     ]);
 

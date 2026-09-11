@@ -37,6 +37,7 @@ const fs = require('fs');
 const path = require('path');
 const { PassThrough } = require('stream');
 const supabase = require('../src/db/supabase');
+const fetchAllRows = require('../src/db/fetchAllRows');
 const ai = require('../src/services/claudeAI');
 const { runMission } = require('../src/jobs/runMission');
 const { sanitizeMissionPatch } = require('../src/db/missionSchema');
@@ -67,8 +68,12 @@ const BATCHES = {
 };
 const ALL_TYPES = [...BATCHES.canary, ...BATCHES.small, ...BATCHES.large];
 
-// Rough Anthropic cost heuristic for the PLAN only. Actuals come from
-// mission.ai_cost_usd (accumulated by anthropic.js) and are the source of truth.
+// Rough Anthropic cost heuristic for the PLAN only. Actuals come from the
+// ai_calls log - one row per call, written at the call site with the cost that
+// call actually incurred. This runner used to read mission.ai_cost_usd instead,
+// which is a denormalised running sum that has been wrong three separate ways,
+// and the per-type cost it printed is what pricing and margin decisions were
+// made on.
 const PER_PERSONA_EST_USD = 0.11;
 const estCost = (n) => Math.round((n * PER_PERSONA_EST_USD + 0.5) * 100) / 100;
 
@@ -274,7 +279,19 @@ async function runOne(goal, opts, outDir, ownerId) {
   const c5 = await renderExports({ mission: m, responses: (fullResp || []).filter((r) => r && r.screened_out !== true) }, outDir, `${goal}_${missionId.slice(0, 8)}`);
   console.log(`        exports: ${c5.allClean ? 'all clean' : 'ISSUE ' + ['pdf', 'pptx', 'xlsx'].filter((k) => c5[`${k}Err`]).map((k) => `${k}:${c5[`${k}Err`]}`).join(' ')}`);
 
-  const costActualUsd = m?.ai_cost_usd != null ? Math.round(Number(m.ai_cost_usd) * 100) / 100 : null;
+  // Cost from the log, not from mission.ai_cost_usd. Paged, because a
+  // 100-respondent run logs well over the 1000 rows an unbounded PostgREST
+  // select returns.
+  const { data: costRows, error: costErr } = await fetchAllRows(supabase, {
+    table: 'ai_calls',
+    columns: 'id, cost_usd',
+    build: (q) => q.eq('mission_id', missionId),
+    label: 'audit-pass per-type cost',
+  });
+  if (costErr) console.log(`  WARN could not read ai_calls for ${missionId}: ${costErr.message}`);
+  const costActualUsd = costErr
+    ? null
+    : Math.round((costRows || []).reduce((sum, c) => sum + Number(c.cost_usd || 0), 0) * 100) / 100;
   const row = { goal, missionId, target: N, c1, c2, c3, c4, c5, costActualUsd, questionKinds: questions.map((q) => q.type || q.renderer || '?') };
   persistSummary(outDir, row);
   console.log(`  DONE ${goal} · actual $${costActualUsd ?? '?'} · mission ${missionId}`);
@@ -317,7 +334,7 @@ function parseArgs(argv) {
   for (const g of types) { const n = args.respondents || AUDIT_N[g] || 40; console.log(`  ${g.padEnd(20)} ${String(n).padStart(4)}  ~$${estCost(n)}`); }
   console.log(`  ${'-'.repeat(34)}`);
   console.log(`  selected est:        ~$${Math.round(planTotal * 100) / 100}   |   all 13 est: ~$${Math.round(fullTotal * 100) / 100}`);
-  console.log('  (estimate only; actual per-type cost read from mission.ai_cost_usd after each run.)');
+  console.log('  (estimate only; actual per-type cost summed from the ai_calls log after each run.)');
   console.log('  NOTE: $0 to customers — inserts status=paid directly + runs in-process. No Stripe, no checkout, comingSoon.js untouched.');
 
   if (args.plan) { console.log('\nPLAN ONLY — no survey generated, no mission created, no spend. Drop --plan to run.'); process.exit(0); }
