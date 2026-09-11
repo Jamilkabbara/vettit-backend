@@ -20,7 +20,7 @@ generation and simulation half.
 
 Audit-N sizing (market_entry 80, audience_profiling 60, research 100, all others
 40). Estimated total **~$77** in Anthropic spend across the 13 (your ~$65-195
-band). Estimate only; the runner reads **actual** `mission.ai_cost_usd` after each
+band). Estimate only; the runner sums the **actual** cost from the `ai_calls` log after each
 run and prints a running total. Full fixture-N would be several times this.
 
 ## Run order
