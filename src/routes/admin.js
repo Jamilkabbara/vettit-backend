@@ -4,6 +4,10 @@ const { authenticate } = require('../middleware/auth');
 const { adminOnly } = require('../middleware/adminOnly');
 const supabase = require('../db/supabase'); // service-role client for all admin queries (RPC + tables)
 const fetchAllResponses = require('../db/fetchAllResponses');
+// Every aggregate read of ai_calls goes through this. PostgREST returns at most
+// 1000 rows for an unbounded select and says nothing about it, so an unpaged
+// SUM over the spend log is short without ever looking wrong. See the helper.
+const fetchAllRows = require('../db/fetchAllRows');
 const { isComingSoon, notAvailableError } = require('../config/comingSoon');
 const logger = require('../utils/logger');
 // Pass 42 F2 — Stripe promo sync. Lazy fail at call time so a
@@ -260,10 +264,22 @@ router.get('/missions', async (req, res, next) => {
     // admin Missions tab shows $0.00 even on completed missions that
     // burned real spend. Truth source is ai_calls.cost_usd summed by
     // mission_id (Pass 32 X7 verified $1.89 aggregate from this path).
+    //
+    // Paged. A 50-mission page maps to well over 1000 ai_calls rows in
+    // production, and PostgREST returns the first 1000 with a 200 and no
+    // warning: measured on prod, this exact query returned 1000 rows summing to
+    // $4.50 where the true total across those missions was $12.63. The rollup
+    // was reading the right table and still reporting a third of real spend.
     const missionIds = (data || []).map(m => m.id).filter(Boolean);
-    const { data: aiCalls } = missionIds.length
-      ? await supabase.from('ai_calls').select('mission_id, cost_usd').in('mission_id', missionIds)
-      : { data: [] };
+    const { data: aiCalls, error: aiCallsErr } = missionIds.length
+      ? await fetchAllRows(supabase, {
+        table: 'ai_calls',
+        columns: 'id, mission_id, cost_usd',
+        build: (q) => q.in('mission_id', missionIds),
+        label: 'admin/missions cost rollup',
+      })
+      : { data: [], error: null };
+    if (aiCallsErr) throw aiCallsErr;
     const aiCostByMission = {};
     for (const c of (aiCalls || [])) {
       if (!c.mission_id) continue;
@@ -384,18 +400,38 @@ router.get('/ai-costs', async (req, res, next) => {
     // source) and missions.paid_at lets us return the right key shape
     // and avoid the missions.ai_cost_usd stale-rollup problem in one
     // shot.
-    const [summary, priorSummary, byOperation, modelMix, margins, dailyAi, dailyRev] = await Promise.all([
+    //
+    // The admin_mission_margins RPC used to supply `mission_margins`. It read
+    // COALESCE(m.ai_cost_usd, 0) - the denormalised running sum on the mission
+    // row, not the ai_calls log - for the cost, the net margin, the margin
+    // percent AND the ORDER BY that picks which 50 missions are "worst margin".
+    // That column has been wrong three separate ways, so the ranking was built
+    // on it too. Margins are computed below from the log instead; the RPC is no
+    // longer called from anywhere.
+    //
+    // dailyAi and dailyRev are paged: the default 30-day range alone covers
+    // 1,903 ai_calls rows in production and an unpaged select stops at 1000.
+    const [summary, priorSummary, byOperation, modelMix, dailyAi, dailyRev] = await Promise.all([
       supabase.rpc('admin_ai_cost_summary',      { range_start: start,      range_end: end }),
       supabase.rpc('admin_ai_cost_summary',      { range_start: priorStart, range_end: start }),
       supabase.rpc('admin_ai_cost_by_operation', { range_start: start,      range_end: end }),
       supabase.rpc('admin_ai_model_mix',         { range_start: start,      range_end: end }),
-      supabase.rpc('admin_mission_margins',      { range_start: start,      range_end: end }),
-      supabase.from('ai_calls').select('cost_usd, created_at')
-        .gte('created_at', start.toISOString()).lt('created_at', end.toISOString()),
-      supabase.from('missions').select('total_price_usd, paid_at')
-        .in('status', ['paid', 'completed'])
-        .gte('paid_at', start.toISOString()).lt('paid_at', end.toISOString()),
+      fetchAllRows(supabase, {
+        table: 'ai_calls',
+        columns: 'id, cost_usd, created_at',
+        build: (q) => q.gte('created_at', start.toISOString()).lt('created_at', end.toISOString()),
+        label: 'ai-costs daily buckets',
+      }),
+      fetchAllRows(supabase, {
+        table: 'missions',
+        columns: 'id, title, respondent_count, total_price_usd, paid_at',
+        build: (q) => q.in('status', ['paid', 'completed'])
+          .gte('paid_at', start.toISOString()).lt('paid_at', end.toISOString()),
+        label: 'ai-costs paid missions',
+      }),
     ]);
+    if (dailyAi.error)  throw dailyAi.error;
+    if (dailyRev.error) throw dailyRev.error;
 
     // Bucket by yyyy-mm-dd. Cost from ai_calls.cost_usd, revenue from
     // missions.total_price_usd. Round cost to 4dp (Anthropic prices in
@@ -422,11 +458,18 @@ router.get('/ai-costs', async (req, res, next) => {
     // Pass 34 C3 — bucket non-mission calls by purpose so the admin
     // Operations Breakdown surfaces chatbot / clarify / targeting
     // spend that previously hid under "unattributed" (33.6% of calls).
-    const { data: purposeRows } = await supabase
-      .from('ai_calls')
-      .select('purpose, cost_usd, mission_id')
-      .gte('created_at', start.toISOString())
-      .lt('created_at', end.toISOString());
+    // Paged for the same reason as the daily buckets above - an unpaged read
+    // here reported the purpose mix of the first 1000 calls in the window and
+    // called it the whole window.
+    const { data: purposeRows, error: purposeErr } = await fetchAllRows(supabase, {
+      table: 'ai_calls',
+      columns: 'id, purpose, cost_usd, mission_id',
+      build: (q) => q
+        .gte('created_at', start.toISOString())
+        .lt('created_at', end.toISOString()),
+      label: 'ai-costs by purpose',
+    });
+    if (purposeErr) throw purposeErr;
     const byPurposeAgg = {};
     for (const r of (purposeRows || [])) {
       const key = r.purpose || 'unknown_legacy';
@@ -442,6 +485,64 @@ router.get('/ai-costs', async (req, res, next) => {
       avg_cost_usd:   v.calls > 0 ? Math.round((v.cost / v.calls) * 10000) / 10000 : 0,
       mission_bound: v.mission_bound,
     })).sort((a, b) => b.total_cost_usd - a.total_cost_usd);
+
+    // -- Mission margins, from the ai_calls log --------------------------------
+    // Revenue is the stored mission price - that IS the revenue figure, it is
+    // what the customer was billed. Cost is summed from ai_calls, never from
+    // missions.ai_cost_usd. A mission with no logged calls costs $0 here, which
+    // is what the log says; there is deliberately no fallback to the stored
+    // column, because the whole point of this table is what the log knows.
+    const marginIds = (dailyRev.data || []).map((m) => m.id).filter(Boolean);
+    const { data: marginCalls, error: marginCallsErr } = marginIds.length
+      ? await fetchAllRows(supabase, {
+        table: 'ai_calls',
+        columns: 'id, mission_id, cost_usd',
+        build: (q) => q.in('mission_id', marginIds),
+        label: 'ai-costs mission margins',
+      })
+      : { data: [], error: null };
+    if (marginCallsErr) throw marginCallsErr;
+    const marginCostByMission = {};
+    for (const c of (marginCalls || [])) {
+      if (!c.mission_id) continue;
+      marginCostByMission[c.mission_id] =
+        (marginCostByMission[c.mission_id] || 0) + Number(c.cost_usd || 0);
+    }
+    const missionMargins = (dailyRev.data || [])
+      .map((m) => {
+        const price = Number(m.total_price_usd || 0);
+        const cost  = Math.round((marginCostByMission[m.id] || 0) * 10000) / 10000;
+        const net   = Math.round((price - cost) * 10000) / 10000;
+        return {
+          mission_id:       m.id,
+          title:            m.title,
+          respondent_count: m.respondent_count,
+          price_usd:        price,
+          // Both key spellings. `ai_cost_usd` / `net_margin_usd` are what the
+          // retired RPC returned; `cost_usd` / `revenue_usd` / `margin_usd` are
+          // what the admin UI's MissionMargin type declares. Neither consumer
+          // has to change to get the corrected number.
+          ai_cost_usd:      cost,
+          cost_usd:         cost,
+          revenue_usd:      price,
+          net_margin_usd:   net,
+          margin_usd:       net,
+          margin_pct:       price > 0 ? Math.round((100 * net / price) * 100) / 100 : 0,
+          paid_at:          m.paid_at,
+        };
+      })
+      // Worst margin RATIO first, matching the retired RPC's ordering - except
+      // the ratio is now built on logged spend. Missions with no price have no
+      // ratio and sort last (the RPC's NULLS LAST).
+      .sort((a, b) => {
+        const ra = a.price_usd > 0 ? a.net_margin_usd / a.price_usd : null;
+        const rb = b.price_usd > 0 ? b.net_margin_usd / b.price_usd : null;
+        if (ra === null && rb === null) return 0;
+        if (ra === null) return 1;
+        if (rb === null) return -1;
+        return ra - rb;
+      })
+      .slice(0, 50); // same row_limit the RPC defaulted to
 
     const s  = summary.data      || {};
     const ps = priorSummary.data || {};
@@ -481,7 +582,7 @@ router.get('/ai-costs', async (req, res, next) => {
         cost_usd:    m.total_cost_usd,
         pct_of_cost: m.percentage,
       })),
-      mission_margins: margins.data     || [],
+      mission_margins: missionMargins,
       daily_buckets:   dailyBuckets,
       last_updated:    new Date().toISOString(),
     });
@@ -1301,19 +1402,40 @@ router.get('/revenue', async (req, res, next) => {
     const { start, end, days } = resolveRange(req.query.range || '30d');
     const priorStart = new Date(start.getTime() - (end.getTime() - start.getTime()));
 
-    const [missionsRes, priorMissionsRes, bucketsRes] = await Promise.all([
-      supabase.from('missions')
-        .select('id, total_price_usd, ai_cost_usd, status, goal_type, user_id')
-        .in('status', ['paid', 'completed'])
-        .gte('paid_at', start.toISOString())
-        .lt('paid_at', end.toISOString()),
-      supabase.from('missions')
-        .select('total_price_usd')
-        .in('status', ['paid', 'completed'])
-        .gte('paid_at', priorStart.toISOString())
-        .lt('paid_at', start.toISOString()),
+    const [missionsRes, priorMissionsRes, bucketsRes, dailyCallsRes] = await Promise.all([
+      fetchAllRows(supabase, {
+        table: 'missions',
+        columns: 'id, total_price_usd, ai_cost_usd, status, goal_type, user_id, paid_at',
+        build: (q) => q.in('status', ['paid', 'completed'])
+          .gte('paid_at', start.toISOString())
+          .lt('paid_at', end.toISOString()),
+        label: 'revenue current missions',
+      }),
+      fetchAllRows(supabase, {
+        table: 'missions',
+        columns: 'id, total_price_usd',
+        build: (q) => q.in('status', ['paid', 'completed'])
+          .gte('paid_at', priorStart.toISOString())
+          .lt('paid_at', start.toISOString()),
+        label: 'revenue prior missions',
+      }),
+      // The RPC still supplies the day series and the revenue per day. Its
+      // third column, SUM(m.ai_cost_usd), is NOT used - see below.
       supabase.rpc('daily_revenue_buckets', { range_start: start, range_end: end }),
+      // Per-day cost from the spend log, for the same reason the totals below
+      // use it: the chart and the headline must not disagree about what a day
+      // cost.
+      fetchAllRows(supabase, {
+        table: 'ai_calls',
+        columns: 'id, cost_usd, created_at',
+        build: (q) => q.gte('created_at', start.toISOString())
+          .lt('created_at', end.toISOString()),
+        label: 'revenue daily cost',
+      }),
     ]);
+    if (missionsRes.error)      throw missionsRes.error;
+    if (priorMissionsRes.error) throw priorMissionsRes.error;
+    if (dailyCallsRes.error)    throw dailyCallsRes.error;
 
     const curr = missionsRes.data      || [];
     const prev = priorMissionsRes.data || [];
@@ -1332,13 +1454,29 @@ router.get('/revenue', async (req, res, next) => {
     // same, so the two admin surfaces agree and neither depends on the backfill
     // having been run.
     const currIds = curr.map((m) => m.id).filter(Boolean);
-    const { data: currCalls } = currIds.length
-      ? await supabase.from('ai_calls').select('mission_id, cost_usd').in('mission_id', currIds)
-      : { data: [] };
+    const { data: currCalls, error: currCallsErr } = currIds.length
+      ? await fetchAllRows(supabase, {
+        table: 'ai_calls',
+        columns: 'id, mission_id, cost_usd',
+        build: (q) => q.in('mission_id', currIds),
+        label: 'revenue mission cost rollup',
+      })
+      : { data: [], error: null };
+    if (currCallsErr) throw currCallsErr;
     const loggedCostByMission = {};
     for (const c of (currCalls || [])) {
       if (!c.mission_id) continue;
       loggedCostByMission[c.mission_id] = (loggedCostByMission[c.mission_id] || 0) + Number(c.cost_usd || 0);
+    }
+
+    // Same log, bucketed by day for the chart series below.
+    const loggedCostByDay = {};
+    for (const c of (dailyCallsRes.data || [])) {
+      const day = String(c.created_at || '').slice(0, 10);
+      if (!day) continue;
+      loggedCostByDay[day] = Math.round(
+        ((loggedCostByDay[day] || 0) + Number(c.cost_usd || 0)) * 10000,
+      ) / 10000;
     }
 
     const currRevenue = curr.reduce((s, m) => s + Number(m.total_price_usd || 0), 0);
@@ -1362,14 +1500,20 @@ router.get('/revenue', async (req, res, next) => {
       avg_order:      { value: avgOrder,    delta_pct: 0 },
       mission_count:  curr.length,
       goal_breakdown: goalBreakdown,
-      // Remap daily_revenue_buckets RPC columns (bucket_date/ai_cost_usd) to the
+      // Remap daily_revenue_buckets RPC columns (bucket_date/revenue_usd) to the
       // keys the FE daily chart binds (day/cost_usd). Without this the X-axis day
-      // labels are blank and the Cost/Profit series collapse to zero. Same fix
-      // the /ai-costs handler already applies to its daily buckets.
+      // labels are blank and the Cost/Profit series collapse to zero.
+      //
+      // The RPC's own cost column is SUM(missions.ai_cost_usd) - the stored
+      // running sum. The headline gross_profit above already refuses that
+      // number and takes cost from ai_calls, so the chart underneath it was
+      // drawing a DIFFERENT, flattering cost line from the same response. Cost
+      // per day now comes from the log too, bucketed by the call's own
+      // timestamp exactly as /ai-costs does it.
       daily_buckets:  (bucketsRes.data || []).map((b) => ({
         day:         b.bucket_date,
         revenue_usd: b.revenue_usd,
-        cost_usd:    b.ai_cost_usd,
+        cost_usd:    loggedCostByDay[String(b.bucket_date || '').slice(0, 10)] || 0,
       })),
       last_updated:   new Date().toISOString(),
     });

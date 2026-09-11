@@ -481,7 +481,7 @@ async function runJob2() {
       const cutoff = new Date(Date.now() - JOB2_RECOVER_AFTER_MINUTES * 60 * 1000).toISOString();
       const { data: stuck, error } = await supabase
         .from('missions')
-        .select('id, status, latest_payment_intent_id, user_id, total_price_usd, title, promo_code, created_at')
+        .select('id, status, latest_payment_intent_id, checkout_session_id, user_id, total_price_usd, title, promo_code, created_at')
         .eq('status', 'pending_payment')
         .lt('created_at', cutoff);
       if (error) throw error;
@@ -537,16 +537,61 @@ async function reconcileOrphanPendingPayment(m) {
   // succeeded PI in Stripe (webhook miss; user paid) that we don't know
   // about because we never stored the PI id on the mission row.
   if (!m.latest_payment_intent_id) {
-    if (!isOldEnoughToReset) return; // young + legacy → leave alone, no alert spam
-    await alertAdmin('orphan_pending_payment_legacy_unsafe_to_auto_reset', m.id, {
-      user_id:           m.user_id,
-      title:             m.title,
-      reason:            'no_latest_payment_intent_id (legacy orphan)',
-      stuck_since:       m.created_at,
-      stuck_after_hours: JOB2_STUCK_AFTER_HOURS,
-      action_required:   'Manual Stripe Dashboard reconciliation: search PIs by metadata.missionId; if any succeeded, recover the row; otherwise admin can flip to draft.',
+    if (!isOldEnoughToReset) return; // young + no PI → leave alone, no alert spam
+
+    // A missing PI does NOT mean the mission is old.
+    //
+    // This branch used to label every PI-less orphan a "legacy orphan" on the
+    // assumption that only pre-Bug-22.9 rows could lack a PI. That assumption
+    // expired when Stripe Checkout became the main path: a Checkout Session
+    // only materialises a PaymentIntent once the customer actually starts
+    // paying, so a mission created MINUTES ago sits in pending_payment with
+    // latest_payment_intent_id NULL and a perfectly good checkout_session_id.
+    // Mission 6dcb6d52, created 2026-09-10, was alerted as a "legacy orphan"
+    // roughly six hours later; its session was simply expired and unpaid.
+    //
+    // The session is a payment reference this job was not reading at all, and
+    // it answers the question the alert was asking a human to go answer by
+    // hand. Read it, and say what is actually true.
+    let sessionState = null;
+    if (m.checkout_session_id) {
+      const cs = await stripeService.retrieveCheckoutSession(m.checkout_session_id);
+      sessionState = cs
+        ? { id: cs.id, status: cs.status, payment_status: cs.payment_status,
+            amount_total: cs.amount_total, payment_intent: cs.payment_intent || null }
+        : { id: m.checkout_session_id, status: 'unknown',
+            payment_status: 'unknown', note: 'Stripe did not answer' };
+    }
+
+    // Genuinely nothing to go on vs. a session we can describe. Different
+    // facts, different alert, different action for whoever picks it up.
+    const isTrulyUntraceable = !m.checkout_session_id;
+
+    await alertAdmin(
+      isTrulyUntraceable
+        ? 'orphan_pending_payment_no_payment_reference'
+        : 'orphan_pending_payment_unpaid_session',
+      m.id,
+      {
+        user_id:           m.user_id,
+        title:             m.title,
+        reason: isTrulyUntraceable
+          ? 'No payment reference of any kind on the row: neither a payment intent nor a checkout session. Nothing links it to Stripe.'
+          : 'No payment intent, but the row carries a checkout session. A Checkout Session does not create a PaymentIntent until the customer begins paying, so this is expected for an abandoned checkout and says nothing about the mission being old.',
+        checkout_session:  sessionState,
+        mission_created_at: m.created_at,
+        stuck_since:       m.created_at,
+        stuck_after_hours: JOB2_STUCK_AFTER_HOURS,
+        action_required: isTrulyUntraceable
+          ? 'Manual Stripe reconciliation: search PIs by metadata.missionId. If any succeeded, recover the row; otherwise flip to draft.'
+          : 'Check checkout_session above. If payment_status is "paid", recover the row. If it is unpaid/expired, no money moved and the mission can be flipped to draft.',
+      },
+    );
+    logger.warn('[cron] job2 alert-only (no PI on row)', {
+      missionId: m.id,
+      hasCheckoutSession: !!m.checkout_session_id,
+      sessionPaymentStatus: sessionState && sessionState.payment_status,
     });
-    logger.warn('[cron] job2 alert-only (legacy, no PI tracked)', { missionId: m.id });
     return;
   }
 
