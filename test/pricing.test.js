@@ -7,7 +7,8 @@
  * test here is a revenue alert, not just a code smell.
  */
 
-const { calculateMissionPrice, resolveHighestTier, getCountryTier, extractCountriesFromMission } = require('../src/utils/pricingEngine');
+const pricingEngine = require('../src/utils/pricingEngine');
+const { calculateMissionPrice, resolveHighestTier, getCountryTier, extractCountriesFromMission } = pricingEngine;
 
 // ── Tier helpers ─────────────────────────────────────────────────────────────
 
@@ -29,6 +30,67 @@ describe('resolveHighestTier', () => {
   it('mix of tier 2+3 → 2',             () => expect(resolveHighestTier(['SA', 'PS'])).toBe(2));
   it('mix of tier 1+3 → 1',             () => expect(resolveHighestTier(['AE', 'PS'])).toBe(1));
   it('all tier 3 → 3',                  () => expect(resolveHighestTier(['SD', 'AF'])).toBe(3));
+});
+
+// ── Geography does not price ─────────────────────────────────────────────────
+//
+// The engine still stamps `tier` and `countryTier` on every breakdown, and the
+// country-tier registry (TIER_1 / TIER_2 / TIER_RATES) is still exported. All
+// of it is dead: the 2026-04-28 reprice moved to a volume ladder and nothing
+// put geography back. These tests exist so the claim "VETT prices by country"
+// can never be true by accident, and so that anyone wiring geography INTO the
+// price has to delete a test that says out loud what they are changing.
+
+describe('geography does not affect price', () => {
+  const base = {
+    respondentCount: 100,
+    targeting: {},
+    questionCount: 10,
+    goalType: 'validate',
+  };
+
+  it('the same mission costs the same in a tier-1, tier-2 and tier-3 market', () => {
+    const t1 = calculateMissionPrice({ ...base, countries: ['US'] });
+    const t2 = calculateMissionPrice({ ...base, countries: ['SA'] });
+    const t3 = calculateMissionPrice({ ...base, countries: ['SD'] });
+
+    expect(t1.totalCents).toBe(t2.totalCents);
+    expect(t2.totalCents).toBe(t3.totalCents);
+    // ...and the field that names the bucket still differs, which is exactly
+    // the trap: a differing countryTier alongside an identical total.
+    expect([t1.countryTier, t2.countryTier, t3.countryTier]).toEqual([1, 2, 3]);
+  });
+
+  it('adding more countries does not change the total', () => {
+    const one  = calculateMissionPrice({ ...base, countries: ['AE'] });
+    const many = calculateMissionPrice({
+      ...base,
+      countries: ['AE', 'US', 'GB', 'IN', 'SD', 'PS'],
+    });
+    expect(many.totalCents).toBe(one.totalCents);
+  });
+
+  it('omitting countries entirely does not change the total', () => {
+    const none = calculateMissionPrice({ ...base });
+    const some = calculateMissionPrice({ ...base, countries: ['US'] });
+    expect(none.totalCents).toBe(some.totalCents);
+    expect(none.countryTier).toBe(3);
+  });
+
+  it('`tier` is nothing but an alias of `countryTier`', () => {
+    const q = calculateMissionPrice({ ...base, countries: ['GB'] });
+    expect(q.tier).toBe(q.countryTier);
+    expect(q.tier).toBe(1);
+  });
+
+  it('TIER_RATES is reference data, not a rate any mission is billed at', () => {
+    // $3.50/resp x 100 was the tier-1 charge under the retired model. If this
+    // ever equals the total again, geography has been re-priced and the docs
+    // at the top of pricingEngine.js are lying.
+    const t1 = calculateMissionPrice({ ...base, countries: ['US'] });
+    expect(t1.total).not.toBe(pricingEngine.TIER_RATES[1] * 100);
+    expect(t1.ratePerResp).not.toBe(pricingEngine.TIER_RATES[1]);
+  });
 });
 
 // ── extractCountriesFromMission ───────────────────────────────────────────────
