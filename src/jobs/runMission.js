@@ -48,6 +48,10 @@ const { ensureMissionQuestions } = require('../services/ai/ensureQuestions');
 // Pass 46 Phase 3 — deterministic methodology analysis.
 const { computeAnalysis } = require('../services/analysis');
 const emailService = require('../services/email');
+// Pass 49 — payment-covers-run gate. Spans session-creation time and
+// capture time: recomputes owed from the mission AS IT WILL RUN and
+// refuses if what Stripe actually captured does not cover it.
+const { checkPaymentCoversRun } = require('../services/payments/paymentCoversRun');
 
 // Pass 23 Bug 23.12 — notification copy templates. Truncate long mission
 // titles so the body stays scannable in the bell dropdown (max ~80 chars
@@ -90,6 +94,35 @@ async function runMission(missionId, opts = {}) {
     logger.error('Mission run: not found', { missionId, error });
     return;
   }
+
+  // ─── Idempotency guard ────────────────────────────────────────────────────
+  // Both /api/payments/confirm and the payment_intent.succeeded webhook set
+  // status='paid' before calling runMission(). Without this guard, a race
+  // between the two paths (or two rapid webhook deliveries) would trigger
+  // duplicate AI synthesis jobs, doubling cost for the same mission.
+  const SKIP_STATUSES = ['processing', 'completed', 'failed'];
+  if (SKIP_STATUSES.includes(mission.status) && !(resume && mission.status === 'processing')) {
+    logger.info('Mission run: idempotency skip', { missionId, status: mission.status });
+    return { skipped: true, reason: `already ${mission.status}` };
+  }
+
+  // ─── Money gates ──────────────────────────────────────────────────────────
+  //
+  // Both gates sit AFTER the terminal-status skip and BEFORE the claim.
+  //
+  // After the skip, because a completed or failed mission has already run:
+  // there is no spend left to govern and no payment left to protect, so
+  // refusing one would raise an admin alert about money that was already
+  // settled. Re-triggering a finished mission is a no-op, and it has to stay
+  // one. (27 of the 40 finished missions on production predate
+  // latest_payment_intent_id and would each have produced a spurious alert
+  // from the earlier placement.)
+  //
+  // Before the claim, because the claim is what commits us to spending. That
+  // placement is also what makes these cover RESUME: a resumed run is
+  // status='processing', which the skip above lets through when resume=true,
+  // and it deliberately bypasses the claim - so a check living inside the
+  // claim would miss exactly the path that re-enters a half-finished run.
 
   // ─── Spend-ceiling gate ───────────────────────────────────────────────────
   //
@@ -157,15 +190,83 @@ async function runMission(missionId, opts = {}) {
     return { skipped: true, reason: 'no_spend_ceiling' };
   }
 
-  // ─── Idempotency guard ────────────────────────────────────────────────────
-  // Both /api/payments/confirm and the payment_intent.succeeded webhook set
-  // status='paid' before calling runMission(). Without this guard, a race
-  // between the two paths (or two rapid webhook deliveries) would trigger
-  // duplicate AI synthesis jobs, doubling cost for the same mission.
-  const SKIP_STATUSES = ['processing', 'completed', 'failed'];
-  if (SKIP_STATUSES.includes(mission.status) && !(resume && mission.status === 'processing')) {
-    logger.info('Mission run: idempotency skip', { missionId, status: mission.status });
-    return { skipped: true, reason: `already ${mission.status}` };
+  // ─── Payment-covers-run gate ──────────────────────────────────────────────
+  //
+  // Recompute what this mission owes FROM THE MISSION AS IT WILL RUN, and
+  // refuse unless the payment we actually captured covers it.
+  //
+  // Every other price check in the stack is anchored to a moment: is this
+  // priceable (checkout), what do we charge (session creation), what did they
+  // pay (webhook). The run reads the mission ROW, and RLS deliberately lets an
+  // owner edit that row while it is draft or pending_payment - a buyer who has
+  // not paid must be able to change their mind. So the row can legitimately
+  // move after the Stripe Session is created and before it is captured:
+  // 5 respondents at $9, open checkout, edit to 1000, pay the $9. Nothing
+  // behaved incorrectly at any single moment; the mission changed between two
+  // of them. This is the only check that spans them.
+  //
+  // Placed with the spend-ceiling gate, BEFORE the claim, so it covers resume.
+  //
+  // Refuses loudly - admin_alerts row plus an error log - and NEVER on a
+  // Stripe outage alone: the resolver falls back to the mission's own
+  // Stripe-sourced amount before it falls to zero.
+  const cover = await checkPaymentCoversRun(supabase, mission);
+  if (!cover.ok) {
+    // Two different facts, never merged: "they underpaid" and "we could not
+    // ask Stripe". Both refuse the run, because we do not spend money we
+    // cannot account for - but an expired API key would otherwise refuse every
+    // mission at once and report each as an underpayment, sending whoever is on
+    // call after a fraud instead of after the key.
+    const unverifiable = cover.unverifiable === true;
+    const alertType = unverifiable
+      ? 'mission_payment_unverifiable'
+      : 'mission_payment_does_not_cover_run';
+    logger.error(unverifiable
+      ? 'Mission run: REFUSED — could not verify payment with Stripe'
+      : 'Mission run: REFUSED — captured payment does not cover the run', {
+      missionId,
+      resume,
+      status:        mission.status,
+      owedCents:     cover.owedCents,
+      capturedCents: cover.capturedCents,
+      capturedFrom:  cover.source,
+      ...cover.detail,
+    });
+    try {
+      await supabase.from('admin_alerts').insert({
+        alert_type: alertType,
+        mission_id: missionId,
+        user_id:    mission.user_id,
+        payload: {
+          reason: unverifiable
+            ? 'Stripe did not answer for this mission\'s payment intent, so the '
+            + 'captured amount is unknown. This is NOT evidence the customer '
+            + 'underpaid. Check the Stripe API key first: retrievePaymentIntent '
+            + 'returns null on ANY failure, so an expired key looks identical to '
+            + 'a payment intent with no amount, and would refuse every mission.'
+            : 'Recomputed price for the mission as it would run exceeds the '
+            + 'payment captured for it. The usual cause is the mission being '
+            + 'edited between checkout-session creation and payment capture, '
+            + 'which RLS permits while the mission is unpaid.',
+          owed_cents:     cover.owedCents,
+          captured_cents: cover.capturedCents,
+          captured_from:  cover.source,
+          ...cover.detail,
+          action_required: unverifiable
+            ? 'Verify the Stripe API key is current, then re-trigger. Do not '
+            + 'contact the customer about payment until Stripe answers.'
+            : 'Confirm the mission against its Stripe payment. Either collect '
+            + 'the difference and re-trigger, or reset the mission to the size '
+            + 'that was actually paid for.',
+        },
+        resolved: false,
+      });
+    } catch (alertErr) {
+      logger.warn('Mission run: payment-gate alert insert failed', {
+        missionId, err: alertErr.message,
+      });
+    }
+    return { skipped: true, reason: unverifiable ? 'payment_unverifiable' : 'payment_does_not_cover_run' };
   }
 
   if (resume && mission.status === 'processing') {

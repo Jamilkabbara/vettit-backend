@@ -232,6 +232,17 @@ const creativeMission = (over = {}) => ({
   // falsy ceiling silently selects the uncapped batch branch. A fixture with
   // no ceiling is not a realistic mission.
   ai_spend_ceiling_usd: 5.7,
+  // The payment-covers-run gate prices the mission as it will run and
+  // refuses if Stripe captured less. A fixture standing in for a real paid
+  // mission has to carry what a real paid mission carries, or it is stopped
+  // at that gate and this suite measures the gate instead of its subject.
+  // CA is priced per creative at a fixed respondent count, and the ladder
+  // refuses to price below its floor of 10 - which is what a real CA mission
+  // now carries. (10 of the 16 CA missions on production still hold
+  // respondent_count=1 from before that floor existed; they are all finished,
+  // so they never reach this gate.)
+  respondent_count: 10,
+  paid_amount_cents: 1900,
   brand_name: 'Acme',
   brief_attachment: { path: 'user-1/creatives/ad.mp4', mimeType: 'video/mp4' },
   creative_analysis: null,

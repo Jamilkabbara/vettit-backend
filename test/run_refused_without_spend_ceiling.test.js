@@ -62,6 +62,9 @@ function wire() {
     if (table === 'admin_alerts') {
       return { insert: async (row) => { alerts.push(row); return { error: null }; } };
     }
+    if (table === 'promo_codes') {
+      return { select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }) }) };
+    }
     if (table === 'missions') {
       return {
         select: () => ({ eq: () => ({ single: async () => ({ data: missionRow, error: null }) }) }),
@@ -82,6 +85,11 @@ const base = {
   goal_type: 'research', respondent_count: 1250,
   questions: [{ id: 'q1', text: 'Why?', type: 'open_ended' }],
   started_at: null, completed_at: null, failure_reason: null,
+  // A normal mission is a PAID one. 1250 respondents is $1099 on the
+  // Enterprise rung, and the payment-covers-run gate sits beside this one, so
+  // a fixture with no payment evidence would be stopped there instead of here
+  // and the CONTROL below would prove nothing about the ceiling.
+  paid_amount_cents: 109900,
 };
 
 beforeEach(() => { jest.clearAllMocks(); wire(); });
