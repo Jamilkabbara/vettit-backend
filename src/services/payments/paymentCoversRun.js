@@ -69,6 +69,28 @@
  * an edge case, it is half the ladder. The minimum accepts both and still
  * catches a real shortfall, which is dollars wide, not cents.
  *
+ * WHAT MEDIA TYPE THE MISSION REALLY IS
+ * Creative Attention is priced per creative, $19 image / $49 video, and
+ * missions.media_type is what picks between them. The browser writes that
+ * column on the client-side INSERT. Pricing the run from it would make this
+ * gate circular in exactly the way the module refuses to be about money: it
+ * would be checking the mission's claim against itself. So the media type is
+ * re-derived from the stored object (see services/media/creativeMediaType.js)
+ * and the derived value is what prices. A mission charged $19 whose creative
+ * is an mp4 then owes $49 against $19 captured, and is refused as the
+ * shortfall it is.
+ *
+ * This matters HERE and not only at checkout because the object can change
+ * after the money is taken: nothing stops an owner replacing the uploaded file
+ * once the mission is paid, and a checkout-time check cannot see that.
+ *
+ * When the object cannot be read or its format is not recognised the gate
+ * falls back to the row's own value, unchanged, and says so in `detail`. That
+ * is deliberately NOT the Stripe treatment: an unreachable Stripe refuses,
+ * because the captured amount is the whole question. Here an unreadable object
+ * would refuse every paid Creative Attention run during a storage blip, and
+ * the charge-time gate is the one that fails closed.
+ *
  * WHAT THIS DOES NOT CLOSE
  * A $0 mission. If owed is zero (a valid free-type promo) then captured zero
  * covers it, by construction. That is correct for a real free launch, and it
@@ -87,6 +109,11 @@ const {
   calculateMissionPrice,
   extractCountriesFromMission,
 } = require('../../utils/pricingEngine');
+// media_type is a $30 difference on Creative Attention and the browser writes
+// it. Re-derive from the stored object here too - this is the last gate before
+// the run actually spends, and the stored object can be replaced AFTER a
+// mission is paid, which no checkout-time check can see.
+const { verifyCreativeMediaType } = require('../../services/media/creativeMediaType');
 
 // Float noise only. NOT a business allowance: a real shortfall is dollars, and
 // anything a cent wide is arithmetic, not underpayment.
@@ -182,6 +209,21 @@ async function checkPaymentCoversRun(supabase, mission) {
   // Price the mission exactly as the run will read it: the live columns, not
   // price_breakdown, not total_price_usd. If pricing throws (an unpriceable
   // mission that somehow reached paid), that is a refusal, not a pass.
+  // Derived from the stored creative, not from the column the browser wrote.
+  // `checked: false` means we could not answer, and then the row's own value
+  // is used - see WHAT MEDIA TYPE THE MISSION REALLY IS above.
+  const mediaCheck = await verifyCreativeMediaType(supabase, mission);
+  const pricedMediaType = mediaCheck.checked ? mediaCheck.derived : mission.media_type;
+  if (mediaCheck.mismatch) {
+    logger.error('paymentCoversRun: pricing from the STORED creative, not the mission row', {
+      missionId: mission.id,
+      declared:  mediaCheck.declared,
+      derived:   mediaCheck.derived,
+      source:    mediaCheck.source,
+      format:    mediaCheck.format,
+    });
+  }
+
   let pricing;
   try {
     pricing = calculateMissionPrice({
@@ -191,7 +233,7 @@ async function checkPaymentCoversRun(supabase, mission) {
       countries:       extractCountriesFromMission(mission),
       promoCode:       promo,
       goalType:        mission.goal_type,
-      mediaType:       mission.media_type,
+      mediaType:       pricedMediaType,
     });
   } catch (err) {
     return {
@@ -200,7 +242,12 @@ async function checkPaymentCoversRun(supabase, mission) {
       owedCents: null,
       capturedCents: null,
       source: 'unpriced',
-      detail: { pricing_error: err.message },
+      detail: {
+        pricing_error: err.message,
+        media_type: mission.media_type,
+        media_type_derived: mediaCheck.derived,
+        media_type_source: mediaCheck.source,
+      },
     };
   }
 
@@ -238,6 +285,10 @@ async function checkPaymentCoversRun(supabase, mission) {
       question_count:     (mission.questions || []).length,
       goal_type:          mission.goal_type,
       media_type:         mission.media_type,
+      media_type_priced:  pricedMediaType,
+      media_type_derived: mediaCheck.derived,
+      media_type_source:  mediaCheck.source,
+      media_type_mismatch: mediaCheck.mismatch === true,
       promo_code:         mission.promo_code || null,
       promo_honoured:     promo ? promo.code : null,
       promo_type:         promo ? promo.type : null,
