@@ -42,57 +42,29 @@
  *   - 2026-04-28 (this file): volume-tier 4-package ladder.
  */
 
-// ── Country tier registry - DEAD. Geography does not affect any price ──────
+// ── Geography does not affect any price ───────────────────────────
 //
 // Pass 23 Bug 23.PRICING retired country-tier pricing on 2026-04-28 and
-// nothing has replaced it. calculateMissionPrice never reads a country rate:
-// it calls resolveHighestTier only to stamp an informational `countryTier`
-// on the breakdown, and the number it produces is multiplied by nothing.
-// The same ten countries cost the same as one; US costs the same as SD.
-// pricing.test.js pins that with an explicit geography-does-not-price test.
+// nothing replaced it. A country-tier registry (TIER_1, TIER_2, TIER_RATES)
+// and the two functions that read it (getCountryTier, resolveHighestTier)
+// survived that reprice for five months, feeding nothing but two
+// informational fields on the breakdown, `tier` and `countryTier`.
 //
-// CONSUMER AUDIT, 2026-09-11, both repos at origin/main:
-//   TIER_RATES          exported, ZERO importers - backend, frontend, tests,
-//                       scripts and docs all return nothing. The comment this
-//                       block replaces claimed it was "retained so analytics
-//                       callers don't break"; there are no analytics callers.
-//   getCountryTier      exported, only caller is resolveHighestTier + tests.
-//   resolveHighestTier  exported, only caller is calculateMissionPrice (for
-//                       the informational field) + tests.
-//   TIER_1 / TIER_2     exported, no importers; read only by getCountryTier.
+// DELETED 2026-09-13. A consumer audit across both repos (#164) found zero
+// readers: not a route, not the frontend, not an export, not admin, not
+// analytics, and nothing persisted them - price_breakdown on missions stores
+// the brand-lift uplift object, not this breakdown. The re-audit before the
+// deletion confirmed it. The only thing keeping the registry alive was the
+// comment claiming callers depended on it.
 //
-// Kept, not deleted, because whether VETT should price geography at all is an
-// open PRODUCT decision and these sets are the only country grouping in the
-// repo. Until that decision lands, treat every symbol below as reference data
-// with no effect on money. New code should use getVolumeTier instead.
-
-/** Tier 1 — premium research markets (legacy, no longer affects price) */
-const TIER_1 = new Set([
-  'AE','AU','CA','CH','DE','DK','FR','GB','IE','JP','KR','NL','NO','NZ','SE','SG','US',
-]);
-
-/** Tier 2 — secondary / major emerging markets (legacy) */
-const TIER_2 = new Set([
-  'AR','AT','BD','BE','BG','BH','BR','CL','CN','CO','CY','CZ','EE','ES','FI','GR',
-  'HK','HR','HU','ID','IN','IS','IT','JO','KW','LB','LK','LT','LU','LV','MT','MX',
-  'MY','NG','OM','PH','PK','PL','PT','QA','RO','RS','RU','SA','SK','SI','TH','TR',
-  'TW','UA','VN','ZA',
-]);
-
-/**
- * Country-tier rates from the retired 2026-04-23 to 2026-04-28 model.
- *
- * DEAD NUMBERS. Nothing reads this object - not this module, not a route, not
- * a test, not the frontend. It is a historical record of what the three tiers
- * charged per respondent before the volume ladder replaced them, and it is
- * NOT a live price list. Do not put these dollar figures in a deck, a quote or
- * a customer email: no mission has been billed off them since 2026-04-28.
- */
-const TIER_RATES = {
-  1: 3.50,
-  2: 2.75,
-  3: 1.90,
-};
+// `countries` is still an INPUT and is still echoed back on the breakdown,
+// because callers pass the geography they targeted and a log line can want it.
+// It is multiplied by nothing. The same ten countries cost the same as one;
+// US costs the same as SD. pricing.test.js pins that with an explicit
+// geography-does-not-price test, which outlives the deleted fields.
+//
+// If geography should price, that is a PRODUCT decision and it starts with a
+// rate table someone chooses on purpose, not with reviving a 2026-04 one.
 
 // ── Volume tier ladders — Pass 23 Bug 23.PRICING + 23.51 ──────────────────────
 //
@@ -202,10 +174,9 @@ const VOLUME_TIERS = [
  * honest move is to state the MDE alongside the result rather than let a floor
  * imply a validity it does not deliver. brandLiftMDE() below does that.
  *
- * Accepted cost: at 100 the Pulse tier (anchor 50, $99) is unbuyable for
- * brand_lift, and the cheapest brand-lift study becomes $150 (100 x $1.50 on
- * Tracker). A $99 study that cannot support its own methodology is not worth
- * selling.
+ * Accepted cost: a $99 study that cannot support its own methodology is not
+ * worth selling, so the floor stands. Pulse was MOVED to the floor rather than
+ * deleted - see BRAND_LIFT_TIERS below for why it now anchors at 100/$150.
  */
 const BRAND_LIFT_MIN_RESPONDENTS = 100;
 
@@ -224,9 +195,52 @@ function brandLiftMDE(n) {
   return Math.round(2.801585 * Math.sqrt(0.5 / perCell) * 1000) / 10;
 }
 
-/** Brand Lift — minimum statistical sample sizes (no Sniff Test / Validate). */
+/**
+ * Brand Lift - minimum statistical sample sizes (no Sniff Test / Validate).
+ *
+ * ── Pulse moved from 50 to 100, 2026-09-13 ─────────────────────────────────
+ *
+ * Pulse anchored at 50 with maxCount 50, which put the WHOLE tier below the
+ * 100-respondent floor this ladder enforces (and below the NOT VALID CHECK
+ * constraint missions_brand_lift_respondent_floor_chk). resolveTier refuses
+ * anything under 100 outright, so no count could ever resolve to Pulse: it was
+ * a tier on the ladder, on the landing page's data and in the setup panel's
+ * default state, that could not be bought. Worse, the setup panel DEFAULTED a
+ * new brand-lift study to BRAND_LIFT_TIERS[0].anchorCount, i.e. 50, a count
+ * the backend and the database both reject.
+ *
+ * Owner decision: move the anchor to 100 so the tier is buyable. The three
+ * other numbers follow from constraints, not from preference:
+ *
+ *   maxCount 100    The tier has to COVER 100 to be reachable, and Tracker
+ *                   owns 200. Pulse taking (floor, 100] and Tracker (100, 200]
+ *                   leaves no gap and no overlap. Since the floor IS 100, Pulse
+ *                   is exactly the entry study - which is what "Pulse" means.
+ *
+ *   ratePerResp     1.50, the SAME rate as Tracker, and this is the honest
+ *                   number rather than the flattering one. Rate must not RISE
+ *                   with volume (that spike is exactly what the 2026-09 default
+ *                   reprice removed), so Pulse's rate cannot be below Tracker's
+ *                   1.50. Nor should it be above: 1.98 would price 100
+ *                   respondents at $198, RAISING the cheapest brand-lift study
+ *                   from the $150 it costs today. Equal rates it is.
+ *
+ *   packagePrice    150 = 100 x 1.50. It is documentation of the anchor, and
+ *                   the derived rate, in the same relationship the default
+ *                   ladder uses. STARTING_PRICE_BRAND_LIFT_USD in the frontend
+ *                   reads this field, so it was publishing "from $99" for a
+ *                   study that has cost $150 since the floor moved.
+ *
+ * NO PRICE MOVES. Today 100/150/199 all fall to Tracker and cost $150.00 /
+ * $225.00 / $298.50. After this change 100 falls to Pulse and 150/199 still
+ * fall to Tracker, at $150.00 / $225.00 / $298.50 - identical, because the
+ * rates are equal and the tier floor (100 x 1.50 = 150) never binds against
+ * Tracker's own minimum (101 x 1.50 = 151.50). What changes is that the tier
+ * RESOLVES: n=100 now stamps `pulse` on missions.tier instead of `tracker`,
+ * the landing ladder can show it, and the setup panel's default count is legal.
+ */
 const BRAND_LIFT_TIERS = [
-  { id: 'pulse',      name: 'Pulse',      anchorCount: 50,   maxCount: 50,   ratePerResp: 1.98, packagePrice: 99,   minRespondents: BRAND_LIFT_MIN_RESPONDENTS },
+  { id: 'pulse',      name: 'Pulse',      anchorCount: 100,  maxCount: 100,  ratePerResp: 1.50, packagePrice: 150,  minRespondents: BRAND_LIFT_MIN_RESPONDENTS },
   { id: 'tracker',    name: 'Tracker',    anchorCount: 200,  maxCount: 200,  ratePerResp: 1.50, packagePrice: 300,  minRespondents: BRAND_LIFT_MIN_RESPONDENTS },
   { id: 'wave',       name: 'Wave',       anchorCount: 500,  maxCount: 500,  ratePerResp: 1.20, packagePrice: 600,  minRespondents: BRAND_LIFT_MIN_RESPONDENTS },
   { id: 'enterprise', name: 'Enterprise', anchorCount: 2000, maxCount: Infinity, ratePerResp: 0.75, packagePrice: 1500, minRespondents: BRAND_LIFT_MIN_RESPONDENTS },
@@ -707,26 +721,6 @@ const FREE_QUESTIONS        = 10;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Return the tier (1/2/3) for a single ISO-3166-1-alpha-2 code. */
-function getCountryTier(code) {
-  if (TIER_1.has(code)) return 1;
-  if (TIER_2.has(code)) return 2;
-  return 3;
-}
-
-/**
- * Resolve the highest-quality tier (lowest number) from an array of country
- * codes. Returns 3 (cheapest) when the array is empty — callers that want a
- * different default must pass an explicit list.
- */
-function resolveHighestTier(countries) {
-  if (!Array.isArray(countries) || countries.length === 0) return 3;
-  return countries.reduce((best, code) => {
-    const t = getCountryTier(String(code).toUpperCase());
-    return t < best ? t : best;
-  }, 3);
-}
-
 /**
  * Extract country codes from a mission DB row.
  * Priority order:
@@ -780,7 +774,6 @@ function calculateMissionPrice({
   // Validate / naming / marketing → respondent-count ladder (default).
   // Brand Lift → statistical-sample ladder (Pulse/Tracker/Wave/Enterprise).
   // Creative Attention → flat per-asset (Image/Video/Bundle/Series).
-  const countryTier = resolveHighestTier(countries);
   const tier        = resolveTier({ goalType, respondentCount, mediaType });
   const isCreative  = goalType === 'creative_attention';
   // PRICING V2 (flag on): ONE canonical package ladder for every goal type.
@@ -900,25 +893,20 @@ function calculateMissionPrice({
     exactTotal,
     // Extra metadata for logging / breakdown lines.
     //
-    // ── `tier` and `countryTier` DO NOT AFFECT THIS TOTAL ──────────────────
-    // Both are the same number: resolveHighestTier(countries), stamped so a
-    // log line can say which geography bucket a mission fell in. Neither is
-    // multiplied by anything, and TIER_RATES - the rates these buckets once
-    // charged - is read by nothing. Change the countries on a mission and the
-    // total does not move. A breakdown carrying `countryTier: 1` is NOT
-    // evidence that VETT prices geography; see the dead-country-tier registry
-    // at the top of this file and the "geography does not price" test in
-    // pricing.test.js. If you are about to describe geographic pricing in a
-    // deck or a rate card, that feature does not exist yet.
+    // `tier` and `countryTier` USED TO SIT HERE and were removed 2026-09-13.
+    // Both were the same number - the geography bucket a mission fell in under
+    // a model retired on 2026-04-28 - and both were multiplied by nothing. A
+    // consumer audit across both repos (#164) and a re-audit before the
+    // deletion found zero readers: no route, no frontend component, no export,
+    // no admin or analytics surface, and nothing persisted. They were on the
+    // wire (POST /api/missions/calculate-price serialises this object, POST
+    // /api/pricing/quote nests it under `details`), so their removal is an API
+    // response change - a removal of two fields nobody read.
     //
-    // They are returned rather than dropped because both are on the wire
-    // today: POST /api/missions/calculate-price serialises this whole object
-    // and POST /api/pricing/quote nests it under `details`. A consumer audit
-    // on 2026-09-11 found ZERO readers in either repo, so removing them is
-    // believed safe - but that removal belongs with the product decision on
-    // whether geography should price at all, not ahead of it.
-    tier:         countryTier,                  // legacy alias = countryTier
-    countryTier,                                // informational only
+    // `countries` below is NOT one of them. It is the caller's own input
+    // echoed back, and it does not price anything either. Geography does not
+    // price. If you are about to describe geographic pricing in a deck or a
+    // rate card, that feature does not exist yet.
     volumeTier:   { id: volumeTier.id, name: volumeTier.name, anchorCount: volumeTier.anchorCount, packagePrice: volumeTier.packagePrice },
     customQuote,  // true above MAX_SELF_SERVE_RESPONDENTS (V1) or in the V2 Enterprise tier — routes block self-serve checkout
     ratePerResp,
@@ -1145,10 +1133,4 @@ module.exports = {
   isAboveSelfServeCap,
   MAX_SELF_SERVE_RESPONDENTS,
   SELF_SERVE_LEAD_CAPTURE,
-  // Country-tier (legacy, no longer affects price; retained for analytics)
-  resolveHighestTier,
-  getCountryTier,
-  TIER_RATES,
-  TIER_1,
-  TIER_2,
 };

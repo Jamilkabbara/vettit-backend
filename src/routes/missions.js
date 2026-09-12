@@ -831,7 +831,7 @@ router.post('/launch', authenticate, async (req, res, next) => {
     // neither of which knows anything about the goal.
     //
     // What that let through: a brand_lift row stored at n=5 sits below the
-    // Pulse minimum and has NO tier on the brand-lift ladder. The engine
+    // 100-respondent floor and has NO tier on the brand-lift ladder. The engine
     // silently fell back to the default ladder's cheapest rate and charged
     // $9, writing "Sniff Test" onto the stored breakdown and the Stripe
     // receipt for a study that was never priced on that ladder. Same shape

@@ -217,8 +217,65 @@ describe('the ladder anchors are pinned', () => {
   });
 
   it('brand_lift n=50 is no longer priced at all (floor moved to 100)', () => {
-    // Was [50, 99]. Pulse's anchor is below the floor, so the honest assertion
-    // is that it REFUSES, not that it costs $99.
+    // Was [50, 99]. 50 is below the floor, so the honest assertion is that it
+    // REFUSES, not that it costs $99. Pulse now anchors AT the floor instead.
     expect(() => baseFor('brand_lift', 50)).toThrow(/at least 100 respondents/);
+  });
+});
+
+// ── Pulse is buyable, and moving it moved no price ──────────────────────────
+//
+// Pulse anchored at 50 with maxCount 50, entirely below the 100-respondent
+// floor, so no count could resolve to it: a tier on the ladder that could not
+// be bought. Its anchor moved to 100. These pin both halves of that: the tier
+// now RESOLVES, and the money did not move.
+
+describe('the Pulse tier is reachable at the brand_lift floor', () => {
+  const pulse = BRAND_LIFT_TIERS.find(t => t.id === 'pulse');
+
+  it('anchors at the floor, not below it', () => {
+    expect(pulse.anchorCount).toBe(BRAND_LIFT_MIN_RESPONDENTS);
+    expect(pulse.maxCount).toBeGreaterThanOrEqual(BRAND_LIFT_MIN_RESPONDENTS);
+  });
+
+  it('a study at the floor actually lands on Pulse', () => {
+    const p = calculateMissionPrice({
+      goalType: 'brand_lift', respondentCount: BRAND_LIFT_MIN_RESPONDENTS,
+    });
+    expect(p.volumeTier.id).toBe('pulse');
+  });
+
+  it('every brand_lift tier at or above the floor is reachable by some count', () => {
+    // The defect in one sentence: a tier whose whole band sits under the floor
+    // is dead inventory. No tier on this ladder may be in that state again.
+    for (const t of BRAND_LIFT_TIERS) {
+      const n = Math.max(t.anchorCount, BRAND_LIFT_MIN_RESPONDENTS);
+      expect(calculateMissionPrice({ goalType: 'brand_lift', respondentCount: n }).volumeTier.id)
+        .toBe(t.id);
+    }
+  });
+
+  it('the Pulse band and the Tracker band meet with no gap and no overlap', () => {
+    const tracker = BRAND_LIFT_TIERS.find(t => t.id === 'tracker');
+    // Pulse owns up to its maxCount; the next count belongs to Tracker, and
+    // Tracker still owns 200. Nothing between the two is unpriced.
+    expect(calculateMissionPrice({ goalType: 'brand_lift', respondentCount: pulse.maxCount }).volumeTier.id).toBe('pulse');
+    expect(calculateMissionPrice({ goalType: 'brand_lift', respondentCount: pulse.maxCount + 1 }).volumeTier.id).toBe('tracker');
+    expect(calculateMissionPrice({ goalType: 'brand_lift', respondentCount: tracker.maxCount }).volumeTier.id).toBe('tracker');
+  });
+
+  it('the rate never rises with volume across the Pulse -> Tracker step', () => {
+    // A cheaper per-respondent rate on the SMALLER tier is the $3.50 spike the
+    // 2026-09 reprice removed from the default ladder. Pulse must not add one.
+    const tracker = BRAND_LIFT_TIERS.find(t => t.id === 'tracker');
+    expect(pulse.ratePerResp).toBeGreaterThanOrEqual(tracker.ratePerResp);
+  });
+
+  it.each([
+    [100, 150],
+    [150, 225],
+    [199, 298.5],
+  ])('n=%i still costs $%s, exactly what it cost before the move', (n, expected) => {
+    expect(baseFor('brand_lift', n)).toBe(expected);
   });
 });
