@@ -1,6 +1,6 @@
 /**
- * A brand_lift study below the Pulse minimum has NO tier on the brand-lift
- * ladder. resolveTier says so by returning null. calculateMissionPrice then
+ * A brand_lift study below the 100-respondent floor has NO tier on the
+ * brand-lift ladder. resolveTier says so by returning null. calculateMissionPrice then
  * ignored the null and repriced onto a ladder the mission does not belong to:
  *
  *   ratePerResp = tier?.ratePerResp || VOLUME_TIERS[0].ratePerResp   // $1.80
@@ -259,7 +259,7 @@ describe('positive control - legal missions still price, on their own ladder', (
     ['validate',   10,  16],     // $15.60 on the ladder, charged as a whole dollar
     ['validate',   50,  75],     // $74.50 on the ladder, charged as a whole dollar
     ['validate',   250, 299],    // repriced 2026-09; was $300
-    ['brand_lift', 100, 150],    // was [50, 99]; the floor moved and Pulse is unbuyable
+    ['brand_lift', 100, 150],    // Pulse, now anchored AT the 100 floor - same $150 it cost on Tracker
     ['brand_lift', 200, 300],    // brand_lift ladder untouched by the reprice
     ['brand_lift', 500, 600],
   ])('%s n=%i prices at $%s', (goalType, n, expected) => {

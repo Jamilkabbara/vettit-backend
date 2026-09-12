@@ -8,38 +8,20 @@
  */
 
 const pricingEngine = require('../src/utils/pricingEngine');
-const { calculateMissionPrice, resolveHighestTier, getCountryTier, extractCountriesFromMission } = pricingEngine;
-
-// ── Tier helpers ─────────────────────────────────────────────────────────────
-
-describe('getCountryTier', () => {
-  it('UAE is tier 1', () => expect(getCountryTier('AE')).toBe(1));
-  it('US is tier 1',  () => expect(getCountryTier('US')).toBe(1));
-  it('GB is tier 1',  () => expect(getCountryTier('GB')).toBe(1));
-  it('SA is tier 2',  () => expect(getCountryTier('SA')).toBe(2));
-  it('IN is tier 2',  () => expect(getCountryTier('IN')).toBe(2));
-  it('SD is tier 3',  () => expect(getCountryTier('SD')).toBe(3));
-  it('PS is tier 3',  () => expect(getCountryTier('PS')).toBe(3));
-  it('unknown code is tier 3', () => expect(getCountryTier('XX')).toBe(3));
-});
-
-describe('resolveHighestTier', () => {
-  it('empty array → tier 3 (default)',   () => expect(resolveHighestTier([])).toBe(3));
-  it('null → tier 3',                    () => expect(resolveHighestTier(null)).toBe(3));
-  it('single tier-1 country → 1',        () => expect(resolveHighestTier(['AE'])).toBe(1));
-  it('mix of tier 2+3 → 2',             () => expect(resolveHighestTier(['SA', 'PS'])).toBe(2));
-  it('mix of tier 1+3 → 1',             () => expect(resolveHighestTier(['AE', 'PS'])).toBe(1));
-  it('all tier 3 → 3',                  () => expect(resolveHighestTier(['SD', 'AF'])).toBe(3));
-});
+const { calculateMissionPrice, extractCountriesFromMission } = pricingEngine;
 
 // ── Geography does not price ─────────────────────────────────────────────────
 //
-// The engine still stamps `tier` and `countryTier` on every breakdown, and the
-// country-tier registry (TIER_1 / TIER_2 / TIER_RATES) is still exported. All
-// of it is dead: the 2026-04-28 reprice moved to a volume ladder and nothing
-// put geography back. These tests exist so the claim "VETT prices by country"
-// can never be true by accident, and so that anyone wiring geography INTO the
-// price has to delete a test that says out loud what they are changing.
+// The 2026-04-28 reprice moved to a volume ladder and nothing put geography
+// back. The country-tier registry (TIER_1 / TIER_2 / TIER_RATES) and the two
+// functions that read it were deleted on 2026-09-13 along with the `tier` and
+// `countryTier` fields they fed, after an audit across both repos found zero
+// readers of any of it.
+//
+// The fields are gone; the PROPERTY is not, and it is the part worth pinning.
+// These tests exist so the claim "VETT prices by country" can never be true by
+// accident, and so that anyone wiring geography INTO the price has to delete a
+// test that says out loud what they are changing.
 
 describe('geography does not affect price', () => {
   const base = {
@@ -56,9 +38,9 @@ describe('geography does not affect price', () => {
 
     expect(t1.totalCents).toBe(t2.totalCents);
     expect(t2.totalCents).toBe(t3.totalCents);
-    // ...and the field that names the bucket still differs, which is exactly
-    // the trap: a differing countryTier alongside an identical total.
-    expect([t1.countryTier, t2.countryTier, t3.countryTier]).toEqual([1, 2, 3]);
+    // ...down to the rate and the tier, not just the rounded total.
+    expect(t1.ratePerResp).toBe(t3.ratePerResp);
+    expect(t1.volumeTier.id).toBe(t3.volumeTier.id);
   });
 
   it('adding more countries does not change the total', () => {
@@ -74,22 +56,36 @@ describe('geography does not affect price', () => {
     const none = calculateMissionPrice({ ...base });
     const some = calculateMissionPrice({ ...base, countries: ['US'] });
     expect(none.totalCents).toBe(some.totalCents);
-    expect(none.countryTier).toBe(3);
   });
 
-  it('`tier` is nothing but an alias of `countryTier`', () => {
+  it('the breakdown carries no geography bucket at all', () => {
+    // `tier` and `countryTier` were two names for the same dead number and
+    // both are off the wire now. A reader who sees `countryTier: 1` come back
+    // is looking at a revived country-tier model, not at this engine.
     const q = calculateMissionPrice({ ...base, countries: ['GB'] });
-    expect(q.tier).toBe(q.countryTier);
-    expect(q.tier).toBe(1);
+    expect(q).not.toHaveProperty('tier');
+    expect(q).not.toHaveProperty('countryTier');
+    // `countries` is the caller's own input echoed back and stays.
+    expect(q.countries).toEqual(['GB']);
   });
 
-  it('TIER_RATES is reference data, not a rate any mission is billed at', () => {
-    // $3.50/resp x 100 was the tier-1 charge under the retired model. If this
-    // ever equals the total again, geography has been re-priced and the docs
-    // at the top of pricingEngine.js are lying.
+  it('the country-tier registry is gone from the module surface', () => {
+    // The registry outlived its own pricing model by five months because a
+    // comment claimed callers depended on it. Nothing did. If any of these
+    // come back, so has geographic pricing, and it needs its own decision.
+    for (const name of ['TIER_RATES', 'TIER_1', 'TIER_2', 'getCountryTier', 'resolveHighestTier']) {
+      expect(pricingEngine[name]).toBeUndefined();
+    }
+  });
+
+  it('the retired tier-1 rate is not what a mission is billed at', () => {
+    // $3.50/resp x 100 = $350 was the tier-1 charge under the model retired on
+    // 2026-04-28. The number is written out here rather than imported, because
+    // the object that held it no longer exists. If a US mission ever costs
+    // this again, geography has been re-priced.
     const t1 = calculateMissionPrice({ ...base, countries: ['US'] });
-    expect(t1.total).not.toBe(pricingEngine.TIER_RATES[1] * 100);
-    expect(t1.ratePerResp).not.toBe(pricingEngine.TIER_RATES[1]);
+    expect(t1.total).not.toBe(350);
+    expect(t1.ratePerResp).not.toBe(3.50);
   });
 });
 

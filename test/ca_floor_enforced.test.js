@@ -98,6 +98,11 @@ describe('positive control - legal missions still validate, with a real tier', (
     const ok = validateMissionPricing({ goalType: 'brand_lift', respondentCount: 200 });
     expect(ok.valid).toBe(true);
     expect(ok.tier.id).toBe('tracker');
+    // ...and the floor itself lands on Pulse, which is what makes Pulse
+    // buyable at all: its band is exactly the entry study.
+    const floor = validateMissionPricing({ goalType: 'brand_lift', respondentCount: 100 });
+    expect(floor.valid).toBe(true);
+    expect(floor.tier.id).toBe('pulse');
   });
 
   test('the default ladder is untouched', () => {
