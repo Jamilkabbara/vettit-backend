@@ -361,6 +361,9 @@ function creativeAttentionPrice(mediaType) {
  */
 const MIN_CHARGE_CENTS_AFTER_FLAT_DISCOUNT = 100; // $1.00
 
+/** The fraction of the LIST price a run may spend on AI. The 70% margin floor. */
+const AI_SPEND_CEILING_FRACTION = 0.30;
+
 /**
  * The flag-aware tier table for the display surfaces (GET /api/pricing/tiers).
  * Shape is reusable: each entry carries id, name, respondents, priceCents,
@@ -946,6 +949,32 @@ function roundChargeToWholeDollar(exactTotal) {
   return Math.max(1, Math.round(t));
 }
 
+/**
+ * The AI spend a mission's run is authorised to make, in USD.
+ *
+ * ONE expression, because it was five. POST /missions, POST /missions/draft,
+ * PATCH /missions/:id, create-checkout-session and free-launch each carried
+ * their own `Math.round(total * 0.30 * 10000) / 10000`, and the frontend
+ * carries a sixth copy on the client-side INSERT. Five copies of a margin
+ * floor is five places for it to drift.
+ *
+ * 30% of the LIST price is the 70% margin floor. The input is the price of
+ * the WORK, not the price the customer was charged: a free-promo mission does
+ * the same work as a paid one, so free-launch deliberately prices the ceiling
+ * off a no-promo quote (see its comment). Four decimal places because the
+ * column is numeric and a run compares ai_spend_usd_actual against it.
+ *
+ * @param {number} listTotalUsd the server-computed list price
+ * @returns {number} the ceiling, rounded to 4dp. 0 for a non-finite or
+ *          non-positive input, which runMission refuses - a missing price
+ *          must not authorise a run.
+ */
+function aiSpendCeilingUsd(listTotalUsd) {
+  const t = Number(listTotalUsd);
+  if (!Number.isFinite(t) || t <= 0) return 0;
+  return Math.round(t * AI_SPEND_CEILING_FRACTION * 10000) / 10000;
+}
+
 function round2(val) {
   return Math.round(val * 100) / 100;
 }
@@ -1122,6 +1151,8 @@ module.exports = {
   getActiveTierTable,
   formatRatePerResp,
   roundChargeToWholeDollar,
+  aiSpendCeilingUsd,
+  AI_SPEND_CEILING_FRACTION,
   EXTRA_QUESTION_PRICE_USD: EXTRA_QUESTION_PRICE,
   FREE_QUESTIONS,
   // Default-ladder helper kept for backwards compat

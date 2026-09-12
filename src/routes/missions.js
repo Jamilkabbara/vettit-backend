@@ -12,6 +12,8 @@ const {
   UnpriceableMissionError,
   MAX_SELF_SERVE_RESPONDENTS,
   SELF_SERVE_LEAD_CAPTURE,
+  aiSpendCeilingUsd,
+  resolveTier,
 } = require('../utils/pricingEngine');
 
 /**
@@ -44,6 +46,15 @@ const { resolveUsablePromo } = require('../services/promo/promoCodes');
 // straight from the row, so it needs the same server-side media_type
 // derivation the checkout route runs.
 const { verifyCreativeMediaType } = require('../services/media/creativeMediaType');
+// Phase 0 of the mission-write re-route: POST / accepts the full Setup and
+// Creative Attention payloads and DERIVES the server-owned columns from them
+// rather than echoing what the body claimed. See the module header.
+const {
+  pick,
+  deriveWaveConfig,
+  deriveMissionAssets,
+  deriveMediaType,
+} = require('../services/missions/serverDerivedColumns');
 
 // ── Generate-responses idempotency guard ──────────────────────────────
 // runMission is already triggered from /api/payments/confirm on successful
@@ -441,6 +452,115 @@ function unpriceableResponse(err) {
   };
 }
 
+/**
+ * The setup payload, column by column.
+ *
+ * Every name here is in CLIENT_PATCHABLE_COLUMNS (src/db/missionSchema.js).
+ * That is the point of the list: it is the set MissionSetupPage.tsx and
+ * CreativeAttentionPage.tsx write on their direct supabase-js INSERT today
+ * MINUS the seven the server owns, which are derived below instead of read
+ * off the body.
+ *
+ * The route maps fields explicitly rather than forwarding the body through
+ * sanitizeClientMissionPatch, because the allowlist is a CEILING and not a
+ * route contract - see the note on CLIENT_PATCHABLE_COLUMNS. A column has to
+ * appear here to be settable, so adding one is a deliberate act.
+ *
+ * Not gated by goal_type. The Setup page only SENDS a methodology's block for
+ * that methodology, and a stray churn_definition on a pricing study is inert
+ * data in a column nothing reads for that goal - whereas gating means a
+ * thirteen-branch switch that silently eats a field the day a methodology
+ * moves. The gates that matter (Coming Soon, the floors, brand_lift's markets
+ * and channels, competitor's focal brand) are all still above.
+ */
+const SETUP_PAYLOAD_COLUMNS = [
+  // ── Core definition shared by every methodology ─────────────────────────
+  'target_audience', 'country', 'screener_criteria',
+  // ── The customer's own assets ───────────────────────────────────────────
+  'creative_urls', 'brief_attachment', 'media_url', 'creative_metadata',
+  'desired_emotions', 'key_message',
+  // ── Universal inputs ────────────────────────────────────────────────────
+  'competitor_brands',
+  // ── Pricing research (Van Westendorp / Gabor-Granger) ───────────────────
+  'pricing_product_description', 'pricing_currency', 'pricing_model',
+  'pricing_context', 'pricing_expected_min', 'pricing_expected_max',
+  'pricing_methodology',
+  // ── Feature roadmap ─────────────────────────────────────────────────────
+  'roadmap_features', 'roadmap_methodology',
+  // ── Customer satisfaction ───────────────────────────────────────────────
+  'csat_touchpoint', 'csat_custom_touchpoint', 'csat_customer_type',
+  'csat_recency_window', 'csat_methodology',
+  // ── Validate product ────────────────────────────────────────────────────
+  'concept_description', 'concept_media_url', 'concept_media_type',
+  'concept_price_usd', 'concept_use_occasion', 'validate_methodology',
+  // ── Compare concepts ────────────────────────────────────────────────────
+  'concepts', 'comparison_methodology', 'rotation_strategy',
+  // ── Test marketing / ads. `campaign_channel` singular is this survey-setup
+  //    field; `campaign_channels` plural is the brand-lift PRICING input and
+  //    is server-owned. Near-identical names, different columns.
+  'creative_media_url', 'creative_media_type', 'campaign_channel',
+  'campaign_format', 'campaign_objective', 'intended_message', 'ad_methodology',
+  // ── Competitor analysis ─────────────────────────────────────────────────
+  'attribute_battery', 'competitor_methodology',
+  // ── Naming and messaging ────────────────────────────────────────────────
+  'naming_test_type', 'naming_candidates', 'naming_criteria',
+  'naming_methodology', 'brand_personality',
+  // ── Churn research ──────────────────────────────────────────────────────
+  'churn_definition', 'churn_custom_definition', 'churn_customer_type',
+  'churn_winback_possible', 'churn_methodology',
+  // ── Brand lift setup (the non-pricing half) ─────────────────────────────
+  'brand_lift_template', 'brand_lift_kpis',
+];
+
+/** pricing_expected_min -> pricingExpectedMin. */
+function snakeToCamel(name) {
+  return name.replace(/_([a-z0-9])/g, (_m, c) => c.toUpperCase());
+}
+
+/**
+ * Read every SETUP_PAYLOAD_COLUMNS field present on the body, under either
+ * spelling. Follows the `namingCandidates ?? naming_candidates` pattern
+ * already in this file: camelCase from a JS client, snake_case from an API
+ * caller, `??` so a legitimate false / 0 / '' is not lost.
+ *
+ * A key absent from the body is absent from the result, so the route never
+ * writes a column the request did not mention.
+ */
+function setupPayloadColumns(body) {
+  const out = {};
+  for (const col of SETUP_PAYLOAD_COLUMNS) {
+    const v = (body || {})[snakeToCamel(col)] ?? (body || {})[col];
+    if (v !== undefined) out[col] = v;
+  }
+  return out;
+}
+
+/**
+ * The columns the SERVER owns, which this route derives.
+ *
+ * Listed so a body that tries to set one can be LOGGED. It is never read into
+ * the insert - the log exists because a client sending these is either a stale
+ * bundle or someone probing, and both are worth seeing before Phase 1 points
+ * real traffic here.
+ */
+const DERIVED_NOT_ACCEPTED = [
+  'media_type', 'tier', 'mission_assets', 'wave_config',
+  'price_estimated', 'ai_spend_ceiling_usd', 'target_qualified_count',
+];
+
+function noteIgnoredServerOwnedFields(body, context) {
+  const seen = DERIVED_NOT_ACCEPTED.filter((c) => {
+    const b = body || {};
+    return b[snakeToCamel(c)] !== undefined || b[c] !== undefined;
+  });
+  if (seen.length) {
+    logger.warn('POST /missions: request tried to set server-owned columns; deriving them instead', {
+      ...context, ignored: seen,
+    });
+  }
+  return seen;
+}
+
 router.post('/', authenticate, async (req, res, next) => {
   try {
     const {
@@ -525,12 +645,32 @@ router.post('/', authenticate, async (req, res, next) => {
     // Unnoticed because the frontend creates missions client-side via
     // supabase-js. Now: pass targeting directly; the engine derives
     // surcharges itself.
+    // ── media_type is derived here, BEFORE the price, because it IS a price ──
+    //
+    // Creative Attention bills $19 for an image and $49 for a video and
+    // media_type picks between them. The browser writes that column on its
+    // client-side INSERT today; this route reads the first bytes of the stored
+    // creative instead, through the same module create-checkout-session and
+    // free-launch call. req.body.mediaType is not consulted, not even as a
+    // fallback - see deriveMediaType.
+    //
+    // Note this route did not pass mediaType to the engine AT ALL before, so a
+    // creative_attention mission created through the API was priced as an
+    // image whatever had been uploaded. Now a video prices as a video at
+    // create time, and an unreadable object still leaves the column NULL for
+    // checkout to fill in and re-price from.
+    const media = await deriveMediaType(supabase, {
+      goalType:        resolvedGoal,
+      briefAttachment: pick(req.body, 'briefAttachment', 'brief_attachment'),
+    });
+
     const pricing = calculateMissionPrice({
       respondentCount: respCount,
       targeting:       finalTarget,
       questionCount:   finalQs.length,
       countries:       extractCountriesFromMission({ targeting: finalTarget }),
       goalType:        resolvedGoal,
+      mediaType:       media.mediaType,
     });
 
     // Pass 27 — recompute brand_lift total with market + channel uplifts;
@@ -552,6 +692,30 @@ router.post('/', authenticate, async (req, res, next) => {
       }
       pricing.total = priceBreakdown.total_usd;
     }
+
+    // ── The rest of what the server owns ────────────────────────────────────
+    //
+    // tier: resolveTier is the ONE tier oracle. create-checkout-session stamps
+    // `validation.tier?.id` at checkout; this stamps the same expression at
+    // create, so the id on a draft and the id on the paid row come from the
+    // same function rather than from the browser's own copy of the ladder.
+    // null for an unpriceable combo, which the floors above have already
+    // refused - so in practice it is always a real tier here.
+    const resolvedTier = resolveTier({
+      goalType:        resolvedGoal,
+      respondentCount: respCount,
+      mediaType:       media.mediaType,
+    });
+
+    // mission_assets: derived from the stored objects, not from what the body
+    // said about them. The body supplies paths; storage supplies the type,
+    // size and content type, and the server composes the public URL.
+    const missionAssets = await deriveMissionAssets(supabase, { body: req.body });
+
+    // wave_config: brand_lift only, and shaped + vocabulary-checked here.
+    const waveConfig = deriveWaveConfig({ goalType: resolvedGoal, body: req.body });
+
+    noteIgnoredServerOwnedFields(req.body, { userId: req.user.id, goal_type: resolvedGoal });
 
     // Only include columns that exist in public.missions. `mission_statement`,
     // `targeting_config`, `price`, `pricing_breakdown` are all drift and
@@ -585,23 +749,50 @@ router.post('/', authenticate, async (req, res, next) => {
       // production mission 29716bfb-c958-4912-9bae-b1451150fd36
       // (both columns null, processed via legacy).
       target_qualified_count:  respCount,
-      ai_spend_ceiling_usd:    Math.round(pricing.total * 0.30 * 10000) / 10000,
+      ai_spend_ceiling_usd:    aiSpendCeilingUsd(pricing.total),
       recruitment_status:      'pending',
-      // Pass 47 — naming & messaging inputs. The create route destructured
-      // a fixed field set and silently dropped these, so missions.naming_*
-      // came through empty even when the body supplied them; the naming
-      // results page then had no id↔name map and fell back to bare
-      // candidate ids ("c1/c2/c3"). Persist them here (columns exist and
-      // are whitelisted in missionSchema.js — same pattern as csat_*).
-      // camelCase from the JS client OR snake_case from API callers.
-      ...(resolvedGoal === 'naming_messaging' ? {
-        ...((req.body.namingCandidates ?? req.body.naming_candidates) !== undefined
-          ? { naming_candidates: req.body.namingCandidates ?? req.body.naming_candidates } : {}),
-        ...((req.body.namingCriteria ?? req.body.naming_criteria) !== undefined
-          ? { naming_criteria: req.body.namingCriteria ?? req.body.naming_criteria } : {}),
-        ...((req.body.namingTestType ?? req.body.naming_test_type) !== undefined
-          ? { naming_test_type: req.body.namingTestType ?? req.body.naming_test_type } : {}),
-      } : {}),
+
+      // ── Everything the Setup page and the Creative Attention page send ───
+      //
+      // Pass 47 fixed the naming_* fields one at a time here; this is the same
+      // fix applied to the whole payload at once. The route used to destructure
+      // a fixed handful of names and silently drop the rest, which is why a
+      // mission created through the API came out missing its methodology block
+      // (empty naming candidates, no csat touchpoint, no concept description)
+      // while the same mission created through the browser did not.
+      //
+      // Placed BEFORE the server-derived block below so no client value can
+      // land on a column the server owns, whatever a future edit adds here.
+      ...setupPayloadColumns(req.body),
+
+      // ── Server-derived. Read the module header in
+      //    src/services/missions/serverDerivedColumns.js before changing any
+      //    of these: each one is a price, a spend authorisation, or a claim
+      //    about a file, and every one of them is written by the browser today.
+      //
+      // price_estimated is the server's own list price, which is what
+      // total_price_usd above already is. The browser writes a literal 99 on
+      // every non-brand-lift mission (MissionSetupPage.tsx), so the dashboard
+      // has been showing $99 for missions that cost $35 and for missions that
+      // cost $499. This makes the estimate the estimate.
+      price_estimated:         pricing.total,
+      // tier from resolveTier, the same oracle create-checkout-session uses.
+      ...(resolvedTier ? { tier: resolvedTier.id } : {}),
+      // media_type from the bytes, or NULL when the object could not be read.
+      // Never from the body.
+      ...(media.mediaType ? { media_type: media.mediaType } : {}),
+      // wave_config: brand_lift only, { mode } and nothing else.
+      ...(waveConfig ? { wave_config: waveConfig } : {}),
+      // mission_assets: always written, [] when nothing was uploaded - that is
+      // what the client insert writes and what normaliseMissionAssets expects.
+      mission_assets:          missionAssets,
+      // market_entry persists its target markets in the shared column so the
+      // per-market demand analysis can group by market (WO §3.3). Unlike
+      // brand_lift, nothing prices off the count for this goal - it is a plain
+      // list - so it is accepted the same way brand_lift's is, in the request
+      // that also computes the price.
+      ...(resolvedGoal === 'market_entry' && (req.body.targetedMarkets || req.body.targeted_markets)
+          ? { targeted_markets: req.body.targetedMarkets || req.body.targeted_markets } : {}),
 
       // The brand_required gate above (competitor) validates the focal brand,
       // but the payload never carried it - so the validated value was read,
@@ -705,7 +896,7 @@ router.post('/draft', authenticate, async (req, res, next) => {
       // recruitment loop engages regardless of which path created
       // the mission.
       target_qualified_count: respCount,
-      ai_spend_ceiling_usd:   Math.round(pricing.total * 0.30 * 10000) / 10000,
+      ai_spend_ceiling_usd:   aiSpendCeilingUsd(pricing.total),
       recruitment_status:     'pending',
     });
     if (rejected.length) logger.warn('POST /missions/draft: dropped cols', { rejected });
@@ -1075,7 +1266,7 @@ router.patch('/:id', authenticate, async (req, res, next) => {
       // target_qualified_count must equal what they paid for;
       // ai_spend_ceiling_usd must equal that price × 0.30.
       updates.target_qualified_count = respCount;
-      updates.ai_spend_ceiling_usd = Math.round(pricing.total * 0.30 * 10000) / 10000;
+      updates.ai_spend_ceiling_usd = aiSpendCeilingUsd(pricing.total);
     }
 
     // Map client field names → column names; phantom columns are dropped by
