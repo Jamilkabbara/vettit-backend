@@ -40,6 +40,10 @@ const {
 const { isComingSoon, notAvailableError } = require('../config/comingSoon');
 const logger = require('../utils/logger');
 const { resolveUsablePromo } = require('../services/promo/promoCodes');
+// POST /missions/launch is a THIRD money path: it builds a PaymentIntent
+// straight from the row, so it needs the same server-side media_type
+// derivation the checkout route runs.
+const { verifyCreativeMediaType } = require('../services/media/creativeMediaType');
 
 // ── Generate-responses idempotency guard ──────────────────────────────
 // runMission is already triggered from /api/payments/confirm on successful
@@ -840,10 +844,29 @@ router.post('/launch', authenticate, async (req, res, next) => {
     // Gate first, price second, charge third. Must stay ABOVE
     // calculateMissionPrice: the ordering is the guarantee, not the status
     // code, which is why the tests assert the Stripe mock was never called.
+    // media_type picks the Creative Attention price ($19 image / $49 video)
+    // and the browser writes it. Derive it from the stored object before this
+    // route creates a live PaymentIntent, exactly as the checkout route does -
+    // this is a money path in its own right, not a continuation of that one.
+    const mediaCheck = await verifyCreativeMediaType(supabase, mission);
+    if (mediaCheck.mismatch) {
+      logger.warn('POST /missions/launch: media_type disagrees with the stored creative', {
+        missionId, declared: mediaCheck.declared, detected: mediaCheck.derived,
+        source: mediaCheck.source, format: mediaCheck.format,
+      });
+      return res.status(400).json({
+        error: 'media_type_mismatch',
+        message: 'The creative you uploaded does not match the analysis type on this mission.',
+        declared: mediaCheck.declared,
+        detected: mediaCheck.derived,
+      });
+    }
+    const pricedMediaType = mediaCheck.checked ? mediaCheck.derived : (mission.media_type || null);
+
     const validation = validateMissionPricing({
       goalType:        mission.goal_type,
       respondentCount: mission.respondent_count,
-      mediaType:       mission.media_type,
+      mediaType:       pricedMediaType,
     });
     if (!validation.valid) {
       logger.warn('POST /missions/launch: pricing validation failed', {
@@ -870,7 +893,7 @@ router.post('/launch', authenticate, async (req, res, next) => {
       // Pass the goal so the engine picks the right ladder, matching what
       // /payments/create-checkout-session already does.
       goalType:        mission.goal_type,
-      mediaType:       mission.media_type,
+      mediaType:       pricedMediaType,
       promoCode:       promo,
     });
 

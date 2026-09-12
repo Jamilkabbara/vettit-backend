@@ -36,6 +36,9 @@ const { logPaymentError, shapeStripeError } = require('../services/paymentErrors
 // started until the 6h recovery cron).
 const { confirmCheckoutSessionPaid } = require('../services/payments/confirmCheckoutSession');
 const { isComingSoon, notAvailableError } = require('../config/comingSoon');
+// media_type is a price on Creative Attention ($19 image / $49 video) and the
+// browser writes it. This derives it from the stored object instead.
+const { verifyCreativeMediaType } = require('../services/media/creativeMediaType');
 // One authority for "may this code be used" and for spending a use of it.
 // See src/services/promo/promoCodes.js for why the increment cannot be done
 // here with a read, an addition and an un-awaited write.
@@ -124,10 +127,46 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
     // which ran it without a single floor ever being checked. Price is not the
     // only thing this validates — it is also the methodology gate — so it has
     // to run before ANY exit from this route, paid or free.
+    // ── media_type is derived from the stored creative, not from the row ─────
+    //
+    // Creative Attention charges $19 for an image and $49 for a video, and
+    // media_type is what picks between them. The browser writes that column on
+    // the client-side mission INSERT (the RLS INSERT policy blocks status and
+    // the payment columns, not this one), and until now nothing server-side
+    // ever compared it to the file. A row that says "image" over an uploaded
+    // mp4 bought the full 30-frame video analysis for the image price - the
+    // analysis pipeline branches on the attachment, not on this column, so it
+    // did the video work regardless.
+    //
+    // The block below used to look like verification and was not: it stamped
+    // `media_type: mission.media_type || null`, the row's own value copied back
+    // onto the row.
+    //
+    // Fails closed ONLY on a definite disagreement. An unreadable or
+    // unrecognised object leaves the question unanswered, and an unanswered
+    // question must not block a legitimate purchase - the run gate re-derives
+    // before any money is spent.
+    const mediaCheck = await verifyCreativeMediaType(supabase, mission);
+    if (mediaCheck.mismatch) {
+      logger.warn('Payments create-checkout-session: media_type disagrees with the stored creative', {
+        missionId, declared: mediaCheck.declared, detected: mediaCheck.derived,
+        source: mediaCheck.source, format: mediaCheck.format,
+      });
+      return res.status(400).json({
+        error: 'The creative you uploaded does not match the analysis type on this mission.',
+        reason: 'media_type_mismatch',
+        declared: mediaCheck.declared,
+        detected: mediaCheck.derived,
+      });
+    }
+    // What the price is computed from from here on. Derived when we could read
+    // the object, the row's own value when we could not.
+    const pricedMediaType = mediaCheck.checked ? mediaCheck.derived : (mission.media_type || null);
+
     const validation = validateMissionPricing({
       goalType:        mission.goal_type,
       respondentCount: mission.respondent_count,
-      mediaType:       mission.media_type,
+      mediaType:       pricedMediaType,
     });
     if (!validation.valid) {
       logger.warn('Payments create-checkout-session: pricing validation failed', {
@@ -169,7 +208,7 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
       countries,
       promoCode:       promo,
       goalType:        mission.goal_type,
-      mediaType:       mission.media_type,
+      mediaType:       pricedMediaType,
     });
 
     // PR A — fail-closed guard. An Enterprise/custom-tier mission has no
@@ -246,7 +285,11 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
       checkout_session_id:       session.id,
       latest_payment_intent_id:  session.paymentIntentId,
       tier:                      resolvedTierId,
-      media_type:                mission.media_type || null,
+      // Was `mission.media_type || null` - the row's own value written back,
+      // which verified nothing. A row whose media_type disagrees with the
+      // stored object never reaches this line now; one that is simply MISSING
+      // gets filled in from the object.
+      media_type:                mission.media_type || pricedMediaType,
       // Pass 43 T1a — recompute the authoritative recruitment-loop
       // columns at checkout. The client-side Setup insert (Pass 43 T1a
       // frontend) writes a PROVISIONAL ceiling from the pre-checkout
@@ -390,9 +433,14 @@ router.post('/free-launch', authenticate, async (req, res, next) => {
       return res.status(403).json({ error: 'Promo code is no longer valid' });
     }
 
+    // Widened from {id, status, user_id, goal_type, respondent_count,
+    // media_type}: this route now prices the mission server-side, so it needs
+    // the same inputs create-checkout-session reads (targeting, questions,
+    // target_audience) plus brief_attachment to check the creative.
     const { data: mission } = await supabase
       .from('missions')
-      .select('id, status, user_id, goal_type, respondent_count, media_type')
+      .select('id, status, user_id, goal_type, respondent_count, media_type, '
+            + 'targeting, questions, target_audience, brief_attachment')
       .eq('id', missionId)
       .eq('user_id', req.user.id)
       .single();
@@ -427,10 +475,28 @@ router.post('/free-launch', authenticate, async (req, res, next) => {
     // Placed after the status guards so the already_running short-circuit
     // stays idempotent for missions that predate the floors, and before
     // updateMission so no status flip or run can happen on a failure.
+    // The same server-side media_type derivation create-checkout-session runs.
+    // A free launch does not charge, but it does authorise the run, and the
+    // run is where the video-vs-image difference is actually spent.
+    const mediaCheck = await verifyCreativeMediaType(supabase, mission);
+    if (mediaCheck.mismatch) {
+      logger.warn('Free-launch: media_type disagrees with the stored creative', {
+        missionId, declared: mediaCheck.declared, detected: mediaCheck.derived,
+        source: mediaCheck.source, format: mediaCheck.format,
+      });
+      return res.status(400).json({
+        error: 'The creative you uploaded does not match the analysis type on this mission.',
+        reason: 'media_type_mismatch',
+        declared: mediaCheck.declared,
+        detected: mediaCheck.derived,
+      });
+    }
+    const pricedMediaType = mediaCheck.checked ? mediaCheck.derived : (mission.media_type || null);
+
     const validation = validateMissionPricing({
       goalType:        mission.goal_type,
       respondentCount: mission.respondent_count,
-      mediaType:       mission.media_type,
+      mediaType:       pricedMediaType,
     });
     if (!validation.valid) {
       logger.warn('Free-launch: pricing validation failed', {
@@ -442,6 +508,40 @@ router.post('/free-launch', authenticate, async (req, res, next) => {
         reason: validation.error,
       });
     }
+
+    // ── Price the mission server-side, twice, for two different questions ───
+    //
+    // WHAT THEY ARE CHARGED is the price with the free code applied. The
+    // engine zeroes a `free`-type promo (discount = subtotal), so this is $0,
+    // and writing it keeps the payment-covers-run gate coherent: $0 owed
+    // against $0 captured.
+    //
+    // WHAT THE RUN MAY SPEND is a fraction of the LIST price, computed with no
+    // promo. The ceiling exists to bound cost against the work, and a free
+    // mission does exactly the same work as a paid one. Deriving it from the
+    // $0 charge would set it to $0, and runMission refuses any mission whose
+    // ceiling is not positive - a free launch would never start. 30% of list
+    // is the same rule create-checkout-session and POST /missions apply.
+    const priceInputs = {
+      respondentCount: mission.respondent_count,
+      targeting:       mission.targeting || {},
+      questionCount:   (mission.questions || []).length,
+      countries:       extractCountriesFromMission(mission),
+      goalType:        mission.goal_type,
+      mediaType:       pricedMediaType,
+    };
+    const chargedPricing = calculateMissionPrice({ ...priceInputs, promoCode: promo });
+    const listPricing    = calculateMissionPrice(priceInputs);
+    const freeLaunchCeilingUsd = Math.round(listPricing.total * 0.30 * 10000) / 10000;
+
+    logger.info('Free-launch: server-computed governors', {
+      missionId,
+      target_qualified_count: mission.respondent_count,
+      ai_spend_ceiling_usd:   freeLaunchCeilingUsd,
+      list_price_usd:         listPricing.total,
+      charged_usd:            chargedPricing.total,
+      media_type_source:      mediaCheck.source,
+    });
 
     // ── Spend the use BEFORE the mission is marked paid ─────────────────────
     //
@@ -480,6 +580,36 @@ router.post('/free-launch', authenticate, async (req, res, next) => {
         status:    'paid',
         paid_at:   new Date().toISOString(),
         promo_code: promoCode.toUpperCase(),
+        // ── The two governors of the recruit loop, written by the SERVER ────
+        //
+        // This route used to write only the three lines above. Both numbers
+        // the recruit loop is governed by - how many qualified respondents to
+        // chase, and how much AI spend is allowed chasing them - were then
+        // whatever the browser put on the row at INSERT. The RLS INSERT policy
+        // blocks status, paid_at, paid_amount_cents, promo_code and
+        // ai_spend_usd_actual; it does not block these two, and `authenticated`
+        // holds INSERT on both columns.
+        //
+        // Neither live gate caught it. runMission only requires the ceiling to
+        // be a positive number, and the payment-covers-run gate prices a
+        // free-promo mission at $0 owed against $0 captured, which passes by
+        // construction.
+        //
+        // The pass-51 trigger cannot cover this either: it fires ON UPDATE OF
+        // respondent_count, total_price_usd, and its ceiling branch only
+        // recomputes when the new price is above zero - which a free launch's
+        // never is. So these are written here explicitly rather than left to
+        // the database.
+        target_qualified_count: mission.respondent_count,
+        ai_spend_ceiling_usd:   freeLaunchCeilingUsd,
+        recruitment_status:     'pending',
+        // What the customer was actually charged. Zero, and recorded as zero
+        // rather than left holding a client-written estimate.
+        total_price_usd:        chargedPricing.total,
+        base_cost_usd:          chargedPricing.baseCost,
+        targeting_surcharge_usd:  chargedPricing.targetingSurcharge,
+        extra_questions_cost_usd: chargedPricing.extraQuestionsCost,
+        discount_usd:           chargedPricing.discount,
       }, { caller: 'POST /payments/free-launch' });
     } catch (err) {
       // The mission did not become paid, so the customer did not get the
