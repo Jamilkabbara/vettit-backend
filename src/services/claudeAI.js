@@ -241,7 +241,7 @@ JSON structure required:
     "recommendedGenders": [],
     "reasoning": "Brief explanation"
   },
-  "suggestedRespondentCount": 50
+  "suggestedRespondentCount": 100
 }
 
 Hard rules:
@@ -269,7 +269,7 @@ Hard rules:
     creative_effectiveness     → 10-12; emphasise message_association, brand_favorability, ad_recall
     multi_market_comparison    → 10-12; mirror the funnel_overview but flag stages that are best compared cross-market
 - Country codes: AE (UAE), US (USA), GB (UK), SA (Saudi Arabia), IN (India), AU (Australia), DE (Germany), FR (France), JP (Japan), BR (Brazil).
-- suggestedRespondentCount default 50 (Pulse tier). Escalate to 200 (Tracker) only when the brief explicitly asks for sub-segment statistical comparison.
+- suggestedRespondentCount default 100 (Pulse tier, and the hard brand-lift floor - a smaller study is refused by the engine and by a CHECK constraint on missions, so 50 is never a legal answer). Escalate to 200 (Tracker) only when the brief explicitly asks for sub-segment statistical comparison.
 - NEVER include any of {category, recommendedCountries.cities, suggestedTargeting.behaviors} unless the brief explicitly requires them.
 
 This is a brand-lift instrument. Funnel stage metadata, lift flags, and channel grounding are not optional; downstream results, exports, and benchmarks depend on them.`;
