@@ -17,3 +17,9 @@ vett-ops/
 # poisons the jest baseline in the main checkout (it reports ~1151 instead of
 # the real count), so keep them out of the index entirely.
 .claude/worktrees/
+
+# Live audit-run output. scripts/AUDIT-PASS-RUNBOOK.md suggests OUT=~/vett-audit-out,
+# but a run started from the repo root drops 56 MB of PNG/PDF/PPTX/XLSX here and it
+# is not gitignored, so every git status shows it and a `git add -A` would commit it.
+# The 2026-07-02 run was archived to ~/vett-audit-archive-2026-07-02.tar.gz and removed.
+vett-audit-out*/
