@@ -27,6 +27,7 @@ const {
   validateMissionPricing,
   MAX_SELF_SERVE_RESPONDENTS,
   SELF_SERVE_LEAD_CAPTURE,
+  aiSpendCeilingUsd,
 } = require('../utils/pricingEngine');
 const { runMission } = require('../jobs/runMission');
 const { updateMission } = require('../db/missionSchema');
@@ -300,7 +301,7 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
       // a mission that came through the client insert path with a NULL
       // or stale ceiling silently bypasses the recruitment loop.
       target_qualified_count:    mission.respondent_count,
-      ai_spend_ceiling_usd:      Math.round(pricing.total * 0.30 * 10000) / 10000,
+      ai_spend_ceiling_usd:      aiSpendCeilingUsd(pricing.total),
       recruitment_status:        'pending',
     }, { caller: 'POST /payments/create-checkout-session' });
 
@@ -532,7 +533,7 @@ router.post('/free-launch', authenticate, async (req, res, next) => {
     };
     const chargedPricing = calculateMissionPrice({ ...priceInputs, promoCode: promo });
     const listPricing    = calculateMissionPrice(priceInputs);
-    const freeLaunchCeilingUsd = Math.round(listPricing.total * 0.30 * 10000) / 10000;
+    const freeLaunchCeilingUsd = aiSpendCeilingUsd(listPricing.total);
 
     logger.info('Free-launch: server-computed governors', {
       missionId,
