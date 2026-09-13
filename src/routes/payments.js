@@ -28,6 +28,7 @@ const {
   MAX_SELF_SERVE_RESPONDENTS,
   SELF_SERVE_LEAD_CAPTURE,
   aiSpendCeilingUsd,
+  listPriceUsd,
 } = require('../utils/pricingEngine');
 const { runMission } = require('../jobs/runMission');
 const { updateMission } = require('../db/missionSchema');
@@ -291,17 +292,26 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
       // stored object never reaches this line now; one that is simply MISSING
       // gets filled in from the object.
       media_type:                mission.media_type || pricedMediaType,
-      // Pass 43 T1a — recompute the authoritative recruitment-loop
+      // Pass 43 T1a - recompute the authoritative recruitment-loop
       // columns at checkout. The client-side Setup insert (Pass 43 T1a
       // frontend) writes a PROVISIONAL ceiling from the pre-checkout
       // price estimate; this is the first point we know the final
-      // total_price_usd (after promo / targeting / extra-Q surcharges),
-      // so we recompute. target_qualified_count == respondent_count.
-      // ceiling = 30% of final price (70% margin floor). Without this
-      // a mission that came through the client insert path with a NULL
-      // or stale ceiling silently bypasses the recruitment loop.
+      // surcharges, so we recompute. target_qualified_count ==
+      // respondent_count. Without this a mission that came through the
+      // client insert path with a NULL or stale ceiling silently
+      // bypasses the recruitment loop.
+      //
+      // THE BASIS IS THE LIST PRICE, NOT THE CHARGE. This line used to read
+      // `aiSpendCeilingUsd(pricing.total)`, and `pricing` here is the
+      // POST-PROMO quote - the one that pays Stripe. So a mission bought with
+      // a 50%-off code got half the compute budget of an identical full-price
+      // mission, for identical work: same respondent count, same recruit loop,
+      // same model calls. The ceiling governs compute, not revenue, so it does
+      // not move with a discount. Handing aiSpendCeilingUsd the whole
+      // breakdown makes it read `subtotal` (pre-discount) for itself, which is
+      // also what free-launch and POST /missions do.
       target_qualified_count:    mission.respondent_count,
-      ai_spend_ceiling_usd:      aiSpendCeilingUsd(pricing.total),
+      ai_spend_ceiling_usd:      aiSpendCeilingUsd(pricing),
       recruitment_status:        'pending',
     }, { caller: 'POST /payments/create-checkout-session' });
 
@@ -517,12 +527,18 @@ router.post('/free-launch', authenticate, async (req, res, next) => {
     // and writing it keeps the payment-covers-run gate coherent: $0 owed
     // against $0 captured.
     //
-    // WHAT THE RUN MAY SPEND is a fraction of the LIST price, computed with no
-    // promo. The ceiling exists to bound cost against the work, and a free
-    // mission does exactly the same work as a paid one. Deriving it from the
-    // $0 charge would set it to $0, and runMission refuses any mission whose
-    // ceiling is not positive - a free launch would never start. 30% of list
-    // is the same rule create-checkout-session and POST /missions apply.
+    // WHAT THE RUN MAY SPEND is a fraction of the LIST price. The ceiling
+    // exists to bound cost against the work, and a free mission does exactly
+    // the same work as a paid one. Deriving it from the $0 charge would set it
+    // to $0, and runMission refuses any mission whose ceiling is not positive -
+    // a free launch would never start. 30% of list is the same rule
+    // create-checkout-session and POST /missions apply.
+    //
+    // This used to price the mission TWICE, once with the promo and once
+    // without, to get at the list number. It does not need to: `subtotal` on a
+    // breakdown is pre-discount by construction, so one quote carries both
+    // answers and aiSpendCeilingUsd reads the list one off the object. Two
+    // calls meant two sets of inputs that could drift apart; there is now one.
     const priceInputs = {
       respondentCount: mission.respondent_count,
       targeting:       mission.targeting || {},
@@ -532,14 +548,13 @@ router.post('/free-launch', authenticate, async (req, res, next) => {
       mediaType:       pricedMediaType,
     };
     const chargedPricing = calculateMissionPrice({ ...priceInputs, promoCode: promo });
-    const listPricing    = calculateMissionPrice(priceInputs);
-    const freeLaunchCeilingUsd = aiSpendCeilingUsd(listPricing.total);
+    const freeLaunchCeilingUsd = aiSpendCeilingUsd(chargedPricing);
 
     logger.info('Free-launch: server-computed governors', {
       missionId,
       target_qualified_count: mission.respondent_count,
       ai_spend_ceiling_usd:   freeLaunchCeilingUsd,
-      list_price_usd:         listPricing.total,
+      list_price_usd:         listPriceUsd(chargedPricing),
       charged_usd:            chargedPricing.total,
       media_type_source:      mediaCheck.source,
     });
