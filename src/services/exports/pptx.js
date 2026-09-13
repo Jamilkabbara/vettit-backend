@@ -29,6 +29,8 @@
  */
 
 const PptxGenJS = require('pptxgenjs');
+// Placement and market, worded once for every export.
+const { caTargetingView } = require('../creativeAttention/targetingView');
 const { BRAND, METHODOLOGY_URL } = require('./shared');
 const { buildCanonicalReport } = require('../report/buildReport');
 const { buildRenderModel } = require('../report/reportRenderModel');
@@ -576,6 +578,82 @@ function buildPPTX(pack, res) {
     const caSum = caData.summary || {};
     const frames = Array.isArray(caData.frame_analyses) ? caData.frame_analyses : [];
     const attn = caData.attention && typeof caData.attention === 'object' ? caData.attention : null;
+
+    // Slide: PLACEMENT AND MARKET - what this run was measured against. Only
+    // for runs that chose a placement or market, so older decks are
+    // unchanged. Lowest element ends by 6.95, clear of the 7.15 footer.
+    const targeting = caTargetingView(caData);
+    if (targeting) {
+      const slide = pptx.addSlide();
+      addDarkBackground(slide);
+      addSectionHeader(slide, '· PLACEMENT AND MARKET', 'What this creative was measured against');
+      let y = 1.65;
+
+      if (targeting.placement) {
+        slide.addText('PLACEMENT', {
+          x: 0.5, y, w: 12.3, h: 0.24,
+          fontSize: 10, bold: true, color: hex(BRAND.text3), fontFace: FONT, charSpacing: 2,
+        });
+        slide.addText(targeting.placement.label, {
+          x: 0.5, y: y + 0.26, w: 12.3, h: 0.5,
+          fontSize: 24, bold: true, color: hex(BRAND.lime), fontFace: FONT,
+        });
+        y += 0.9;
+        const cards = [
+          ['Published norm', targeting.placement.normLabel],
+          ['Predicted', targeting.placement.predictedLabel],
+          ['Versus norm', targeting.placement.deltaLabel],
+        ];
+        const gapX = 0.25;
+        const cardW = (12.3 - gapX * (cards.length - 1)) / cards.length;
+        cards.forEach(([label, value], i) => {
+          statCard(slide, 0.5 + i * (cardW + gapX), y, cardW, 1.5, label, value);
+        });
+        y += 1.7;
+        slide.addText(targeting.placement.sentence, {
+          x: 0.5, y, w: 12.3, h: 0.6,
+          fontSize: 13, color: hex(BRAND.text1), fontFace: FONT, valign: 'top',
+        });
+        y += 0.8;
+      }
+
+      if (targeting.market) {
+        slide.addText(`MARKET: ${targeting.market.name.toUpperCase()}`, {
+          x: 0.5, y, w: 12.3, h: 0.28,
+          fontSize: 10, bold: true, color: hex(BRAND.lime), fontFace: FONT, charSpacing: 2,
+        });
+        y += 0.32;
+        slide.addText('Qualitative only. The market does not change any score, prediction or benchmark.', {
+          x: 0.5, y, w: 12.3, h: 0.26,
+          fontSize: 10, italic: true, color: hex(BRAND.text3), fontFace: FONT,
+        });
+        y += 0.36;
+        slide.addText(targeting.marketNotesUnavailable
+          ? 'Market notes are not available for this run.'
+          : 'Market notes follow on the next slide.', {
+          x: 0.5, y, w: 12.3, h: 0.3,
+          fontSize: 12, color: hex(BRAND.text2), fontFace: FONT,
+        });
+      }
+    }
+
+    // Slide: MARKET NOTES - on their own slide so up to nine notes never run
+    // into the footer. Content box spans 1.65 to 6.95.
+    if (targeting && targeting.market && targeting.marketNoteSections.length) {
+      const slide = pptx.addSlide();
+      addDarkBackground(slide);
+      addSectionHeader(slide, `· MARKET NOTES: ${targeting.market.name.toUpperCase()}`, 'How this creative reads in the market');
+      const runs = [];
+      for (const sec of targeting.marketNoteSections) {
+        runs.push({ text: sec.heading, options: { fontSize: 13, bold: true, color: hex(BRAND.text2), breakLine: true, paraSpaceBefore: 6 } });
+        for (const item of sec.items) {
+          // Same bullet glyph and colour the deck's other lists use.
+          runs.push({ text: item, options: { fontSize: 13, color: hex(BRAND.text1), bullet: { code: '25CF' }, paraSpaceAfter: 4, breakLine: true } });
+        }
+      }
+      runs.push({ text: 'Qualitative only. The market does not change any score, prediction or benchmark.', options: { fontSize: 10, italic: true, color: hex(BRAND.text3), paraSpaceBefore: 10 } });
+      slide.addText(runs, { x: 0.5, y: 1.65, w: 12.3, h: 5.3, fontFace: FONT, valign: 'top', fit: 'shrink' });
+    }
 
     // Slide: ATTENTION — stat cards + active/passive/non split + decay curve.
     // Every element is a native shape (no addChart), and the lowest element

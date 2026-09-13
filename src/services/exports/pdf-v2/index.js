@@ -34,6 +34,8 @@ const { METHODOLOGY_URL } = require('../shared');
 // legacy strings (every mission run before the spatial schema shipped) or an
 // array of {label,x,y,w,h,weight} objects. One helper, three surfaces.
 const { normalizeHotspots } = require('../../../utils/creativeHotspots');
+// Placement and market, worded once for every export.
+const { caTargetingView } = require('../../creativeAttention/targetingView');
 
 /* ─── Template + CSS loading (once per process) ─────────────────────────── */
 
@@ -168,6 +170,9 @@ function buildViewModel(pack) {
     // bars) and the normalized hotspot boxes. Both read the DASH-SANITIZED
     // analysis so the CA extras inherit the no-dash rule the same way `ca` does.
     ...buildCaViewExtras(caSanitized),
+    // What this run was measured against. null for analyses that predate
+    // placement and market, so their PDFs render exactly as before.
+    caTargeting: caTargetingView(caSanitized),
     media_url: mission?.media_url || null,
     brand_name: sanitizeDashesString(mission?.brand_name) || null,
 
