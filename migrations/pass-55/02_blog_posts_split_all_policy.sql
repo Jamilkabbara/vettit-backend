@@ -38,10 +38,11 @@
 -- keeps `published = true`, because that is what it is for. The three write
 -- predicates drop it and require ownership or admin on BOTH sides.
 --
--- INSERT deliberately keeps today's rule (any authenticated user may create a
--- post they own) rather than tightening to admin-only. That is a product
--- decision, not a security one, and this migration changes only what is
--- exploitable. Flagged for the owner as a separate question.
+-- INSERT is STAFF ONLY, per the owner's decision of 2026-09-13. Today any
+-- authenticated user can create a blog post; the probe confirmed it live
+-- ("INSERT a new post as a non-staff signed-in user -> row created"). The blog
+-- is a marketing surface, so authorship belongs to staff. is_admin_user() is
+-- the same predicate the rest of this table already trusts.
 --
 -- Postgres ORs permissive policies, so the old policy MUST be dropped in the
 -- same transaction, not merely joined by stricter siblings.
@@ -77,13 +78,11 @@ CREATE POLICY blog_posts_auth_select ON public.blog_posts
     OR is_admin_user((SELECT auth.uid()))
   );
 
--- CREATE. Same rule the old WITH CHECK enforced.
+-- CREATE. Staff only. The old WITH CHECK also allowed `author_id = auth.uid()`,
+-- which let any signed-in account publish to the company blog.
 CREATE POLICY blog_posts_auth_insert ON public.blog_posts
   FOR INSERT TO authenticated
-  WITH CHECK (
-    author_id = (SELECT auth.uid())
-    OR is_admin_user((SELECT auth.uid()))
-  );
+  WITH CHECK (is_admin_user((SELECT auth.uid())));
 
 -- EDIT. `published` is gone from both sides: reaching the row now requires
 -- owning it, and the row may not be reassigned to someone else on the way out.
