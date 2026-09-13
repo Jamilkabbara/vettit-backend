@@ -1,6 +1,17 @@
 -- Pass 55 - increment_mission_ai_spend is executable by any signed-in user.
 --
--- NOT APPLIED. Held for owner approval.
+-- APPLIED 2026-09-13 as pass_55_revoke_increment_mission_ai_spend_from_authenticated.
+--   proacl before: {postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}
+--   proacl after:  {postgres=X/postgres,service_role=X/postgres}
+--   which is now byte-identical to increment_mission_ai_cost.
+--
+-- PROVED IT COULD FAIL FIRST. A throwaway account (role=authenticated, token
+-- never printed) called the RPC against a throwaway mission it did not own:
+--   before: ai_spend_usd_actual 0 -> 99.99, no error
+--   after:  ai_spend_usd_actual 102.45 -> 102.45, 42501 permission denied
+-- Positive control, both runs: the backend's own service_role call still moved
+-- the column. Fixtures and both throwaway accounts removed afterwards, residue
+-- verified zero.
 --
 -- WHAT IS TRUE ON PRODUCTION RIGHT NOW
 --   SELECT proacl FROM pg_proc WHERE proname = 'increment_mission_ai_spend';

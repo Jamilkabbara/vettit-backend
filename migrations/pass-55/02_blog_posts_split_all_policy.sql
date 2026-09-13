@@ -1,6 +1,20 @@
 -- Pass 55 - any signed-in user can delete or rewrite every published blog post.
 --
--- NOT APPLIED. Held for owner approval.
+-- APPLIED 2026-09-13 as pass_55_blog_posts_split_all_policy.
+--
+-- PROVED IT COULD FAIL FIRST, against production, from a throwaway account
+-- that owned neither the post nor anything else:
+--   DELETE a published post it did not own  -> before: ROW DELETED
+--                                              after:  row survived
+--   UPDATE it, reassigning author_id to self-> before: BODY REWRITTEN, author
+--                                                      reassigned
+--                                              after:  body intact
+--   INSERT a post as a non-staff user       -> before: row created
+--                                              after:  42501 RLS violation
+-- Positive controls, every run: anon still reads published posts, a signed-in
+-- user still reads the post, and the post's OWN author can still edit it.
+-- The throwaway post was restored between probes and deleted at the end; the
+-- 3 real published posts were never touched.
 --
 -- WHAT IS TRUE ON PRODUCTION RIGHT NOW
 --   policyname : blog_posts_authenticated_full
