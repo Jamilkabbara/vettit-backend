@@ -1,12 +1,33 @@
 -- Pass 54 - ensure_recruitment_columns(): stop deriving the AI spend ceiling
 -- from the POST-PROMO total, and stop clobbering the value the writer sent.
 --
--- ⚠️  NOT APPLIED. This file ships with the code change that needs it and has
---     deliberately NOT been run against any database. Until it is applied the
---     application-layer fix in this PR is INERT on every path that writes
---     total_price_usd in the same statement, because this trigger overwrites
---     the ceiling after the route has set it. See "WHY THE APP FIX IS NOT
---     ENOUGH" below.
+-- APPLIED 2026-09-13 to hxuhqtczdzmiujrdcrta as migration
+--     pass_54_ensure_recruitment_columns_list_price_basis.
+--     prosrc md5 before: 87d9af04d2ebcdc7d25dec791057e969
+--     prosrc md5 after:  d243ddfe8389917710559f21a85cb2d0
+--
+--     Dry run: the function was exercised in an isolated schema
+--     (vett_pass54_probe, since dropped) on a table carrying the same
+--     columns, with the trigger attached first to the OLD function and then
+--     to the NEW one. No production row was read or written by the proof.
+--     Under the old function a route write of ai_spend_ceiling_usd=22.5000
+--     alongside total_price_usd=37, discount_usd=38 landed as 11.1000 - the
+--     clobber described below, reproduced. Under the new function the same
+--     statement landed as 22.5000, as did the no-ceiling UPDATE, the INSERT
+--     branch, and a 50%-off CA n=10 case (14.7000). Control: an UPDATE of
+--     respondent_count alone still resized target_qualified_count (50 -> 300)
+--     and left the ceiling untouched.
+--
+--     Live check on deployed backend 5836edb, POST /api/missions/pricing/
+--     calculate, goalType=validate respondentCount=50: with no promo and with
+--     LAUNCH50 both return subtotal 74.50 (ceiling basis 22.3500) while total
+--     differs, 75 vs 37. Discounted and full-price missions of the same size
+--     now get the same ceiling.
+--
+--     Until it was applied the application-layer fix in #171 was INERT on
+--     every path that writes total_price_usd in the same statement, because
+--     this trigger overwrote the ceiling after the route had set it. See
+--     "WHY THE APP FIX IS NOT ENOUGH" below.
 --
 -- THE DEFECT
 -- migrations/pass-51/02 fixed the trigger's UPDATE branch so that it actually
