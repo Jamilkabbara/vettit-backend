@@ -25,6 +25,7 @@
 require('dotenv').config();
 
 const { createClient } = require('@supabase/supabase-js');
+const fetchAllResponses = require('../src/db/fetchAllResponses');
 
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
   console.error('❌ SUPABASE_URL and SUPABASE_SERVICE_KEY must be set.');
@@ -79,10 +80,15 @@ function needsBackfill(m) {
   for (const m of candidates) {
     // Pull all mission_responses for this mission, retrieving both the column
     // and the persona_profile fallback so the rule matches runMission.js.
-    const { data: responses, error: respErr } = await supabase
-      .from('mission_responses')
-      .select('persona_id, persona_profile, screened_out')
-      .eq('mission_id', m.id);
+    // PAGED. This script WRITES the qualification counts it derives here, so
+    // a read that silently stops at PostgREST's 1000-row cap would persist a
+    // wrong count. On mission 10ecb820 (4,320 rows) the unbounded read saw 56
+    // of 240 personas.
+    const { data: responses, error: respErr } = await fetchAllResponses(supabase, {
+      missionId: m.id,
+      columns:   'persona_id, persona_profile, screened_out',
+      label:     'backfillQualificationCounts',
+    });
     if (respErr) {
       console.error(`  [skip] ${m.id} — failed to load responses:`, respErr.message);
       continue;

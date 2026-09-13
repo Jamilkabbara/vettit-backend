@@ -22,6 +22,7 @@
 require('dotenv').config();
 
 const { createClient } = require('@supabase/supabase-js');
+const fetchAllResponses = require('../src/db/fetchAllResponses');
 const { synthesizeInsights } = require('../src/services/ai/insights');
 
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
@@ -100,10 +101,14 @@ function needsBackfill(mission) {
     process.stdout.write(`  Processing ${mission.id.slice(0, 8)} — "${(mission.title || '').slice(0, 50)}"… `);
 
     try {
-      const { data: responses, error: rErr } = await supabase
-        .from('mission_responses')
-        .select('persona_id, persona_profile, question_id, answer, screened_out')
-        .eq('mission_id', mission.id);
+      // PAGED. synthesizeInsights writes its result back to the mission, so a
+      // capped read would persist insights computed from the first 1000 answer
+      // rows only.
+      const { data: responses, error: rErr } = await fetchAllResponses(supabase, {
+        missionId: mission.id,
+        columns:   'persona_id, persona_profile, question_id, answer, screened_out',
+        label:     'backfillAllInsights',
+      });
 
       if (rErr) throw rErr;
       if (!responses || responses.length === 0) {

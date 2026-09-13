@@ -28,6 +28,7 @@ const fs = require('fs');
 const path = require('path');
 const { PassThrough } = require('stream');
 const { createClient } = require('@supabase/supabase-js');
+const fetchAllResponses = require('../src/db/fetchAllResponses');
 const JSZip = require('jszip');
 const { buildPDF } = require('../src/services/exports/pdf-v2');
 const { buildPPTX } = require('../src/services/exports/pptx');
@@ -283,7 +284,14 @@ async function processPack(m, resp, tag, outDir) {
       if (!base) { const { data: any } = await db.from('missions').select('*').eq('status', 'completed').limit(1); base = (any || [])[0]; }
     }
     if (!base) { console.error('no completed base mission found for ugly mode'); process.exit(1); }
-    const { data: resp } = await db.from('mission_responses').select('*').eq('mission_id', base.id).limit(6000);
+    // PAGED. This was `.limit(6000)`, which does NOTHING: PostgREST caps an
+    // unbounded select at 1000 rows and a limit above the cap cannot lift it.
+    // The harness judges export correctness off these rows, so a capped read
+    // meant every fixture past ~55 respondents was graded on a fraction of the
+    // study.
+    const { data: resp } = await fetchAllResponses(db, {
+      missionId: base.id, columns: '*', label: 'export-acceptance-harness:ugly-base',
+    });
     const baseClean = (resp || []).filter((x) => x && x.screened_out !== true);
     const nBase = new Set(baseClean.map((x) => x.persona_id).filter(Boolean)).size || '?';
     console.log(`ugly base: ${base.goal_type} ${base.id.slice(0, 8)} (n=${nBase}, ${baseClean.length} answers)\n`);
@@ -307,7 +315,10 @@ async function processPack(m, resp, tag, outDir) {
   for (const f of fixtures) {
     let resp = f.responses;
     if (resp === null || resp === undefined) {
-      const { data } = await db.from('mission_responses').select('*').eq('mission_id', f.mission.id).limit(6000);
+      // PAGED, same reason as the ugly-base read above.
+      const { data } = await fetchAllResponses(db, {
+        missionId: f.mission.id, columns: '*', label: 'export-acceptance-harness:fixture',
+      });
       resp = data || [];
     }
     const r = await processPack(f.mission, resp, f.tag, outDir);

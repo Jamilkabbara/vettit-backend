@@ -16,6 +16,7 @@
 require('dotenv').config();
 
 const { createClient } = require('@supabase/supabase-js');
+const fetchAllResponses = require('../src/db/fetchAllResponses');
 const { generateTargetingBrief } = require('../src/services/ai/targetingBrief');
 
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
@@ -72,11 +73,15 @@ const LIMIT  = parseInt(process.env.LIMIT || '0', 10); // 0 = unlimited
     process.stdout.write(`  Processing ${mission.id.slice(0, 8)} — "${(mission.title || '').slice(0, 50)}"… `);
 
     try {
-      // Fetch response persona profiles
-      const { data: responses } = await supabase
-        .from('mission_responses')
-        .select('persona_profile')
-        .eq('mission_id', mission.id);
+      // Fetch response persona profiles. PAGED: an unbounded select stops at
+      // PostgREST's 1000-row cap without erroring, so the brief this script
+      // writes would be derived from a fraction of the personas on any mission
+      // past ~55 respondents.
+      const { data: responses } = await fetchAllResponses(supabase, {
+        missionId: mission.id,
+        columns:   'persona_profile',
+        label:     'backfillTargetingBriefs',
+      });
 
       const brief = await generateTargetingBrief({
         mission,

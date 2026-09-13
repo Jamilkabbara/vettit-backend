@@ -38,6 +38,7 @@ const path = require('path');
 const { PassThrough } = require('stream');
 const supabase = require('../src/db/supabase');
 const fetchAllRows = require('../src/db/fetchAllRows');
+const fetchAllResponses = require('../src/db/fetchAllResponses');
 const ai = require('../src/services/claudeAI');
 const { runMission } = require('../src/jobs/runMission');
 const { sanitizeMissionPatch } = require('../src/db/missionSchema');
@@ -264,7 +265,12 @@ async function runOne(goal, opts, outDir, ownerId) {
   try { await runMission(missionId); } catch (e) { threw = e.message; }
 
   const { data: m } = await supabase.from('missions').select('*').eq('id', missionId).single();
-  const { data: respRows } = await supabase.from('mission_responses').select('persona_id, screened_out').eq('mission_id', missionId).limit(20000);
+  // PAGED. `.limit(20000)` did nothing - a limit above PostgREST's 1000-row
+  // cap cannot lift it - so the delivered-persona count this check reports was
+  // capped at whatever fitted in 1000 rows.
+  const { data: respRows } = await fetchAllResponses(supabase, {
+    missionId, columns: 'persona_id, screened_out', label: 'test-run-all-types:delivered',
+  });
   const clean = (respRows || []).filter((r) => r && r.screened_out !== true);
   const delivered = new Set(clean.map((r) => r.persona_id).filter(Boolean)).size || clean.length;
 
@@ -275,7 +281,11 @@ async function runOne(goal, opts, outDir, ownerId) {
   console.log(`  [3/4] pipeline: status=${c1.status}${threw ? ` THREW: ${threw}` : ''} · personas ${delivered}/${N} · analysis ${c4.populated ? 'OK' : 'GAPS: ' + c4.issues.join('; ')}`);
 
   console.log('  [4/4] rendering exports off fresh data…');
-  const { data: fullResp } = await supabase.from('mission_responses').select('*').eq('mission_id', missionId).limit(20000);
+  // PAGED, same reason. Exports rendered off a capped read would pass the
+  // acceptance check while being wrong.
+  const { data: fullResp } = await fetchAllResponses(supabase, {
+    missionId, columns: '*', label: 'test-run-all-types:exports',
+  });
   const c5 = await renderExports({ mission: m, responses: (fullResp || []).filter((r) => r && r.screened_out !== true) }, outDir, `${goal}_${missionId.slice(0, 8)}`);
   console.log(`        exports: ${c5.allClean ? 'all clean' : 'ISSUE ' + ['pdf', 'pptx', 'xlsx'].filter((k) => c5[`${k}Err`]).map((k) => `${k}:${c5[`${k}Err`]}`).join(' ')}`);
 
