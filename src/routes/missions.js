@@ -690,7 +690,15 @@ router.post('/', authenticate, async (req, res, next) => {
           frontend: req.body.totalPriceUsd, server: priceBreakdown.total_usd,
         });
       }
+      // Keep the breakdown internally coherent, not just its `total`.
+      // `subtotal` is the pre-discount figure, and it is what aiSpendCeilingUsd
+      // reads as the list basis; leaving it on the default-ladder number while
+      // `total` moved to the brand-lift one would price the spend ceiling off a
+      // total this mission is not sold at. No promo is applied on this route,
+      // so list and charge are the same number here and both get it.
       pricing.total = priceBreakdown.total_usd;
+      pricing.subtotal = priceBreakdown.total_usd;
+      pricing.totalCents = Math.round(priceBreakdown.total_usd * 100);
     }
 
     // ── The rest of what the server owns ────────────────────────────────────
@@ -742,14 +750,19 @@ router.post('/', authenticate, async (req, res, next) => {
       // Pass 42 A.1 — populate recruitment loop columns at insert.
       // target_qualified_count == respondent_count (semantic rename:
       // what the customer paid for is qualified completes).
-      // ai_spend_ceiling_usd = total_price * 0.30 (70% margin floor).
+      // ai_spend_ceiling_usd = LIST price x 0.30 (70% margin floor). The
+      // whole breakdown is handed over rather than `pricing.total` so the
+      // helper reads the pre-discount `subtotal` itself - the basis is the
+      // price of the work, and a discount must not shrink the compute budget.
+      // No promo is applied on this route, so the two were equal here anyway;
+      // passing the object keeps every writer on one visibly identical call.
       // Without these the recruitLoop gate (shouldUseRecruitLoop)
       // returns false on every new mission and the legacy batch
       // flow runs — Track A code path becomes dead. Verified on
       // production mission 29716bfb-c958-4912-9bae-b1451150fd36
       // (both columns null, processed via legacy).
       target_qualified_count:  respCount,
-      ai_spend_ceiling_usd:    aiSpendCeilingUsd(pricing.total),
+      ai_spend_ceiling_usd:    aiSpendCeilingUsd(pricing),
       recruitment_status:      'pending',
 
       // ── Everything the Setup page and the Creative Attention page send ───
@@ -896,7 +909,7 @@ router.post('/draft', authenticate, async (req, res, next) => {
       // recruitment loop engages regardless of which path created
       // the mission.
       target_qualified_count: respCount,
-      ai_spend_ceiling_usd:   aiSpendCeilingUsd(pricing.total),
+      ai_spend_ceiling_usd:   aiSpendCeilingUsd(pricing),
       recruitment_status:     'pending',
     });
     if (rejected.length) logger.warn('POST /missions/draft: dropped cols', { rejected });
@@ -1133,6 +1146,27 @@ router.post('/launch', authenticate, async (req, res, next) => {
       promo_code: promo?.code || null,
       discount_usd: pricing.discount,
       status: 'pending_payment',
+      // The two recruit-loop governors, written here for the same reason
+      // create-checkout-session writes them: this route is a money door in its
+      // own right - it creates the PaymentIntent directly - and it is the point
+      // at which the final surcharges are known.
+      //
+      // It wrote NEITHER before. It does write total_price_usd, which is a
+      // column the pass-51 `ensure_recruitment_columns` trigger fires on, so
+      // the ceiling on a mission bought through this door has been coming from
+      // that trigger: ROUND(total_price_usd * 0.30, 4), off the POST-PROMO
+      // total. Same halved-compute-budget bug as the checkout route had, one
+      // layer down and invisible from the application code.
+      //
+      // NOTE, and it is the reason this PR ships a migration: the trigger's
+      // UPDATE branch assigns unconditionally, so until
+      // migrations/pass-52/01 is applied the value below is computed, sent,
+      // and then overwritten by the database with the post-promo figure. The
+      // line is correct now so that applying the migration is the only
+      // remaining step, not a second code change.
+      target_qualified_count: mission.respondent_count,
+      ai_spend_ceiling_usd:   aiSpendCeilingUsd(pricing),
+      recruitment_status:     'pending',
     }, { caller: 'POST /missions/launch' });
 
     res.json({ clientSecret, paymentIntentId, pricing });
@@ -1264,9 +1298,10 @@ router.patch('/:id', authenticate, async (req, res, next) => {
       // Pass 42 A.1 — keep the recruitment columns in sync when the
       // customer edits respondent_count or anything that re-prices.
       // target_qualified_count must equal what they paid for;
-      // ai_spend_ceiling_usd must equal that price × 0.30.
+      // ai_spend_ceiling_usd must equal the LIST price x 0.30 - see the
+      // same call in POST /missions.
       updates.target_qualified_count = respCount;
-      updates.ai_spend_ceiling_usd = aiSpendCeilingUsd(pricing.total);
+      updates.ai_spend_ceiling_usd = aiSpendCeilingUsd(pricing);
     }
 
     // Map client field names → column names; phantom columns are dropped by

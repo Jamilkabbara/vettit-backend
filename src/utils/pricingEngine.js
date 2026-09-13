@@ -950,6 +950,30 @@ function roundChargeToWholeDollar(exactTotal) {
 }
 
 /**
+ * The no-promo LIST price of a mission, read off a pricing breakdown.
+ *
+ * `subtotal` is base + question surcharge + targeting surcharge + screening
+ * surcharge. calculateMissionPrice applies a promo AFTER it, as `discount`, so
+ * subtotal is the same number with a code and without one - it is the price of
+ * the WORK. `total` is not: it is subtotal minus the discount, which is what
+ * the customer pays.
+ *
+ * The whole-dollar rounding is the same roundChargeToWholeDollar the charge
+ * path applies, so for a no-promo quote this returns exactly `pricing.total`.
+ * That equality is the point: list basis and charged basis coincide when there
+ * is no discount, and diverge only by the discount.
+ *
+ * @param {object} pricing a calculateMissionPrice breakdown
+ * @returns {number} the list price in whole dollars, 0 when there is no usable
+ *          subtotal on the object.
+ */
+function listPriceUsd(pricing) {
+  const sub = Number(pricing && pricing.subtotal);
+  if (!Number.isFinite(sub) || sub <= 0) return 0;
+  return roundChargeToWholeDollar(sub);
+}
+
+/**
  * The AI spend a mission's run is authorised to make, in USD.
  *
  * ONE expression, because it was five. POST /missions, POST /missions/draft,
@@ -958,19 +982,32 @@ function roundChargeToWholeDollar(exactTotal) {
  * carries a sixth copy on the client-side INSERT. Five copies of a margin
  * floor is five places for it to drift.
  *
- * 30% of the LIST price is the 70% margin floor. The input is the price of
- * the WORK, not the price the customer was charged: a free-promo mission does
- * the same work as a paid one, so free-launch deliberately prices the ceiling
- * off a no-promo quote (see its comment). Four decimal places because the
- * column is numeric and a run compares ai_spend_usd_actual against it.
+ * 30% of the LIST price is the 70% margin floor. The input is the price of the
+ * WORK, not the price the customer was charged. A discount is a revenue
+ * decision; the ceiling governs COMPUTE, and a 50%-off mission runs exactly
+ * the same recruit loop over exactly the same respondent count as a full-price
+ * one. Deriving the ceiling from the charged total halved the compute budget
+ * for identical work, which is the bug this signature closes.
  *
- * @param {number} listTotalUsd the server-computed list price
+ * PREFERRED INPUT: the whole breakdown object. Hand it `pricing` and the list
+ * basis is picked off `subtotal` here, so a call site cannot quietly regress to
+ * a post-promo basis by reaching for the wrong field. The numeric form is kept
+ * for callers that genuinely hold a list price and nothing else (backfills,
+ * and the trigger-parity fixtures in test/).
+ *
+ * Four decimal places because the column is numeric and a run compares
+ * ai_spend_usd_actual against it.
+ *
+ * @param {object|number} listPrice a calculateMissionPrice breakdown, or a
+ *        list price already in USD
  * @returns {number} the ceiling, rounded to 4dp. 0 for a non-finite or
- *          non-positive input, which runMission refuses - a missing price
+ *          non-positive basis, which runMission refuses - a missing price
  *          must not authorise a run.
  */
-function aiSpendCeilingUsd(listTotalUsd) {
-  const t = Number(listTotalUsd);
+function aiSpendCeilingUsd(listPrice) {
+  const t = (listPrice !== null && typeof listPrice === 'object')
+    ? listPriceUsd(listPrice)
+    : Number(listPrice);
   if (!Number.isFinite(t) || t <= 0) return 0;
   return Math.round(t * AI_SPEND_CEILING_FRACTION * 10000) / 10000;
 }
@@ -1152,6 +1189,7 @@ module.exports = {
   formatRatePerResp,
   roundChargeToWholeDollar,
   aiSpendCeilingUsd,
+  listPriceUsd,
   AI_SPEND_CEILING_FRACTION,
   EXTRA_QUESTION_PRICE_USD: EXTRA_QUESTION_PRICE,
   FREE_QUESTIONS,
