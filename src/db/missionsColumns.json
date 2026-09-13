@@ -3,7 +3,7 @@
   "table": "public.missions",
   "generated_at": "2026-09-06T00:00:00.000Z",
   "source": "information_schema.columns, production project hxuhqtczdzmiujrdcrta (read-only)",
-  "column_count": 118,
+  "column_count": 121,
   "columns": [
     "ad_methodology",
     "aggregated_by_question",
@@ -20,6 +20,9 @@
     "brand_personality",
     "brief",
     "brief_attachment",
+    "ca_market",
+    "ca_placement",
+    "ca_target_audience",
     "campaign_channel",
     "campaign_channels",
     "campaign_format",
@@ -123,5 +126,6 @@
     "validate_methodology",
     "wave_config",
     "wave_number"
-  ]
+  ],
+  "pending_migration": "ca_target_audience, ca_placement, ca_market are added by migrations/pass-56; regenerating after that migration is applied reproduces this column list."
 }

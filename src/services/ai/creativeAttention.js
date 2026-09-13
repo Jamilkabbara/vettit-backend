@@ -32,6 +32,16 @@ const { WRITING_STYLE } = require('./writingStyle');
 // PDF and PPTX exporters so writer and readers can never drift.
 const { toStoredHotspots } = require('../../utils/creativeHotspots');
 const logger    = require('../../utils/logger');
+// Placement: the closed list of placements with a published attention norm,
+// and the deterministic benchmark against the one the customer chose.
+const {
+  renderNormsTable, resolvePlacement, computePlacementBenchmark,
+} = require('../creativeAttention/placements');
+// Audience: read from the Creative Attention column, never from an object.
+const { resolveCaAudience } = require('../creativeAttention/audience');
+// Market: qualitative only. Kept out of every prompt that produces a number;
+// see the module header for why that is structural rather than a request.
+const { resolveMarket, generateMarketContext } = require('../creativeAttention/marketContext');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -153,14 +163,19 @@ async function extractVideoFrames(buffer, { intervalSec = 1, maxFrames = 30 } = 
 
 // ── Per-frame vision analysis ───────────────────────────────────────────────
 
-async function analyzeFrame({ frame, mission, mediaType = 'image/jpeg' }) {
+/**
+ * The per-frame vision prompt. Deliberately given the mission and nothing
+ * else: no placement, no market. Every number a frame produces is scored
+ * without either, which is part of how market is guaranteed not to move one.
+ */
+function buildFramePrompt({ frame, mission }) {
   // Pass 24 Bug 24.01 — 24-emotion taxonomy (Plutchik 8 + 16 nuanced
   // DAIVID-style). Old missions had 8 emotions; v2 expands the model's
   // expressive range without changing the call shape.
   const prompt = `You are analyzing frame at ${frame.timestamp}s of a marketing creative.
 
 Brand: ${mission.brand_name || 'unknown'}
-Target audience: ${mission.target_audience || 'not specified'}
+Target audience: ${resolveCaAudience(mission) || 'not specified'}
 Campaign brief: ${mission.brief || 'not specified'}
 Desired emotions: ${(mission.desired_emotions || []).join(', ') || 'not specified'}
 Key message/CTA: ${mission.key_message || 'not specified'}
@@ -192,6 +207,11 @@ attention_hotspots: return 2 to 5 entries ordered by pull, strongest first. Each
   w, h  = width / height of the rectangle, also as FRACTIONS of the frame (so x + w <= 1.0 and y + h <= 1.0)
   weight = 0-100 relative attention pull of that region against the others in this frame
 Use fractions, never pixels, and never a percentage above 1.0. Box the region tightly around the thing itself, not the whole quadrant. If you genuinely cannot localise a hotspot, return it as a plain string instead of an object.`;
+  return prompt;
+}
+
+async function analyzeFrame({ frame, mission, mediaType = 'image/jpeg' }) {
+  const prompt = buildFramePrompt({ frame, mission });
 
   const start = Date.now();
 
@@ -268,9 +288,9 @@ Use fractions, never pixels, and never a percentage above 1.0. Box the region ti
 
 // ── Synthesis ───────────────────────────────────────────────────────────────
 
-async function synthesizeCreativeInsights({ frameAnalyses, mission }) {
-  // Truncate frame data to stay within token limits
-  const framesSummary = frameAnalyses
+/** The per-frame fields synthesis reads, truncated to stay within token limits. */
+function summariseFrames(frameAnalyses) {
+  return frameAnalyses
     .filter(Boolean)
     .map((f) => ({
       t: f.timestamp,
@@ -280,7 +300,15 @@ async function synthesizeCreativeInsights({ frameAnalyses, mission }) {
       resonance: f.audience_resonance,
       desc: f.brief_description,
     }));
+}
 
+/**
+ * The synthesis prompt. Receives the chosen placement (which legitimately
+ * shapes the attention prediction - it IS the context the creative runs in)
+ * and never the market. With no placement it reproduces the pre-change prompt
+ * exactly; test/ca_prompts_unchanged.test.js holds it to that.
+ */
+function buildSynthesisPrompt({ framesSummary, mission, placement = null }) {
   // Pass 24 Bug 24.01 — synthesis now includes attention prediction,
   // cross-channel benchmarks, and Creative Effectiveness Score in
   // addition to the v1 summary fields. Channel norms are baked into
@@ -292,35 +320,27 @@ async function synthesizeCreativeInsights({ frameAnalyses, mission }) {
     ? `Video duration ≈ ${Math.max(...framesSummary.map((f) => f.t || 0))}s`
     : 'Static image (single frame)';
 
+  const placementLine = placement
+    ? `\nChosen placement: ${placement.label} (published norm ${placement.normActiveSeconds.toFixed(1)}s active attention)`
+    : '';
+  const placementRule = placement
+    ? `\n- The customer is running this creative on ${placement.label}. Predict attention for how it will run THERE, and write vs_benchmark against the ${placement.label} norm (${placement.normActiveSeconds.toFixed(1)}s) first.`
+    : '';
+
   const prompt = `Synthesize these frame-by-frame analyses of a marketing creative.
 
 Brand: ${mission.brand_name || 'unknown'}
-Target audience: ${mission.target_audience || 'not specified'}
+Target audience: ${resolveCaAudience(mission) || 'not specified'}
 Campaign brief: ${mission.brief || 'not specified'}
 Desired emotions: ${(mission.desired_emotions || []).join(', ') || 'not specified'}
 Key message: ${mission.key_message || 'not specified'}
 Total frames analyzed: ${framesSummary.length}
-${durationHint}
+${durationHint}${placementLine}
 
 Frame data:
 ${JSON.stringify(framesSummary, null, 2).slice(0, 8000)}
 
-PUBLISHED CHANNEL ATTENTION NORMS (DAIVID/Amplified — use these as the
-ground truth for category_avg_attention_seconds in channel_benchmarks
-AND for platform_norm_active_attention_seconds in best_platform_fit):
-  Instagram Feed:        1.2s active attention
-  TikTok Feed:           1.4s
-  YouTube Pre-roll:      1.8s
-  Pinterest:             1.5s
-  Snapchat:              0.9s
-  Meta Reels / Stories:  1.0s
-  Programmatic Display:  0.4s
-  OOH (digital billboard): 0.8s active, 4-6s passive
-  CTV (15s):             4.5s
-  CTV (30s):             8.0s
-  TV (30s spot):         12.0s
-  Print (luxury magazine): 2.5s
-  Audio (Spotify/podcast): N/A (no visual attention)
+${renderNormsTable()}
 
 Return ONLY JSON (no prose, no markdown fences):
 {
@@ -431,7 +451,7 @@ average, or a benchmark.
 - Say "above/below the published attention norm for <channel>" and cite the
   seconds, or say the creative is not benchmarked on that dimension.
 - If you cannot make an attention-seconds comparison, return the empty
-  string. An empty vs_benchmark is correct; an invented norm is not.
+  string. An empty vs_benchmark is correct; an invented norm is not.${placementRule}
 
 CRITICAL — channel_benchmarks:
 - Always include all 5 channels above. Use the published norms verbatim
@@ -472,6 +492,12 @@ For EACH recommendation:
   - delta_vs_norm_pct: ((predicted / norm) - 1) * 100, integer.
   - fit_score: 0-100, how well this creative fits the platform.
 Diversify across paid social + at least 2 non-social channels.`;
+  return prompt;
+}
+
+async function synthesizeCreativeInsights({ frameAnalyses, mission, placement = null }) {
+  const framesSummary = summariseFrames(frameAnalyses);
+  const prompt = buildSynthesisPrompt({ framesSummary, mission, placement });
 
   const result = await callClaude({
     callType:         'creative_attention_synthesis',
@@ -624,7 +650,20 @@ async function analyzeCreative({ mission }) {
   //    another unbounded LLM call and the frame loop's last heartbeat would
   //    otherwise have to cover it.
   await stampMissionHeartbeat(supabase, mission.id, 'creativeAttention: synthesis');
-  const summary = await synthesizeCreativeInsights({ frameAnalyses, mission });
+
+  // Placement is resolved against the upload that was actually analysed
+  // (video vs image from the stored attachment), not against anything the
+  // browser claimed. An unknown id, or one that cannot be scored for this
+  // format (a still image on TV), is treated as no placement: the analysis
+  // runs as it always has and no benchmark is invented.
+  const placement = resolvePlacement(mission.ca_placement, isVideo ? 'video' : 'image');
+  if (mission.ca_placement && !placement) {
+    logger.warn('[CreativeAttention] placement ignored: unknown or not valid for this format', {
+      missionId: mission.id, ca_placement: mission.ca_placement, isVideo,
+    });
+  }
+
+  const summary = await synthesizeCreativeInsights({ frameAnalyses, mission, placement });
 
   // 5. Persist to mission
   // Pass 24 Bug 24.01 — lift v2 fields (attention, channel_benchmarks,
@@ -633,6 +672,33 @@ async function analyzeCreative({ mission }) {
   // them inside `summary` for prompt-template clarity; we promote them
   // here. Old fields stay on `summary` for backwards-compat.
   const { attention, channel_benchmarks, creative_effectiveness, ...summaryRest } = summary || {};
+
+  // Every number is final at this point. The benchmark is arithmetic on the
+  // model's attention prediction against the chosen placement's norm.
+  const placement_benchmark = computePlacementBenchmark({ placement, attention });
+
+  // Market runs LAST and returns text only. It is resolved against the
+  // markets list so a stored code that is not a real market is dropped.
+  const market = await resolveMarket(supabase, mission.ca_market);
+  if (mission.ca_market && !market) {
+    logger.warn('[CreativeAttention] market ignored: not a known market code', {
+      missionId: mission.id, ca_market: mission.ca_market,
+    });
+  }
+  let market_context = null;
+  if (market) {
+    await stampMissionHeartbeat(supabase, mission.id, 'creativeAttention: market context');
+    market_context = await generateMarketContext(
+      { callClaude, extractJSON, logger },
+      {
+        mission,
+        market,
+        placement,
+        audience:    resolveCaAudience(mission),
+        qualitative: { strengths: summaryRest.strengths, weaknesses: summaryRest.weaknesses },
+      },
+    );
+  }
 
   const creative_analysis_v2 = {
     schema_version: 'v2',
@@ -646,6 +712,12 @@ async function analyzeCreative({ mission }) {
     ...(attention            ? { attention }            : {}),
     ...(channel_benchmarks   ? { channel_benchmarks }   : {}),
     ...(creative_effectiveness ? { creative_effectiveness } : {}),
+    // What this run was measured against, stored WITH the analysis so the
+    // results page and every export show the placement and market the
+    // numbers belong to, even if the mission row is edited later.
+    ...(placement_benchmark ? { placement_benchmark } : {}),
+    ...(market ? { market } : {}),
+    ...(market_context ? { market_context } : {}),
   };
 
   // Pass 49 — TERMINAL WRITE, STATUS-SCOPED.
@@ -721,4 +793,12 @@ async function analyzeCreative({ mission }) {
   return { frameAnalyses, summary, terminalWriteLost: false };
 }
 
-module.exports = { analyzeCreative, detectImageMime, assertImageWithinVisionLimits };
+module.exports = {
+  analyzeCreative,
+  detectImageMime,
+  assertImageWithinVisionLimits,
+  // Exported for the prompt-identity and market-isolation tests.
+  buildFramePrompt,
+  buildSynthesisPrompt,
+  summariseFrames,
+};
