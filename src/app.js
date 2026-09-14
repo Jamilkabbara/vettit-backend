@@ -26,6 +26,7 @@ const adminCostsRoutes = require('./routes/adminCosts');
 const blogRoutes = require('./routes/blog');
 const chatRoutes = require('./routes/chat');
 const pricingRoutes = require('./routes/pricing');
+const creativeAttentionRoutes = require('./routes/creativeAttention');
 const crmRoutes = require('./routes/crm');
 const funnelRoutes = require('./routes/funnel');
 
@@ -165,6 +166,7 @@ app.use('/api/admin/costs', adminCostsRoutes);
 app.use('/api/blog', blogRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/pricing', pricingRoutes);
+app.use('/api/creative-attention', creativeAttentionRoutes);
 app.use('/api/crm', crmRoutes);  // Public lead capture — no auth required
 
 // ─── Health Check ────────────────────────────────────────────

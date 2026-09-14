@@ -221,6 +221,18 @@ const CLIENT_PATCHABLE_COLUMNS = new Set([
   'desired_emotions',
   'key_message',
 
+  // ── Creative Attention targeting (pass-56) ────────────────────────────
+  // Written by CreativeAttentionPage on insert. Not pricing inputs: no money
+  // route reads them (test/pricing_targeting_golden.test.js), and the
+  // database refuses them on any other goal type. ca_placement is checked
+  // against the closed list of placements with a published attention norm;
+  // ca_market against markets_master. ca_target_audience replaces the
+  // Creative Attention use of the shared target_audience JSONB, which holds
+  // an object on every other type.
+  'ca_target_audience',
+  'ca_placement',
+  'ca_market',
+
   // ── Universal methodology inputs (Pass 29 B2) ─────────────────────────
   'brand_name',
   'category',

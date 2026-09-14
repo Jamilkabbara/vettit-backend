@@ -28,6 +28,8 @@ const ExcelJS = require('exceljs');
 const { BRAND, METHODOLOGY_URL } = require('./shared');
 const { getReportMetadata } = require('./reportMetadata');
 const { sanitizeDashesDeep, sanitizeDashesString } = require('../../utils/textSanitize');
+// Placement and market, worded once for every export.
+const { caTargetingView } = require('../creativeAttention/targetingView');
 
 const argb = (c) => 'FF' + (c || '').replace('#', '').toUpperCase();
 
@@ -150,6 +152,59 @@ async function buildCreativeAttentionXLSX(pack, res) {
   };
   methodCell.font = { name: 'Calibri', size: 10, color: { argb: argb(BRAND.lime) }, underline: true };
   methodCell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+
+  // ── Placement and market ────────────────────────────────────────────
+  // Only for runs measured against a chosen placement or market; analyses
+  // from before those existed render exactly as they always did.
+  const targeting = caTargetingView(ca);
+  if (targeting) {
+    cover.mergeCells('A26:D26');
+    const tLine = cover.getCell('A26');
+    tLine.value = targeting.summaryLine;
+    tLine.font = { name: 'Calibri', size: 11, bold: true, color: { argb: argb(BRAND.lime) } };
+    tLine.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+
+    const tSheet = wb.addWorksheet('Placement and Market', {
+      views: [{ showGridLines: false }],
+      properties: { tabColor: { argb: argb(BRAND.lime) } },
+    });
+    tSheet.columns = [{ width: 34 }, { width: 90 }];
+    let r = 1;
+    const section = (text) => {
+      const c = tSheet.getCell(`A${r}`);
+      c.value = text; styleHeader(c); styleHeader(tSheet.getCell(`B${r}`));
+      r += 1;
+    };
+    const pair = (label, value) => {
+      tSheet.getCell(`A${r}`).value = label;
+      tSheet.getCell(`A${r}`).font = { name: 'Calibri', size: 10, bold: true, color: { argb: argb(BRAND.text2) } };
+      const v = tSheet.getCell(`B${r}`);
+      v.value = value;
+      v.alignment = { wrapText: true, vertical: 'top' };
+      r += 1;
+    };
+
+    if (targeting.placement) {
+      section('PLACEMENT');
+      pair('Placement', targeting.placement.label);
+      pair('Published norm (active attention)', targeting.placement.normSeconds);
+      pair('Predicted active attention (seconds)', targeting.placement.predictedSeconds == null ? 'Not predicted' : targeting.placement.predictedSeconds);
+      pair('Versus norm (%)', targeting.placement.deltaPct == null ? 'Not compared' : targeting.placement.deltaPct);
+      pair('Reading', targeting.placement.sentence);
+      r += 1;
+    }
+    if (targeting.market) {
+      section('MARKET');
+      pair('Market', targeting.market.name);
+      pair('Scope', 'Qualitative only. The market does not change any score, prediction or benchmark in this report.');
+      if (targeting.marketNotesUnavailable) {
+        pair('Market notes', 'Not available for this run.');
+      }
+      for (const sec of targeting.marketNoteSections) {
+        sec.items.forEach((item, i) => pair(i === 0 ? sec.heading : '', item));
+      }
+    }
+  }
 
   // ── 2. FRAME ANALYSIS ───────────────────────────────────────────
   const frameSheet = wb.addWorksheet('Frame Analysis', {

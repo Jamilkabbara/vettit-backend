@@ -148,6 +148,48 @@
 
 </section>
 
+{{!-- ─── PLACEMENT AND MARKET — what this run was measured against ─ --}}
+{{#if caTargeting}}
+<section class="page">
+  <div class="section-eyebrow">· Placement and market</div>
+  <div class="section-divider"></div>
+  {{#if caTargeting.placement}}
+  <div style="font-size:9pt; letter-spacing:1.5pt; text-transform:uppercase; color: var(--text3); margin:2pt 0 2pt;">Placement</div>
+  <div style="font-size:20pt; font-weight:700; color: var(--lime); margin:0 0 8pt;">{{caTargeting.placement.label}}</div>
+  <div class="ca-statrow">
+    <div class="ca-stat">
+      <div class="ca-stat-k">Published norm</div>
+      <div class="ca-stat-v">{{caTargeting.placement.normLabel}}</div>
+    </div>
+    <div class="ca-stat">
+      <div class="ca-stat-k">Predicted</div>
+      <div class="ca-stat-v">{{caTargeting.placement.predictedLabel}}</div>
+    </div>
+    <div class="ca-stat">
+      <div class="ca-stat-k">Versus norm</div>
+      <div class="ca-stat-v">{{caTargeting.placement.deltaLabel}}</div>
+    </div>
+  </div>
+  <p class="lede" style="margin-top:10pt;">{{caTargeting.placement.sentence}}</p>
+  {{/if}}
+
+  {{#if caTargeting.market}}
+  <div class="section-eyebrow trailing-block">· Market: {{caTargeting.market.name}}</div>
+  <div class="section-divider"></div>
+  <p style="font-size:9.5pt; color: var(--text3); font-style: italic; margin:0 0 8pt;">Qualitative only. The market does not change any score, prediction or benchmark in this report.</p>
+  {{#if caTargeting.marketNotesUnavailable}}
+  <p style="font-size:10.5pt; color: var(--text2);">Market notes are not available for this run.</p>
+  {{/if}}
+  {{#each caTargeting.marketNoteSections}}
+  <div style="margin:8pt 0 2pt; font-size:10pt; font-weight:700; color: var(--text2);">{{this.heading}}</div>
+  <ul style="margin:0 0 4pt 14pt; padding:0; font-size:10.5pt; color: var(--text1);">
+    {{#each this.items}}<li style="margin:2pt 0;">{{this}}</li>{{/each}}
+  </ul>
+  {{/each}}
+  {{/if}}
+</section>
+{{/if}}
+
 {{!-- ─── ATTENTION — split visual + decay curve (PR 3) ──────────── --}}
 {{#if caSplit}}
 <section class="page">

@@ -23,6 +23,9 @@
 const { readFileSync } = require('node:fs');
 const SRC = readFileSync(require.resolve('../src/services/ai/creativeAttention'), 'utf8');
 
+/** How both prompts read the audience. */
+const AUDIENCE_READ = /\$\{resolveCaAudience\(mission\)/;
+
 /** The template literal for each prompt, so assertions cannot bleed across. */
 function promptBodies(src) {
   const bodies = [];
@@ -45,12 +48,18 @@ describe('the campaign brief is passed as vision context', () => {
 
   test('the brief sits with the other four context fields, not appended elsewhere', () => {
     for (const p of prompts) {
-      for (const field of ['brand_name', 'target_audience', 'desired_emotions', 'key_message']) {
+      for (const field of ['brand_name', 'desired_emotions', 'key_message']) {
         expect(p).toMatch(new RegExp(`mission\\.${field}\\b`));
       }
+      // The audience is read through resolveCaAudience(mission), not the
+      // shared target_audience column directly: that column holds an object
+      // on every other mission type, which reached the model as
+      // "[object Object]". See src/services/creativeAttention/audience.js.
+      expect(p).toMatch(AUDIENCE_READ);
+      expect(p).not.toMatch(/\$\{mission\.target_audience\b/);
       // Ordered: brief must come after audience and before emotions, so the
       // model reads it as campaign context rather than a trailing afterthought.
-      expect(p.indexOf('mission.brief')).toBeGreaterThan(p.indexOf('mission.target_audience'));
+      expect(p.indexOf('mission.brief')).toBeGreaterThan(p.search(AUDIENCE_READ));
       expect(p.indexOf('mission.brief')).toBeLessThan(p.indexOf('mission.desired_emotions'));
     }
   });
@@ -60,7 +69,7 @@ describe('the two prompts frame a missing value identically', () => {
   test("target_audience falls back to the same string in both", () => {
     const prompts = promptBodies(SRC);
     const fallbacks = prompts.map((p) => {
-      const m = p.match(/mission\.target_audience \|\| '([^']*)'/);
+      const m = p.match(/resolveCaAudience\(mission\) \|\| '([^']*)'/);
       return m && m[1];
     }).filter(Boolean);
     expect(fallbacks.length).toBeGreaterThanOrEqual(2);
