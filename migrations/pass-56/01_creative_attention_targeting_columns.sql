@@ -1,7 +1,12 @@
 -- Pass 56 - Creative Attention placement, market and audience columns.
 --
--- NOT APPLIED. Held with the draft PR for the owner to approve the statements
--- below before they run against production.
+-- APPLIED to production (hxuhqtczdzmiujrdcrta) on 2026-09-14 as migration
+-- pass56_creative_attention_targeting_columns, after the owner approved the
+-- statements. Dry run first (inside a transaction forced to roll back): all
+-- four constraints rejected bad values and the positive control updated the
+-- two drafts. After-state checked: three nullable text columns, four
+-- constraints, 0 non-null values, 99 missions, CA target_audience 14 string
+-- and 2 object, unchanged.
 --
 -- WHAT THIS ADDS
 --   ca_placement        which placement the creative will run on. Only the
