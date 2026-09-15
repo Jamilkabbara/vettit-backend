@@ -387,6 +387,9 @@ async function updateStripePromoActive(promotionCodeId, active) {
 }
 
 module.exports = {
+  // The configured client, for callers that read Stripe state directly
+  // (services/payments/syncMissionRefunds.js).
+  stripeClient: stripe,
   createPaymentIntent,
   verifyPayment,
   retrievePaymentIntent,

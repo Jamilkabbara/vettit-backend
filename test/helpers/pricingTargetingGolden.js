@@ -105,8 +105,9 @@ function buildGolden() {
 
   // Which columns a client may write, and which only the server may. The new
   // Creative Attention columns are excluded so this records only what existed
-  // before them: adding a column must not reclassify an existing one.
-  const NEW_CA_COLUMNS = new Set(['ca_target_audience', 'ca_placement', 'ca_market']);
+  // before them: adding a column must not reclassify an existing one. The
+  // Stripe refund columns (September 2026) are excluded for the same reason.
+  const NEW_CA_COLUMNS = new Set(['ca_target_audience', 'ca_placement', 'ca_market', 'refunded_amount_cents', 'stripe_refund_ids', 'refunds_synced_at']);
   const listOf = (v) => [...(v instanceof Set ? v : new Set(v))].filter((c) => !NEW_CA_COLUMNS.has(c)).sort();
   const schemaLists = {
     ALLOWED_COLUMNS:          listOf(schema.ALLOWED_COLUMNS),
