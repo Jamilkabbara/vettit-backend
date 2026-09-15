@@ -19,7 +19,7 @@ const logger   = require('../utils/logger');
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'kabbarajamil@gmail.com';
 const isAdminReq = (req) => !!(req.user && req.user.email === ADMIN_EMAIL);
 
-const { loadMissionForExport } = require('../services/exports/shared');
+const { loadMissionForExport, resultsReadError } = require('../services/exports/shared');
 // Pass 25 Phase 0: PDF rebuilt on Puppeteer + Handlebars (was pdfkit).
 // See docs/PDF_EXPORT_AUDIT.md. Old pdfkit module retained for one deploy
 // behind PDF_LEGACY=1 in case rollback is needed; deleted next merge.
@@ -63,7 +63,10 @@ router.get('/:missionId', authenticate, async (req, res, next) => {
     if (!isAdminReq(req)) mq = mq.eq('user_id', req.user.id); // admin may read any user's mission
     const { data: mission, error: mErr } = await mq.single();
 
-    if (mErr || !mission) return res.status(404).json({ error: 'Mission not found' });
+    // Only "no row" is not-found. Any other error is a failed read, surfaced
+    // as a retryable 503 instead of telling the customer the mission is gone.
+    if (mErr && mErr.code !== 'PGRST116') return next(resultsReadError('mission', missionId, mErr));
+    if (!mission) return res.status(404).json({ error: 'Mission not found' });
 
     // In-flight states: return progress envelope.
     if (mission.status === 'paid' || mission.status === 'processing') {
