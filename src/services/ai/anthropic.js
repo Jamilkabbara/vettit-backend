@@ -48,12 +48,15 @@ const CALL_TYPE_TO_PURPOSE = {
   brand_lift_benchmarks:        'mission_pipeline',
   creative_attention_frame:     'mission_pipeline',
   creative_attention_synthesis: 'mission_pipeline',
+  creative_attention_market_context: 'mission_pipeline',
   results_analysis:             'mission_pipeline',
   // Chatbot surfaces.
   chat_setup:      'chatbot_setup',
   chat_results:    'chatbot_results',
   chat_dashboard:  'chatbot_dashboard',
   chat_admin_crm:  'chatbot_admin',
+  // The admin overview's AI insights panel: admin-surface spend, like the CRM chat.
+  admin_insights:  'chatbot_admin',
   // Brief / targeting helpers (run pre-mission or unbound).
   brief_clarify:      'clarify',
   adaptive_clarify:   'clarify',
@@ -62,6 +65,8 @@ const CALL_TYPE_TO_PURPOSE = {
   // Its own call_type (rather than reusing question_refine) so the
   // spend on user-drafted questions is separable in ai_calls.
   question_draft:     'clarify',
+  // extractSubject: pulls the subject out of a brief before survey generation.
+  subject_extract:    'clarify',
   targeting_suggest:  'targeting_brief',
   targeting_brief:    'targeting_brief',
   // Editorial.
@@ -97,6 +102,12 @@ const MODEL_ROUTING = {
   targeting_brief:              'claude-sonnet-4-6',
   creative_attention_frame:    'claude-sonnet-4-6',  // vision: per-frame emotion analysis
   creative_attention_synthesis: 'claude-sonnet-4-6', // text: aggregate + recommendations
+  // Qualitative market notes after a Creative Attention analysis. Shipped
+  // unrouted in #175: callClaude threw "Unknown AI callType", marketContext
+  // caught it, and every customer who chose a market got no notes. Same
+  // model as synthesis, whose output it reads.
+  // test/ai_calltypes_routed.test.js now fails the build on any unrouted name.
+  creative_attention_market_context: 'claude-sonnet-4-6',
   brand_lift_benchmarks:        'claude-sonnet-4-6', // Pass 25 Phase 1F: AI benchmarks for the brand-lift KPI templates
   // Pass 44 — admin.js _generateInsights has passed this callType since
   // the panel shipped, but it was never routed here; callClaude threw

@@ -26,7 +26,19 @@
 
 const LIST_KEYS = ['cultural_fit', 'localisation_risks', 'placement_notes'];
 const MAX_ITEMS = 3;
-const MAX_LEN = 280;
+// A note is one sentence (the prompt says so), so it is never cut mid-sentence.
+// The old 280-character cut ended 3 of 18 real notes with "…" part-way
+// through a clause. Anything longer than MAX_LEN is trimmed back to its last
+// complete sentence; an item with no sentence end inside the limit is dropped.
+// MAX_LEN only guards against a runaway item; real notes ran 225 to 290.
+const MAX_LEN = 600;
+
+function fitNote(s) {
+  if (s.length <= MAX_LEN) return s;
+  const head = s.slice(0, MAX_LEN);
+  const end = Math.max(head.lastIndexOf('. '), head.lastIndexOf('! '), head.lastIndexOf('? '));
+  return end > 0 ? head.slice(0, end + 1) : null;
+}
 
 const MARKET_SYSTEM = `You are a senior regional creative strategist. You advise on how a marketing creative will read culturally in a specific market, what localisation risks it carries there, and how the chosen placement is used in that market. You write plainly and specifically. You never give scores, percentages, durations, rankings or any other figure.`;
 
@@ -87,7 +99,8 @@ function sanitizeMarketContext(parsed) {
       .filter((s) => typeof s === 'string')
       .map((s) => s.replace(/\s*[—–]\s*/g, ' - ').replace(/\s+/g, ' ').trim())
       .filter((s) => s.length > 0 && !/\d/.test(s))
-      .map((s) => (s.length > MAX_LEN ? `${s.slice(0, MAX_LEN - 1).trimEnd()}…` : s))
+      .map(fitNote)
+      .filter(Boolean)
       .slice(0, MAX_ITEMS);
     kept += out[key].length;
   }
