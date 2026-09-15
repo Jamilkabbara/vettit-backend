@@ -141,8 +141,26 @@ function parseConstraints(sqlText) {
   return out;
 }
 
+/**
+ * Pass 58 moved the two goal floors into a trigger, because a NOT VALID CHECK
+ * is re-checked on every update and froze the legacy paid rows. Each floor is
+ * written there as `IF NOT (<expr>) THEN RAISE ... CONSTRAINT = '<name>'`.
+ */
+function parseTriggerFloors(sqlText) {
+  const out = {};
+  const re = /IF NOT \(([\s\S]*?)\) THEN\s+RAISE[\s\S]*?CONSTRAINT = '(\w+)'/g;
+  let m;
+  while ((m = re.exec(sqlText)) !== null) out[m[2]] = m[1].replace(/\bNEW\./g, '');
+  return out;
+}
+
+const TRIGGER_MIGRATION = path.join(__dirname, '..', 'migrations', 'pass-58', '01_respondent_floors_as_trigger.sql');
 const sql = fs.readFileSync(MIGRATION, 'utf8');
-const constraints = parseConstraints(sql);
+const triggerSql = fs.readFileSync(TRIGGER_MIGRATION, 'utf8');
+const pass51 = parseConstraints(sql);
+const triggerFloors = parseTriggerFloors(triggerSql);
+// What production enforces today: the range CHECK from pass 51, the floors from pass 58.
+const constraints = { [RANGE_CHK]: pass51[RANGE_CHK], ...triggerFloors };
 const tokenSets = Object.fromEntries(
   Object.entries(constraints).map(([name, body]) => [name, tokenize(body)]),
 );
@@ -155,8 +173,8 @@ function accepts(row) {
 const row = (goal_type, respondent_count) => ({ goal_type, respondent_count });
 
 describe('the migration declares all three constraints, NOT VALID', () => {
-  test('all three named constraints are present', () => {
-    expect(Object.keys(constraints).sort()).toEqual([BL_CHK, CA_CHK, RANGE_CHK].sort());
+  test('all three named constraints are present in pass 51', () => {
+    expect(Object.keys(pass51).sort()).toEqual([BL_CHK, CA_CHK, RANGE_CHK].sort());
   });
 
   test('each is added NOT VALID - 16 legacy rows would fail a validating add', () => {
@@ -253,5 +271,28 @@ describe('the DB constraints agree with validateMissionPricing', () => {
     const engine = validateMissionPricing({ goalType, respondentCount: n, mediaType: 'image' });
     expect(engine.valid).toBe(false);
     expect(accepts(row(goalType, n))).toBe(false);
+  });
+});
+
+describe('pass 58: the goal floors are a trigger that checks new values only', () => {
+  test('both floor CHECKs are dropped and both floors are raised by the trigger, under their old names', () => {
+    expect(triggerSql).toMatch(new RegExp(`DROP CONSTRAINT IF EXISTS ${BL_CHK}`));
+    expect(triggerSql).toMatch(new RegExp(`DROP CONSTRAINT IF EXISTS ${CA_CHK}`));
+    expect(Object.keys(triggerFloors).sort()).toEqual([BL_CHK, CA_CHK].sort());
+    expect(triggerSql).not.toMatch(new RegExp(`DROP CONSTRAINT[^;]*${RANGE_CHK}`));
+  });
+
+  test('the trigger fires on every insert and on updates of the two columns it guards', () => {
+    expect(triggerSql).toMatch(/BEFORE INSERT OR UPDATE OF goal_type, respondent_count ON public\.missions/);
+    expect(triggerSql).toMatch(/ERRCODE = 'check_violation'/);
+  });
+
+  test('the floors did not move when they changed shape', () => {
+    expect(triggerFloors[BL_CHK].replace(/\s+/g, ' ')).toBe(pass51[BL_CHK].replace(/[()]/g, '').replace(/\s+/g, ' ').trim());
+  });
+
+  test('no created_at exemption: a user can choose created_at on a direct insert', () => {
+    const live = triggerSql.split('\n').filter((l) => !l.trim().startsWith('--')).join('\n');
+    expect(live).not.toMatch(/created_at/);
   });
 });
