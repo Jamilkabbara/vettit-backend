@@ -17,6 +17,7 @@
 
 const supabase = require('../../db/supabase');
 const fetchAllResponses = require('../../db/fetchAllResponses');
+const { resultsReadError } = require('../exports/shared');
 const { callClaude, streamClaude, MODEL_ROUTING } = require('./anthropic');
 const { sanitizeDashesString } = require('../../utils/textSanitize');
 const { aggregate } = require('./insights');
@@ -151,16 +152,22 @@ async function grantOverage(sessionId) {
 // ─── Context builders ──────────────────────────────────────
 
 async function buildResultsContext(missionId, userId) {
-  const { data: mission } = await supabase
+  const { data: mission, error: missionErr } = await supabase
     .from('missions').select('*')
     .eq('id', missionId).eq('user_id', userId).single();
+  if (missionErr && missionErr.code !== 'PGRST116') throw resultsReadError('mission', missionId, missionErr);
   if (!mission) return null;
 
-  const { data: responses } = await fetchAllResponses(supabase, {
+  const { data: responses, error: responsesErr } = await fetchAllResponses(supabase, {
     missionId,
     columns: 'persona_id, persona_profile, question_id, answer, screened_out',
     label: 'chat:buildResultsContext',
   });
+  // A failed read used to become an empty report, and the copilot told the
+  // customer the report "doesn't contain" figures the page was showing. The
+  // context is built before the message is counted against the quota, so
+  // throwing here costs the customer nothing.
+  if (responsesErr) throw resultsReadError('responses', missionId, responsesErr);
 
   // Pass 48 — ground the copilot on the SAME CanonicalReport the web page
   // and exports render, so the chat can never cite a number that differs

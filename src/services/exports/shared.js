@@ -15,6 +15,19 @@ const { aggregate } = require('../ai/insights');
  * (both screened-in and screened-out) so the distribution is honest.
  * Non-screening questions only count qualified respondents.
  */
+/**
+ * A read that failed, as opposed to data that is genuinely empty. 503 so the
+ * client treats it as "try again", never as an empty result.
+ */
+function resultsReadError(what, missionId, cause) {
+  const err = new Error(`Could not load this mission's results right now (${what} read failed). Please try again.`);
+  err.status = 503;
+  err.code = 'RESULTS_READ_FAILED';
+  err.missionId = missionId;
+  err.cause = cause;
+  return err;
+}
+
 async function loadMissionForExport(missionId, userId, opts = {}) {
   // Ownership is enforced HERE, server-side. Regular callers pass their own
   // userId and get owner-only rows. An ADMIN caller (gated upstream on the
@@ -24,18 +37,26 @@ async function loadMissionForExport(missionId, userId, opts = {}) {
   // grant is a deliberate server-side capability, not a loosened row policy.
   let q = supabase.from('missions').select('*').eq('id', missionId);
   if (!opts.isAdmin) q = q.eq('user_id', userId);
-  const { data: mission } = await q.single();
+  const { data: mission, error: missionErr } = await q.single();
+  // PGRST116 is "no row": a genuine not-found, answered with a 404 upstream.
+  // Any other error is a failed read and must not be reported as not-found.
+  if (missionErr && missionErr.code !== 'PGRST116') throw resultsReadError('mission', missionId, missionErr);
 
   if (!mission) return null;
   if (mission.status !== 'completed') {
     return { error: 'Results not ready yet — mission is not complete' };
   }
 
-  const { data: responses } = await fetchAllResponses(supabase, {
+  const { data: responses, error: responsesErr } = await fetchAllResponses(supabase, {
     missionId,
     columns: 'persona_id, persona_profile, question_id, answer, screened_out',
     label: 'exports/shared:loadMissionResults',
   });
+  // A failed page returns { data: null, error }. This used to fall through to
+  // `responses || []`, so the results page, the results chat's report and
+  // every PDF, PPTX and XLSX export came back 200 with every question at n=0 -
+  // most likely on the biggest missions, which need the most pages.
+  if (responsesErr) throw resultsReadError('responses', missionId, responsesErr);
 
   const allResponses = responses || [];
 
@@ -144,4 +165,4 @@ const BRAND = {
 const METHODOLOGY_URL = 'https://vettit.ai/methodology';
 const METHODOLOGY_FOOTER_LABEL = 'How these numbers are produced: ' + METHODOLOGY_URL;
 
-module.exports = { loadMissionForExport, BRAND, METHODOLOGY_URL, METHODOLOGY_FOOTER_LABEL };
+module.exports = { loadMissionForExport, resultsReadError, BRAND, METHODOLOGY_URL, METHODOLOGY_FOOTER_LABEL };
