@@ -138,6 +138,7 @@ jest.mock('../src/services/analysis', () => ({ computeAnalysis: jest.fn(() => nu
 jest.mock('../src/services/email', () => ({
   sendMissionCompletedEmail: jest.fn(async () => {}),
   sendMissionFailedEmail: jest.fn(async () => {}),
+  sendCreativeAnalysisCompletedEmail: jest.fn(async () => {}),
 }));
 
 const supabase = require('../src/db/supabase');
@@ -423,7 +424,19 @@ describe('runMission creative_attention bypass', () => {
     expect(db.inserts.notifications.map((n) => n.type)).toContain('mission_complete');
   });
 
+  test('happy path: sends the completion email the processing screen promises', async () => {
+    const email = require('../src/services/email');
+    email.sendCreativeAnalysisCompletedEmail.mockClear();
+    makeDb(creativeMission({ status: 'paid' }));
+
+    await runMission(MISSION_ID);
+
+    expect(email.sendCreativeAnalysisCompletedEmail).toHaveBeenCalledTimes(1);
+    expect(email.sendCreativeAnalysisCompletedEmail.mock.calls[0][0]).toMatchObject({ missionId: MISSION_ID });
+  });
+
   test('STALE WRITER: the customer notification is SUPPRESSED', async () => {
+    require('../src/services/email').sendCreativeAnalysisCompletedEmail.mockClear();
     const db = makeDb(creativeMission({ status: 'processing' }));
     let flipped = false;
     db.hooks.onMissionUpdate = (patch) => {
@@ -435,6 +448,7 @@ describe('runMission creative_attention bypass', () => {
     await runMission(MISSION_ID, { resume: true });
 
     expect(db.inserts.notifications.map((n) => n.type)).not.toContain('mission_complete');
+    expect(require('../src/services/email').sendCreativeAnalysisCompletedEmail).not.toHaveBeenCalled();
     // And the other writer's payload is intact.
     expect(db.mission().creative_analysis).toEqual({ theOther: 'run won' });
   });

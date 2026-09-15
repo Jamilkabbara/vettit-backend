@@ -193,12 +193,67 @@ async function sendMissionCompletedEmail({ to, name, missionStatement, totalResp
             <li>PDF, PowerPoint, and Excel downloads</li>
             <li>Chat with your results (30 messages free)</li>
           </ul>
-          <div style="margin-top:24px;">${btn('View my results →', `${APP_URL}/results?missionId=${missionId}`)}</div>
+          <div style="margin-top:24px;">${btn('View my results →', `${APP_URL}/results/${missionId}`)}</div>
         `,
       }),
     });
   } catch (err) { logger.warn('sendMissionCompletedEmail failed', { err: err.message }); }
 }
+
+/**
+ * Creative Attention completion email.
+ *
+ * The processing screen tells every customer "you can leave this page; we'll
+ * email you when ready", but the Creative Attention path only inserted an
+ * in-app notification, so a customer who left - which a video run, measured at
+ * about six minutes, invites - never heard that the analysis was done. The
+ * survey email could not be reused: it counts respondents, promises a
+ * per-question AI insight and chat, and links to the survey results page.
+ */
+async function sendCreativeAnalysisCompletedEmail({ to, name, missionTitle, missionId, placementLabel = '' }) {
+  try {
+    return await resend.emails.send({
+      from: FROM,
+      to,
+      subject: 'Your creative analysis is ready',
+      html: shell({
+        preheader: placementLabel ? `Measured against the ${placementLabel} attention norm.` : 'Attention, emotion and recommendations inside.',
+        body: `
+          <h1 style="color:#fff;font-size:22px;margin:0 0 12px;">Your creative analysis is ready</h1>
+          <p style="color:#9ca3af;">Hi ${name || 'there'},</p>
+          <p style="color:#9ca3af;line-height:1.7;">The analysis of your creative is complete.</p>
+          ${card(`
+            <div style="color:#6b7280;font-size:11px;letter-spacing:.1em;">MISSION</div>
+            <div style="color:#fff;font-size:15px;margin:4px 0 0;">${missionTitle || ''}</div>
+            ${placementLabel ? `<div style="color:#BEF264;font-size:13px;margin-top:10px;">Placement: ${placementLabel}</div>` : ''}
+          `)}
+          <p style="color:#9ca3af;">Your report includes:</p>
+          <ul style="color:#9ca3af;line-height:1.9;padding-left:18px;margin:8px 0 0;">
+            <li>Predicted attention and emotional response</li>
+            <li>Strengths, weaknesses and recommendations</li>
+            <li>PDF, PowerPoint and Excel downloads</li>
+          </ul>
+          <div style="margin-top:24px;">${btn('View my analysis →', `${APP_URL}/creative-results/${missionId}`)}</div>
+        `,
+      }),
+    });
+  } catch (err) { logger.warn('sendCreativeAnalysisCompletedEmail failed', { err: err.message }); }
+}
+
+/**
+ * What happens when a mission fails on VETT's side, in the words every surface
+ * uses: this email, the in-app notification, the Refund Policy (section 2),
+ * the Help page and the website's failure screens. They used to disagree: this
+ * email said "you do not need to do anything, one business day", the policy
+ * and Help page said "email support to request a re-run, two business days",
+ * and the policy promised re-run credits that VETT has no way to issue.
+ * What is true: a failure raises an admin alert automatically, VETT re-runs
+ * the mission at no extra cost, and there are no credits.
+ */
+const MISSION_FAILURE_REMEDY =
+  'VETT has been alerted automatically and will re-run this mission at no extra cost. '
+  + 'You do not need to do anything. If you have not heard from us within two business days, '
+  + 'reply to this email or write to support@vettit.ai with your Mission ID.';
 
 // ─── Invoice ──────────────────────────────────────────────
 async function sendInvoiceEmail({ to, name, invoiceData }) {
@@ -317,6 +372,9 @@ async function sendMissionFailedEmail({
   missionTitle,
   missionId,
   friendlyReason = '',
+  // Where the button goes. A Creative Attention mission lives at
+  // /creative-results/:id, not the survey dashboard.
+  missionPath = '',
 }) {
   try {
     return await resend.emails.send({
@@ -341,16 +399,10 @@ async function sendMissionFailedEmail({
           ${card(`
             <div style="color:#BEF264;font-weight:700;margin-bottom:8px;">What happens next</div>
             <p style="color:#9ca3af;line-height:1.7;margin:0;">
-              Our team has been alerted and will prioritize a re-run of this mission at no extra
-              cost. You do not need to do anything. If you have not heard from us within one
-              business day, reply to this email and a human will pick it up.
+              ${MISSION_FAILURE_REMEDY}
             </p>
           `)}
-          <p style="color:#9ca3af;line-height:1.7;">
-            Prefer to start fresh instead? Most issues clear up on a new run. The same audience and
-            brand context can be re-entered in under a minute.
-          </p>
-          <div style="margin-top:20px;">${btn('Back to your mission →', `${APP_URL}/dashboard/${missionId}`)}</div>
+          <div style="margin-top:20px;">${btn('Back to your mission →', `${APP_URL}${missionPath || `/dashboard/${missionId}`}`)}</div>
           <p style="color:#6b7280;font-size:13px;line-height:1.6;margin-top:20px;">
             Reply to this email at any time if you want a human to look at what went wrong.
           </p>
@@ -390,4 +442,6 @@ module.exports = {
   sendChatOverageEmail,
   sendRetargetingRefundEmail,
   sendMissionFailedEmail, // Pass 44 P0 - no-refund failure notification
+  sendCreativeAnalysisCompletedEmail,
+  MISSION_FAILURE_REMEDY,
 };

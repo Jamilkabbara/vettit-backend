@@ -369,6 +369,27 @@ async function runMission(missionId, opts = {}) {
         });
       }
 
+      // Completion email: the processing screen promises one to every
+      // customer, and this path used to send none.
+      try {
+        const { data: { user } } = await supabase.auth.admin.getUserById(mission.user_id);
+        if (user?.email) {
+          const { resolvePlacement } = require('../services/creativeAttention/placements');
+          const placement = mission.ca_placement
+            ? resolvePlacement(mission.ca_placement, mission.media_type === 'image' ? 'image' : 'video')
+            : null;
+          await emailService.sendCreativeAnalysisCompletedEmail?.({
+            to: user.email,
+            name: user.user_metadata?.name || user.email.split('@')[0],
+            missionTitle: mission.title || 'Your creative analysis',
+            missionId,
+            placementLabel: placement ? placement.label : '',
+          });
+        }
+      } catch (mailErr) {
+        logger.warn('Mission run: creative_attention completion email failed', { missionId, err: mailErr.message });
+      }
+
       return;
     }
 
@@ -1303,7 +1324,7 @@ async function runMission(missionId, opts = {}) {
     // Pass 44 P0 — no-refund-consistent failure copy (Pass 42 G4 /
     // Terms §5.3). The customer gets a support-prioritized re-run,
     // and the copy says exactly that — no money-back promises.
-    const notifBody = `Your "${truncateTitle(mission.title)}" hit a snag before completing. Our team has been notified and will prioritize a re-run of your mission. Contact support if you don't hear from us within one business day.`;
+    const notifBody = `Your "${truncateTitle(mission.title)}" hit a snag before completing. ${emailService.MISSION_FAILURE_REMEDY || ''}`.trim();
     //
     // Pass 49 — SUPPRESSED when the scoped 'failed' write no-opped. Telling
     // a customer their mission failed, when the row says completed because
@@ -1320,7 +1341,7 @@ async function runMission(missionId, opts = {}) {
           .insert({
             user_id: mission.user_id,
             type:    'mission_failed',
-            title:   'Mission failed — re-run prioritized',
+            title:   'Mission failed: we are re-running it',
             body:    notifBody,
             link:    mission.goal_type === 'creative_attention'
               ? `/creative-results/${missionId}`
@@ -1347,6 +1368,7 @@ async function runMission(missionId, opts = {}) {
             missionId,
             // Sanitize the failure reason — strip stack-trace-ish content + cap length.
             friendlyReason: friendlyFailureReason(failureReason),
+            missionPath: mission.goal_type === 'creative_attention' ? `/creative-results/${missionId}` : `/dashboard/${missionId}`,
           });
         }
       } catch (mailErr) {
