@@ -11,6 +11,7 @@ const supabase = require('../db/supabase');
 // of them pages. See src/db/fetchAllRows.js.
 const fetchAllRows = require('../db/fetchAllRows');
 const logger = require('../utils/logger');
+const { NET_REVENUE_COLUMNS, isStripeCharged, grossStripeCents, netRevenueCents } = require('../services/payments/netRevenue');
 
 router.use(authenticate, adminOnly);
 
@@ -24,7 +25,7 @@ function monthRange(yearOffset = 0, monthOffset = 0) {
 async function aggregateMonth(rangeStart, rangeEnd) {
   const { data: missions, error: missionsErr } = await fetchAllRows(supabase, {
     table: 'missions',
-    columns: 'id, goal_type, paid_at, paid_amount_cents, total_price_usd',
+    columns: `id, goal_type, ${NET_REVENUE_COLUMNS}`,
     build: (q) => q
       .gte('paid_at', rangeStart)
       .lt('paid_at', rangeEnd)
@@ -33,9 +34,15 @@ async function aggregateMonth(rangeStart, rangeEnd) {
   });
   if (missionsErr) throw missionsErr;
 
+  // Pass 59: revenue is money kept, net of Stripe refunds. It used to fall
+  // back to total_price_usd, so admin overrides counted as income.
   let revenue_cents = 0;
+  let stripe_gross_cents = 0;
+  let stripe_charges = 0;
   for (const m of (missions || [])) {
-    revenue_cents += (m.paid_amount_cents || (m.total_price_usd ? Math.round(m.total_price_usd * 100) : 0));
+    revenue_cents += netRevenueCents(m);
+    stripe_gross_cents += grossStripeCents(m);
+    if (isStripeCharged(m)) stripe_charges++;
   }
   const revenue_usd = revenue_cents / 100;
   const paid_missions = (missions || []).length;
@@ -60,7 +67,9 @@ async function aggregateMonth(rangeStart, rangeEnd) {
     .filter(v => v.category === 'annual')
     .reduce((s, v) => s + Number(v.cost_usd || 0) / 12, 0);
 
-  const stripe_fees_usd = paid_missions * 0.30 + revenue_usd * 0.029;
+  // Stripe charges fees on the capture and keeps them on a refund, and charges
+  // nothing for a mission it never processed.
+  const stripe_fees_usd = stripeFeeUsd(stripe_charges, stripe_gross_cents);
   const cost_usd = ai_cost_usd + stripe_fees_usd + fixed_monthly + annual_monthlyized;
 
   const net_contribution_usd = revenue_usd - cost_usd;
@@ -72,7 +81,13 @@ async function aggregateMonth(rangeStart, rangeEnd) {
     net_contribution_usd: Math.round(net_contribution_usd * 100) / 100,
     gross_margin_pct: Math.round(gross_margin_pct * 10) / 10,
     paid_missions,
+    stripe_charges,
+    stripe_gross_usd: stripe_gross_cents / 100,
   };
+}
+
+function stripeFeeUsd(charges, grossCents) {
+  return charges * 0.30 + (grossCents / 100) * 0.029;
 }
 
 router.get('/dashboard', async (req, res, next) => {
@@ -99,7 +114,7 @@ router.get('/dashboard', async (req, res, next) => {
         .eq('success', false).gte('created_at', new Date(Date.now() - 7 * 86400000).toISOString()),
       fetchAllRows(supabase, {
         table: 'missions',
-        columns: 'id, goal_type, paid_at, paid_amount_cents, total_price_usd',
+        columns: `id, goal_type, ${NET_REVENUE_COLUMNS}`,
         build: (q) => q.not('paid_at', 'is', null),
         label: 'costs per-goal revenue',
       }),
@@ -130,7 +145,7 @@ router.get('/dashboard', async (req, res, next) => {
         failed_calls: aiFailedRes.count || 0,
       },
       stripe: {
-        estimated_30d_usd: Math.round((thisAgg.paid_missions * 0.30 + thisAgg.revenue_usd * 0.029) * 100) / 100,
+        estimated_30d_usd: Math.round(stripeFeeUsd(thisAgg.stripe_charges, thisAgg.stripe_gross_usd * 100) * 100) / 100,
         formula: '2.9% + $0.30 per successful charge',
       },
     };
@@ -140,7 +155,7 @@ router.get('/dashboard', async (req, res, next) => {
       const g = m.goal_type || 'unknown';
       perGoal[g] = perGoal[g] || { paid_missions: 0, revenue_cents: 0 };
       perGoal[g].paid_missions++;
-      perGoal[g].revenue_cents += (m.paid_amount_cents || (m.total_price_usd ? Math.round(m.total_price_usd * 100) : 0));
+      perGoal[g].revenue_cents += netRevenueCents(m);
     }
     const per_goal_type = Object.entries(perGoal).map(([goal_type, v]) => {
       const revenue_usd = v.revenue_cents / 100;

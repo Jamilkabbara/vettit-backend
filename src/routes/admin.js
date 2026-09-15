@@ -8,6 +8,7 @@ const fetchAllResponses = require('../db/fetchAllResponses');
 // 1000 rows for an unbounded select and says nothing about it, so an unpaged
 // SUM over the spend log is short without ever looking wrong. See the helper.
 const fetchAllRows = require('../db/fetchAllRows');
+const { NET_REVENUE_COLUMNS, isStripeCharged, netRevenueUsd, sumNetRevenueUsd } = require('../services/payments/netRevenue');
 const { isComingSoon, notAvailableError } = require('../config/comingSoon');
 const logger = require('../utils/logger');
 // Pass 42 F2 — Stripe promo sync. Lazy fail at call time so a
@@ -124,31 +125,31 @@ router.get('/overview', async (req, res, next) => {
     // fresh total directly from missions in this request and trust
     // the freshly-computed value when it diverges from the RPC by
     // more than $1. Defensive: if either is missing, prefer the other.
-    const { data: liveRevRows } = await supabase
-      .from('missions')
-      .select('total_price_usd')
-      .in('status', ['paid', 'completed'])
-      .gte('paid_at', start.toISOString())
-      .lt('paid_at', end.toISOString());
-    const liveRev = (liveRevRows || []).reduce(
-      (sum, r) => sum + Number(r.total_price_usd || 0),
-      0,
-    );
-    const rpcRev = Number(s.total_revenue_usd) || 0;
-    const totalRevenue = liveRev > 0 || rpcRev === 0 ? liveRev : rpcRev;
+    //
+    // Pass 59: revenue is money kept, net of Stripe refunds, and only from
+    // missions Stripe charged (services/payments/netRevenue.js). It used to be
+    // the list price of every paid/completed mission, admin overrides and
+    // refunded charges included.
+    const { data: liveRevRows, error: liveRevErr } = await fetchAllRows(supabase, {
+      table: 'missions',
+      columns: `id, ${NET_REVENUE_COLUMNS}`,
+      build: (q) => q.gte('paid_at', start.toISOString()).lt('paid_at', end.toISOString()),
+      label: 'overview net revenue',
+    });
+    if (liveRevErr) throw liveRevErr;
+    const totalRevenue = sumNetRevenueUsd(liveRevRows);
+    const chargedMissions = (liveRevRows || []).filter(isStripeCharged).length;
 
     // Match prior-window revenue via the same direct path so the delta
     // calc is apples-to-apples.
-    const { data: priorRevRows } = await supabase
-      .from('missions')
-      .select('total_price_usd')
-      .in('status', ['paid', 'completed'])
-      .gte('paid_at', priorStart.toISOString())
-      .lt('paid_at', start.toISOString());
-    const priorTotalRev = (priorRevRows || []).reduce(
-      (sum, r) => sum + Number(r.total_price_usd || 0),
-      0,
-    );
+    const { data: priorRevRows, error: priorRevErr } = await fetchAllRows(supabase, {
+      table: 'missions',
+      columns: `id, ${NET_REVENUE_COLUMNS}`,
+      build: (q) => q.gte('paid_at', priorStart.toISOString()).lt('paid_at', start.toISOString()),
+      label: 'overview prior net revenue',
+    });
+    if (priorRevErr) throw priorRevErr;
+    const priorTotalRev = sumNetRevenueUsd(priorRevRows);
 
     // Defensive no-cache headers on /overview so browsers/CDNs don't
     // serve a stale response after a fresh mission completion.
@@ -161,8 +162,10 @@ router.get('/overview', async (req, res, next) => {
         total_missions: { value: missionsPaid, delta_pct: calcDelta(missionsPaid, priorPaid) },
         total_revenue:  { value: totalRevenue, delta_pct: calcDelta(totalRevenue, priorTotalRev) },
         active_users:   { value: activeUsers, delta_pct: 0 },
+        // Kept per mission Stripe charged. Dividing by every paid mission
+        // spread the revenue over admin overrides and free promos too.
         avg_mission_value: {
-          value: missionsPaid > 0 ? totalRevenue / missionsPaid : 0,
+          value: chargedMissions > 0 ? totalRevenue / chargedMissions : 0,
           delta_pct: 0,
         },
       },
@@ -206,7 +209,9 @@ router.get('/missions', async (req, res, next) => {
       .from('missions')
       .select(
         `id, user_id, status, goal_type, brief, total_price_usd, ai_cost_usd,
-         respondent_count, country, promo_code, discount_usd,
+         respondent_count, country, promo_code, discount_usd, payment_method,
+         paid_amount_cents, refunded_amount_cents, stripe_refund_ids,
+         latest_payment_intent_id, checkout_session_id,
          created_at, paid_at, completed_at, executive_summary`,
         { count: 'exact' }
       )
@@ -297,7 +302,9 @@ router.get('/missions', async (req, res, next) => {
         ...m,
         ai_cost_usd: liveAiCost,
         user:        profileMap[m.user_id] || null,
-        margin_usd:  Number(m.total_price_usd || 0) - liveAiCost,
+        // Money kept after refunds; total_price_usd stays as the list price.
+        net_revenue_usd: netRevenueUsd(m),
+        margin_usd:  netRevenueUsd(m) - liveAiCost,
       };
     });
 
@@ -361,17 +368,16 @@ router.get('/users', async (req, res, next) => {
     // Aggregate mission stats per user
     const ids = (profiles || []).map(p => p.id);
     const { data: missionStats } = ids.length
-      ? await supabase.from('missions').select('user_id, status, total_price_usd').in('user_id', ids)
+      ? await supabase.from('missions').select(`user_id, status, ${NET_REVENUE_COLUMNS}`).in('user_id', ids)
       : { data: [] };
 
     const statsMap = {};
     for (const m of missionStats || []) {
       if (!statsMap[m.user_id]) statsMap[m.user_id] = { mission_count: 0, ltv_usd: 0, paid_count: 0 };
       statsMap[m.user_id].mission_count++;
-      if (['paid', 'completed'].includes(m.status)) {
-        statsMap[m.user_id].ltv_usd    += Number(m.total_price_usd || 0);
-        statsMap[m.user_id].paid_count++;
-      }
+      // Lifetime value is money kept, net of refunds (Pass 59).
+      statsMap[m.user_id].ltv_usd += netRevenueUsd(m);
+      if (['paid', 'completed'].includes(m.status)) statsMap[m.user_id].paid_count++;
     }
 
     const enriched = (profiles || []).map(p => ({
@@ -424,17 +430,16 @@ router.get('/ai-costs', async (req, res, next) => {
       }),
       fetchAllRows(supabase, {
         table: 'missions',
-        columns: 'id, title, respondent_count, total_price_usd, paid_at',
-        build: (q) => q.in('status', ['paid', 'completed'])
-          .gte('paid_at', start.toISOString()).lt('paid_at', end.toISOString()),
+        columns: `id, title, respondent_count, total_price_usd, ${NET_REVENUE_COLUMNS}`,
+        build: (q) => q.gte('paid_at', start.toISOString()).lt('paid_at', end.toISOString()),
         label: 'ai-costs paid missions',
       }),
     ]);
     if (dailyAi.error)  throw dailyAi.error;
     if (dailyRev.error) throw dailyRev.error;
 
-    // Bucket by yyyy-mm-dd. Cost from ai_calls.cost_usd, revenue from
-    // missions.total_price_usd. Round cost to 4dp (Anthropic prices in
+    // Bucket by yyyy-mm-dd. Cost from ai_calls.cost_usd, revenue is money kept
+    // net of refunds (netRevenue.js). Round cost to 4dp (Anthropic prices in
     // fractions of cents) and revenue to 2dp.
     const aiByDay = {};
     for (const r of (dailyAi.data || [])) {
@@ -446,7 +451,7 @@ router.get('/ai-costs', async (req, res, next) => {
     for (const r of (dailyRev.data || [])) {
       const day = String(r.paid_at || '').slice(0, 10);
       if (!day) continue;
-      revByDay[day] = (revByDay[day] || 0) + Number(r.total_price_usd || 0);
+      revByDay[day] = (revByDay[day] || 0) + netRevenueUsd(r);
     }
     const allDays = new Set([...Object.keys(aiByDay), ...Object.keys(revByDay)]);
     const dailyBuckets = Array.from(allDays).sort().map(day => ({
@@ -487,8 +492,9 @@ router.get('/ai-costs', async (req, res, next) => {
     })).sort((a, b) => b.total_cost_usd - a.total_cost_usd);
 
     // -- Mission margins, from the ai_calls log --------------------------------
-    // Revenue is the stored mission price - that IS the revenue figure, it is
-    // what the customer was billed. Cost is summed from ai_calls, never from
+    // Revenue is money kept: the Stripe charge net of refunds (Pass 59). The
+    // stored mission price is a list price and was counted here for missions
+    // never charged or refunded in full. Cost is summed from ai_calls, never from
     // missions.ai_cost_usd. A mission with no logged calls costs $0 here, which
     // is what the log says; there is deliberately no fallback to the stored
     // column, because the whole point of this table is what the log knows.
@@ -510,7 +516,7 @@ router.get('/ai-costs', async (req, res, next) => {
     }
     const missionMargins = (dailyRev.data || [])
       .map((m) => {
-        const price = Number(m.total_price_usd || 0);
+        const price = netRevenueUsd(m);
         const cost  = Math.round((marginCostByMission[m.id] || 0) * 10000) / 10000;
         const net   = Math.round((price - cost) * 10000) / 10000;
         return {
@@ -1405,17 +1411,15 @@ router.get('/revenue', async (req, res, next) => {
     const [missionsRes, priorMissionsRes, bucketsRes, dailyCallsRes] = await Promise.all([
       fetchAllRows(supabase, {
         table: 'missions',
-        columns: 'id, total_price_usd, ai_cost_usd, status, goal_type, user_id, paid_at',
-        build: (q) => q.in('status', ['paid', 'completed'])
-          .gte('paid_at', start.toISOString())
+        columns: `id, ai_cost_usd, status, goal_type, user_id, ${NET_REVENUE_COLUMNS}`,
+        build: (q) => q.gte('paid_at', start.toISOString())
           .lt('paid_at', end.toISOString()),
         label: 'revenue current missions',
       }),
       fetchAllRows(supabase, {
         table: 'missions',
-        columns: 'id, total_price_usd',
-        build: (q) => q.in('status', ['paid', 'completed'])
-          .gte('paid_at', priorStart.toISOString())
+        columns: `id, ${NET_REVENUE_COLUMNS}`,
+        build: (q) => q.gte('paid_at', priorStart.toISOString())
           .lt('paid_at', start.toISOString()),
         label: 'revenue prior missions',
       }),
@@ -1479,18 +1483,21 @@ router.get('/revenue', async (req, res, next) => {
       ) / 10000;
     }
 
-    const currRevenue = curr.reduce((s, m) => s + Number(m.total_price_usd || 0), 0);
-    const prevRevenue = prev.reduce((s, m) => s + Number(m.total_price_usd || 0), 0);
+    // Pass 59: money kept, net of refunds, from missions Stripe charged. Cost
+    // still covers every paid mission, because a free or refunded mission ran.
+    const currRevenue = sumNetRevenueUsd(curr);
+    const prevRevenue = sumNetRevenueUsd(prev);
+    const currCharged = curr.filter(isStripeCharged).length;
     const currCost    = curr.reduce((s, m) => s + (
       loggedCostByMission[m.id] != null ? loggedCostByMission[m.id] : Number(m.ai_cost_usd || 0)
     ), 0);
     const currGross   = currRevenue - currCost;
-    const avgOrder    = curr.length > 0 ? currRevenue / curr.length : 0;
+    const avgOrder    = currCharged > 0 ? currRevenue / currCharged : 0;
 
     // Goal-type breakdown
     const goalBreakdown = {};
     for (const m of curr) {
-      goalBreakdown[m.goal_type] = (goalBreakdown[m.goal_type] || 0) + Number(m.total_price_usd || 0);
+      goalBreakdown[m.goal_type] = Math.round(((goalBreakdown[m.goal_type] || 0) + netRevenueUsd(m)) * 100) / 100;
     }
 
     res.json({
@@ -1499,6 +1506,7 @@ router.get('/revenue', async (req, res, next) => {
       gross_profit:   { value: currGross,   delta_pct: 0 },
       avg_order:      { value: avgOrder,    delta_pct: 0 },
       mission_count:  curr.length,
+      charged_mission_count: currCharged,
       goal_breakdown: goalBreakdown,
       // Remap daily_revenue_buckets RPC columns (bucket_date/revenue_usd) to the
       // keys the FE daily chart binds (day/cost_usd). Without this the X-axis day
@@ -1530,7 +1538,7 @@ router.get('/users/:id', async (req, res, next) => {
     const [profileRes, missionsRes, notesRes] = await Promise.all([
       supabase.from('profiles').select('*').eq('id', id).single(),
       supabase.from('missions')
-        .select('id, status, goal_type, brief, total_price_usd, ai_cost_usd, respondent_count, created_at, paid_at, completed_at')
+        .select(`id, status, goal_type, brief, total_price_usd, ai_cost_usd, respondent_count, created_at, completed_at, ${NET_REVENUE_COLUMNS}`)
         .eq('user_id', id)
         .order('created_at', { ascending: false }),
       supabase.from('admin_user_notes')
@@ -1541,9 +1549,11 @@ router.get('/users/:id', async (req, res, next) => {
 
     if (profileRes.error) return res.status(404).json({ error: 'User not found' });
 
-    const missions = missionsRes.data || [];
+    const missions = (missionsRes.data || []).map((m) => ({ ...m, net_revenue_usd: netRevenueUsd(m) }));
     const paidMissions = missions.filter(m => ['paid', 'completed'].includes(m.status));
-    const ltv = paidMissions.reduce((s, m) => s + Number(m.total_price_usd || 0), 0);
+    // Pass 59: money kept, net of refunds; average over missions Stripe charged.
+    const ltv = sumNetRevenueUsd(missions);
+    const chargedCount = missions.filter(isStripeCharged).length;
 
     res.json({
       profile:  profileRes.data,
@@ -1553,7 +1563,7 @@ router.get('/users/:id', async (req, res, next) => {
         mission_count: missions.length,
         paid_count:    paidMissions.length,
         ltv_usd:       ltv,
-        avg_order:     paidMissions.length > 0 ? ltv / paidMissions.length : 0,
+        avg_order:     chargedCount > 0 ? ltv / chargedCount : 0,
       },
     });
   } catch (err) { next(err); }

@@ -87,6 +87,12 @@ function seedMission({ id, price, storedCost, calls }) {
     goal_type: 'validate',
     brief: 'b',
     total_price_usd: price,
+    // A kept Stripe charge for the same amount: revenue is money kept, net of
+    // refunds (netRevenue.js), and these tests are about cost, not refunds.
+    paid_amount_cents: Math.round(price * 100),
+    refunded_amount_cents: 0,
+    stripe_refund_ids: [],
+    latest_payment_intent_id: `pi_${id}`,
     // The stale denormalised sum. Nothing in the response may equal this.
     ai_cost_usd: storedCost,
     ai_spend_usd_actual: storedCost,
@@ -161,7 +167,7 @@ describe('GET /api/admin/ai-costs — mission_margins', () => {
     const row = res.body.mission_margins.find((m) => m.mission_id === 'm-drifted');
     expect(row.ai_cost_usd).toBeCloseTo(4, 4);
     expect(row.cost_usd).toBeCloseTo(4, 4);
-    // Revenue is the stored price - that IS what the customer was billed.
+    // Revenue is the kept Stripe charge for this mission.
     expect(row.revenue_usd).toBeCloseTo(100, 4);
     expect(row.net_margin_usd).toBeCloseTo(96, 4);
     expect(row.margin_pct).toBeCloseTo(96, 2);
@@ -254,5 +260,52 @@ describe('GET /api/admin/missions', () => {
     const res = await request(app).get('/api/admin/missions?limit=50');
     const row = res.body.data.find((m) => m.id === 'legacy');
     expect(row.ai_cost_usd).toBeCloseTo(2.5, 4);
+  });
+});
+
+describe('admin revenue is money kept, net of Stripe refunds', () => {
+  // The production mix in miniature: one kept $9 charge, one $9 charge
+  // refunded in full, and a $314 admin override that was never charged.
+  function seedMix() {
+    seedMission({ id: 'kept', price: 9, storedCost: 0, calls: [0.5] });
+    seedMission({ id: 'refunded', price: 9, storedCost: 0, calls: [0.5] });
+    Object.assign(tables.missions.find((m) => m.id === 'refunded'), { refunded_amount_cents: 900, stripe_refund_ids: ['re_1'] });
+    seedMission({ id: 'override', price: 314, storedCost: 0, calls: [1] });
+    Object.assign(tables.missions.find((m) => m.id === 'override'), { payment_method: 'admin_override', paid_amount_cents: null, latest_payment_intent_id: null });
+  }
+
+  it('the overview headline and average count only the kept charge', async () => {
+    seedMix();
+    const res = await request(app).get('/api/admin/overview?range=30d');
+    expect(res.status).toBe(200);
+    expect(res.body.kpis.total_revenue.value).toBeCloseTo(9, 4);
+    // $9 kept across the two missions Stripe charged.
+    expect(res.body.kpis.avg_mission_value.value).toBeCloseTo(4.5, 4);
+  });
+
+  it('the revenue tab nets refunds, excludes overrides, and still costs every mission', async () => {
+    seedMix();
+    const res = await request(app).get('/api/admin/revenue?range=30d');
+    expect(res.body.revenue.value).toBeCloseTo(9, 4);
+    expect(res.body.goal_breakdown.validate).toBeCloseTo(9, 4);
+    expect(res.body.gross_profit.value).toBeCloseTo(9 - 2, 4);
+    expect(res.body.avg_order.value).toBeCloseTo(4.5, 4);
+  });
+
+  it('mission margins and the missions list show the refund and the override as $0 revenue', async () => {
+    seedMix();
+    const costs = await request(app).get('/api/admin/ai-costs?range=30d');
+    const margin = Object.fromEntries(costs.body.mission_margins.map((m) => [m.mission_id, m]));
+    expect(margin.kept.revenue_usd).toBeCloseTo(9, 4);
+    expect(margin.refunded.revenue_usd).toBe(0);
+    expect(margin.override.revenue_usd).toBe(0);
+    expect(margin.override.margin_usd).toBeCloseTo(-1, 4);
+
+    const list = await request(app).get('/api/admin/missions?limit=50');
+    const row = Object.fromEntries(list.body.data.map((m) => [m.id, m]));
+    expect(row.refunded.net_revenue_usd).toBe(0);
+    expect(row.refunded.margin_usd).toBeCloseTo(-0.5, 4);
+    expect(row.override.total_price_usd).toBe(314); // the list price is still shown as the price
+    expect(row.override.net_revenue_usd).toBe(0);
   });
 });
