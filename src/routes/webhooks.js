@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { constructWebhookEvent } = require('../services/stripe');
+const { constructWebhookEvent, stripeClient } = require('../services/stripe');
+const { syncMissionRefunds } = require('../services/payments/syncMissionRefunds');
 const supabase = require('../db/supabase');
 const logger = require('../utils/logger');
 const { recordPaidRedemption } = require('../services/promo/promoCodes');
@@ -505,9 +506,34 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
       break;
     }
 
-    case 'charge.refunded': {
-      const charge = event.data.object;
-      logger.info('Charge refunded', { chargeId: charge.id, amount: charge.amount_refunded });
+    // Refunds. charge.refunded fires when a refund is created; a refund that
+    // is later canceled or fails arrives as charge.refund.updated. Both only
+    // name the PaymentIntent: the amounts written are read fresh from Stripe
+    // by syncMissionRefunds, so a replayed, reordered or forged event cannot
+    // set a figure, and delivering the same event twice changes nothing.
+    // These used to be unrecorded: 21 of the 22 Stripe charges for missions
+    // were refunded in full and every one still read as paid.
+    case 'charge.refunded':
+    case 'charge.refund.updated': {
+      const obj = event.data.object;
+      const paymentIntentId = typeof obj.payment_intent === 'string' ? obj.payment_intent : obj.payment_intent?.id;
+      if (!paymentIntentId) {
+        logger.warn('Refund event without a payment_intent; nothing to record', { type: event.type, objectId: obj.id });
+        break;
+      }
+      try {
+        const result = await syncMissionRefunds({
+          stripe: stripeClient, supabase, updateMission, logger, paymentIntentId,
+        });
+        logger.info('Refund event handled', {
+          type: event.type, matched: result.matched, written: result.written ?? false,
+          missionId: result.plan?.missionId, refundedCents: result.plan?.refundedCents,
+        });
+      } catch (err) {
+        // Not marked processed: Stripe retries, and the sync is idempotent.
+        logger.error('Refund sync failed', { type: event.type, paymentIntentId, err: err.message });
+        return res.status(500).json({ error: 'refund sync failed' });
+      }
       break;
     }
 
