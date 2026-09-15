@@ -22,13 +22,22 @@
  *   that does not sum.
  * - No list price is invented for a free-promo mission: price_estimated is a
  *   setup-time estimate and does not match the ladder for those rows.
+ * - Refunds (September 2026). `total` stays the amount charged, because that
+ *   is what the customer bought; `refunded` is refunded_amount_cents, written
+ *   from Stripe by the refund webhook, and `net` is what VETT kept. A fully
+ *   refunded charge has status 'refunded' and a partial one
+ *   'partially_refunded', never 'paid'. 21 of 22 Stripe charges were refunded
+ *   and every invoice for them used to say PAID.
  */
 'use strict';
 
 const cents = (v) => (v == null || v === '' ? null : Math.round(Number(v) * 100));
 
 function paidVia(m) {
-  if (m.latest_payment_intent_id) return 'stripe';
+  // A recorded Stripe refund or checkout session is evidence of a Stripe
+  // charge: seven April missions were charged without storing the
+  // PaymentIntent id.
+  if (m.latest_payment_intent_id || m.checkout_session_id || (m.stripe_refund_ids && m.stripe_refund_ids.length)) return 'stripe';
   if (m.payment_method === 'admin_override') return 'admin';
   if (m.promo_code) return 'promo';
   return 'unrecorded';
@@ -51,6 +60,10 @@ function buildInvoice(m) {
     ? { base, targetingSurcharge: targeting, extraQuestionsCost: extraQuestions, discount }
     : { base: totalCents, targetingSurcharge: 0, extraQuestionsCost: 0, discount: 0 };
 
+  const refundedCents = Math.min(Number(m.refunded_amount_cents) || 0, totalCents);
+  const netCents = totalCents - refundedCents;
+  const status = refundedCents === 0 ? 'paid' : netCents === 0 ? 'refunded' : 'partially_refunded';
+
   const usd = (c) => Math.round(c) / 100;
   return {
     invoiceId:        `VTT-${m.id.substring(0, 8).toUpperCase()}`,
@@ -59,7 +72,7 @@ function buildInvoice(m) {
     goalType:         m.goal_type || null,
     respondentCount:  m.respondent_count,
     date:             m.paid_at,
-    status:           'paid',
+    status,
     paidVia:          via,
     promoCode:        m.promo_code || null,
     itemised,
@@ -69,9 +82,13 @@ function buildInvoice(m) {
       extraQuestionsCost: usd(lines.extraQuestionsCost),
       discount:           usd(lines.discount),
     },
-    total:  usd(totalCents),
-    amount: usd(totalCents),   // kept for older clients
+    total:    usd(totalCents),      // charged
+    refunded: usd(refundedCents),
+    net:      usd(netCents),        // kept by VETT after refunds
+    amount:   usd(totalCents),      // kept for older clients
   };
 }
 
-module.exports = { buildInvoice, paidVia };
+const INVOICE_COLUMNS = 'id, title, brief, goal_type, status, respondent_count, paid_at, total_price_usd, base_cost_usd, targeting_surcharge_usd, extra_questions_cost_usd, discount_usd, promo_code, paid_amount_cents, payment_method, latest_payment_intent_id, checkout_session_id, refunded_amount_cents, stripe_refund_ids';
+
+module.exports = { buildInvoice, paidVia, INVOICE_COLUMNS };
