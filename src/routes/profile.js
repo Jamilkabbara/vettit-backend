@@ -3,7 +3,7 @@ const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const supabase = require('../db/supabase');
 const logger = require('../utils/logger');
-const { buildInvoice } = require('../services/invoices/buildInvoice');
+const { buildInvoice, INVOICE_COLUMNS } = require('../services/invoices/buildInvoice');
 
 // GET /api/profile — get current user's profile
 router.get('/', authenticate, async (req, res, next) => {
@@ -67,7 +67,7 @@ router.get('/invoices', authenticate, async (req, res, next) => {
     // to have no invoice because this read only 'paid' and 'completed'.
     const { data, error } = await supabase
       .from('missions')
-      .select('id, title, brief, goal_type, status, respondent_count, paid_at, total_price_usd, base_cost_usd, targeting_surcharge_usd, extra_questions_cost_usd, discount_usd, promo_code, paid_amount_cents, payment_method, latest_payment_intent_id')
+      .select(INVOICE_COLUMNS)
       .eq('user_id', req.user.id)
       .not('paid_at', 'is', null)
       .order('paid_at', { ascending: false });

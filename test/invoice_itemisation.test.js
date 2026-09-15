@@ -44,3 +44,41 @@ describe('buildInvoice', () => {
     expect(inv.itemised).toBe(false);
   });
 });
+
+describe('refunds on invoices', () => {
+  // af36a36d: charged $9 through Stripe, refunded $9 in full (the legacy
+  // partial_refund_amount_cents of $3.60 is superseded and not read).
+  const charged = { id: 'af36a36d-0000', goal_type: 'brand_lift', base_cost_usd: '9.00', targeting_surcharge_usd: '0.00', extra_questions_cost_usd: '0.00', discount_usd: '0.00', total_price_usd: '9.00', paid_amount_cents: 900, latest_payment_intent_id: 'pi_a', paid_at: '2026-04-28', respondent_count: 5, partial_refund_amount_cents: 360 };
+
+  test('a fully refunded charge reads refunded, never paid, and nets to zero', () => {
+    const inv = buildInvoice({ ...charged, refunded_amount_cents: 900, stripe_refund_ids: ['re_1'] });
+    expect(inv).toMatchObject({ status: 'refunded', total: 9, refunded: 9, net: 0 });
+    expect(inv.status).not.toBe('paid');
+  });
+
+  test('a partial refund reads partially refunded with the kept amount as net', () => {
+    const inv = buildInvoice({ ...charged, paid_amount_cents: 1900, total_price_usd: '19.00', base_cost_usd: '19.00', refunded_amount_cents: 360 });
+    expect(inv).toMatchObject({ status: 'partially_refunded', total: 19, refunded: 3.6, net: 15.4 });
+  });
+
+  test('no refund: paid, and net equals the charge', () => {
+    const inv = buildInvoice({ ...charged, refunded_amount_cents: 0 });
+    expect(inv).toMatchObject({ status: 'paid', total: 9, refunded: 0, net: 9 });
+  });
+
+  test('the charged lines still sum to total; the refund is its own line, not a discount', () => {
+    const inv = buildInvoice({ ...charged, refunded_amount_cents: 900 });
+    expect(sum(inv)).toBe(inv.total);
+    expect(inv.lines.discount).toBe(0);
+  });
+
+  test('a mission charged in April without its PaymentIntent stored is still paid via Stripe', () => {
+    const inv = buildInvoice({ ...charged, latest_payment_intent_id: null, paid_amount_cents: 3500, total_price_usd: '35.00', base_cost_usd: '35.00', refunded_amount_cents: 3500, stripe_refund_ids: ['re_7'] });
+    expect(inv).toMatchObject({ paidVia: 'stripe', status: 'refunded', net: 0 });
+  });
+
+  test('a free promo mission is paid at $0, not refunded', () => {
+    const inv = buildInvoice({ id: '10ecb820-0000', promo_code: 'VETT100', paid_amount_cents: null, total_price_usd: null, paid_at: '2026-09-08', refunded_amount_cents: 0 });
+    expect(inv).toMatchObject({ status: 'paid', total: 0, net: 0, refunded: 0 });
+  });
+});

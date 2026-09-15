@@ -885,6 +885,44 @@ async function runJob4() {
   }
 }
 
+// ─── Job 5: daily paid-mission audit ─────────────────────────────────────
+//
+// Every mission marked paid must be explained by a Stripe charge that matches
+// it, a promo code, an admin override with a reason, or a reviewed exception
+// (services/payments/paidMissionAudit.js). A mission marked paid with none of
+// those went unnoticed for five months. Each unexplained mission raises one
+// admin alert (deduplicated by alertAdmin), which Job 4 mails.
+
+const PAID_AUDIT_INTERVAL_MS = Number(process.env.PAID_AUDIT_INTERVAL_MS || 24 * 60 * 60 * 1000);
+let _job5Timer = null;
+let _job5Running = false;
+
+async function runJob5PaidAudit({ auditPaidMissions = require('../services/payments/paidMissionAudit').auditPaidMissions } = {}) {
+  if (_job5Running) return { skipped: true, reason: 'overlap' };
+  _job5Running = true;
+  try {
+    if (!(await tryAcquireLock('paid_mission_audit'))) return { skipped: true, reason: 'lock' };
+    try {
+      const results = await auditPaidMissions({ supabase, stripe: stripeService.stripeClient });
+      const problems = results.filter((r) => !r.ok);
+      for (const p of problems) {
+        await alertAdmin('paid_mission_unexplained', p.missionId, {
+          problem: p.problem, detail: p.detail, explanation: p.explanation, title: p.title || null,
+        });
+      }
+      logger.info('[cron] job5: paid mission audit', { checked: results.length, unexplained: problems.length });
+      return { checked: results.length, unexplained: problems.length };
+    } finally {
+      await releaseLock('paid_mission_audit');
+    }
+  } catch (err) {
+    logger.error('[cron] job5 paid mission audit failed (non-fatal)', { err: err?.message });
+    return { failed: true, reason: err?.message };
+  } finally {
+    _job5Running = false;
+  }
+}
+
 function init(opts = {}) {
   const { job1IntervalMs = JOB1_INTERVAL_MS_DEFAULT,
           job2IntervalMs = JOB2_INTERVAL_MS_DEFAULT } = opts;
@@ -901,6 +939,7 @@ function init(opts = {}) {
   _job1Timer = setInterval(() => { runJob1().catch(() => {}); }, job1IntervalMs);
   _job2Timer = setInterval(() => { runJob2().catch(() => {}); }, job2IntervalMs);
   _job4Timer = setInterval(() => { runJob4().catch(() => {}); }, DIGEST_INTERVAL_MS);
+  _job5Timer = setInterval(() => { runJob5PaidAudit().catch(() => {}); }, PAID_AUDIT_INTERVAL_MS);
 
   // Pass 22 Bug 22.10c hotfix — kick off both jobs ~30s after init so the
   // first tick happens regardless of redeploy frequency. Without this,
@@ -917,6 +956,8 @@ function init(opts = {}) {
   // Pass 46 Phase 2 — resume stranded processing missions ~20s after
   // boot (before Job 1 could ever see them as stuck).
   setTimeout(() => { runJob3BootResume().catch(() => {}); }, 20 * 1000);
+  // Job 5 ~2 minutes after boot, clear of the recovery primers.
+  setTimeout(() => { runJob5PaidAudit().catch(() => {}); }, 120 * 1000);
 
   logger.info('[cron] missionRecovery started', {
     instance: _instanceId,
@@ -944,11 +985,16 @@ function shutdown() {
     clearInterval(_job4Timer);
     _job4Timer = null;
   }
+  if (_job5Timer) {
+    clearInterval(_job5Timer);
+    _job5Timer = null;
+  }
 }
 
 module.exports = {
   init,
   runJob4,
+  runJob5PaidAudit,
   shutdown,
   // exported for tests / one-off admin tooling
   runJob1,
