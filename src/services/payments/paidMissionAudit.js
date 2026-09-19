@@ -29,7 +29,7 @@ const PAID_WITHOUT_CHARGE_EXCEPTIONS = Object.freeze({
   '5a07eaf8-a713-4411-aa5b-ae41b628f0ff': 'Internal [UN-GATE TEST] audience_profiling run, 31 Aug 2026, inserted already paid at $0.',
 });
 
-const AUDIT_COLUMNS = 'id, title, paid_at, paid_amount_cents, refunded_amount_cents, stripe_refund_ids, latest_payment_intent_id, checkout_session_id, promo_code, payment_method';
+const AUDIT_COLUMNS = 'id, title, paid_at, paid_amount_cents, refunded_amount_cents, stripe_refund_ids, latest_payment_intent_id, checkout_session_id, promo_code, payment_method, rejected_payment_intent_ids';
 
 /**
  * Explain one paid mission. `ctx` carries what was read once for the batch:

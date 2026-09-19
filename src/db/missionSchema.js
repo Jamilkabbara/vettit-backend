@@ -126,6 +126,8 @@ const SERVER_OWNED_COLUMNS = new Set([
   'refunded_amount_cents', // set from Stripe by services/payments/syncMissionRefunds.js
   'stripe_refund_ids',
   'refunds_synced_at',
+  'superseded_checkout_session_ids',
+  'rejected_payment_intent_ids',
   'payment_method',
   'latest_payment_intent_id',
   'checkout_session_id',

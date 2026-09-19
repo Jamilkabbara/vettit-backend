@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const { constructWebhookEvent, stripeClient } = require('../services/stripe');
 const { syncMissionRefunds } = require('../services/payments/syncMissionRefunds');
+const { guardPaymentCoversMission } = require('../services/payments/checkoutInvalidation');
+const { checkPaymentCoversRun } = require('../services/payments/paymentCoversRun');
 const supabase = require('../db/supabase');
 const logger = require('../utils/logger');
 const { recordPaidRedemption } = require('../services/promo/promoCodes');
@@ -217,6 +219,24 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
       // ─ Mission payment ───────────────────────────────────
       const missionId = pi.metadata?.missionId;
       if (missionId) {
+        // Before anything marks the mission paid: the payment must cover the
+        // mission as it NOW is. A checkout priced before the customer changed
+        // the mission is refunded in full rather than run for the old price
+        // (services/payments/checkoutInvalidation.js). On a Stripe error this
+        // returns 500 without markProcessed, so Stripe retries.
+        let guard;
+        try {
+          guard = await guardPaymentCoversMission({
+            stripe: stripeClient, supabase, pi, checkPaymentCoversRun, email: emailService,
+          });
+        } catch (guardErr) {
+          logger.error('webhook:payment_intent.succeeded coverage guard failed', { missionId, pi_id: pi.id, err: guardErr.message });
+          return res.status(500).json({ error: 'coverage guard failed' });
+        }
+        if (!guard.accepted) {
+          logger.warn('webhook:payment_intent.succeeded — payment refused, mission left unpaid', { missionId, pi_id: pi.id, reason: guard.reason });
+          break;
+        }
         // Pass 22 Bug 22.8 — stale-PI guard. If this webhook is for an old PI
         // and the mission has already moved on to a newer PI (Bug 22.9
         // create-intent updates latest_payment_intent_id on every fresh PI),
@@ -424,7 +444,22 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
       logger.info('Checkout Session completed', {
         sessionId: session.id, missionId, paymentStatus: session.payment_status,
       });
-      if (missionId && session.payment_status === 'paid') {
+      // A superseded session (the mission changed after it was opened) or a
+      // payment the coverage guard refused: nothing here applies. No
+      // "payment received" notification for a payment that was refunded.
+      let sessionIsCurrent = true;
+      if (missionId) {
+        const { data: row } = await supabase.from('missions')
+          .select('checkout_session_id, superseded_checkout_session_ids, rejected_payment_intent_ids')
+          .eq('id', missionId).maybeSingle();
+        const piId = typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id;
+        if (row && ((row.superseded_checkout_session_ids || []).includes(session.id)
+          || (piId && (row.rejected_payment_intent_ids || []).includes(piId)))) {
+          sessionIsCurrent = false;
+          logger.warn('Checkout Session completed for a superseded or refused payment; ignoring', { missionId, sessionId: session.id });
+        }
+      }
+      if (missionId && sessionIsCurrent && session.payment_status === 'paid') {
         // Clear the active session_id so the mission row reflects no
         // pending Checkout. paid_at and status='paid' were already set by
         // the payment_intent.succeeded handler.

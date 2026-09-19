@@ -45,8 +45,12 @@ async function missionPaymentIntents(stripe, mission) {
 /** Read the refund state of a mission from Stripe, across all of its payments. */
 async function readMissionStripeState(stripe, mission) {
   const piIds = await missionPaymentIntents(stripe, mission);
+  // A payment the webhook refused (it did not cover the mission as changed
+  // after checkout) was refunded in full and never paid for this mission.
+  const rejected = new Set(mission.rejected_payment_intent_ids || []);
   const state = { paymentIntentIds: [], chargeIds: [], capturedCents: 0, refundedCents: 0, refundIds: [] };
   for (const id of piIds) {
+    if (rejected.has(id)) continue;
     const pi = await stripe.paymentIntents.retrieve(id, { expand: ['latest_charge'] });
     if (pi.status !== 'succeeded') continue;
     const charge = pi.latest_charge && typeof pi.latest_charge === 'object' ? pi.latest_charge : null;
@@ -83,7 +87,7 @@ function planRefundSync(mission, stripeState) {
   };
 }
 
-const MISSION_COLUMNS = 'id, paid_at, paid_amount_cents, refunded_amount_cents, stripe_refund_ids, partial_refund_amount_cents, latest_payment_intent_id';
+const MISSION_COLUMNS = 'id, paid_at, paid_amount_cents, refunded_amount_cents, stripe_refund_ids, partial_refund_amount_cents, latest_payment_intent_id, rejected_payment_intent_ids';
 
 /** The mission a PaymentIntent paid for: the stored id first, then its metadata. */
 async function findMissionForPaymentIntent({ stripe, supabase, paymentIntentId }) {
@@ -107,6 +111,10 @@ async function findMissionForPaymentIntent({ stripe, supabase, paymentIntentId }
 async function syncMissionRefunds({ stripe, supabase, updateMission, logger, paymentIntentId, apply = true }) {
   const mission = await findMissionForPaymentIntent({ stripe, supabase, paymentIntentId });
   if (!mission) return { matched: false, paymentIntentId };
+  // An unpaid mission has no payment for a refund to reduce: a refund on it is
+  // one the webhook issued for a refused payment. Recording it would breach
+  // missions_refunds_only_after_payment and make Stripe retry forever.
+  if (!mission.paid_at) return { matched: true, written: false, reason: 'unpaid_mission' };
   const plan = planRefundSync(mission, await readMissionStripeState(stripe, mission));
   if (!apply || !plan.changed) return { matched: true, written: false, plan };
   const { error: writeErr } = await updateMission(supabase, mission.id, plan.patch, { caller: 'stripe refund sync', strict: true });
