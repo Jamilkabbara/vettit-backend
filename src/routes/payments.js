@@ -51,6 +51,7 @@ const {
   promoUnusableReason,
 } = require('../services/promo/promoCodes');
 const logger = require('../utils/logger');
+const { expireSessions } = require('../services/payments/checkoutInvalidation');
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://www.vettit.ai';
 
@@ -234,6 +235,13 @@ router.post('/create-checkout-session', authenticate, async (req, res, next) => 
     if (pricing.totalCents < 50) {
       return res.status(400).json({ error: 'Minimum payment is $0.50' });
     }
+
+    // A new session replaces any the mission already had: expire the old one
+    // and any superseded by an edit, so only this price can be paid.
+    await expireSessions(stripeService.stripeClient, [
+      mission.checkout_session_id,
+      ...(mission.superseded_checkout_session_ids || []),
+    ]);
 
     // Get user email for the receipt.
     const { data: { user } } = await supabase.auth.admin.getUserById(req.user.id);

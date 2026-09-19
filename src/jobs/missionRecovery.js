@@ -455,6 +455,11 @@ async function runJob2() {
     }
 
     try {
+      // Pass 60 — a session superseded by an edit must stop being payable.
+      await require('../services/payments/checkoutInvalidation')
+        .expireSupersededSessions({ stripe: stripeService.stripeClient, supabase })
+        .catch((err) => logger.warn('[cron] job2 superseded session expiry failed (non-fatal)', { err: err.message }));
+
       // Pass 42 H2 — auto-expire pending_payment missions older
       // than 14 days. These are legacy / abandoned and were
       // spamming the cron warn log every tick. After this UPDATE

@@ -1,9 +1,9 @@
 {
   "_comment": "GENERATED FILE \u2014 do not hand-edit. Regenerate with `node scripts/dump-missions-schema.js`.",
   "table": "public.missions",
-  "generated_at": "2026-09-15T00:00:00.000Z",
+  "generated_at": "2026-09-19",
   "source": "information_schema.columns, production project hxuhqtczdzmiujrdcrta (read-only)",
-  "column_count": 124,
+  "column_count": 126,
   "columns": [
     "ad_methodology",
     "aggregated_by_question",
@@ -107,6 +107,7 @@
     "recruitment_status",
     "refunded_amount_cents",
     "refunds_synced_at",
+    "rejected_payment_intent_ids",
     "respondent_count",
     "roadmap_features",
     "roadmap_methodology",
@@ -115,6 +116,7 @@
     "started_at",
     "status",
     "stripe_refund_ids",
+    "superseded_checkout_session_ids",
     "target_audience",
     "target_qualified_count",
     "targeted_markets",

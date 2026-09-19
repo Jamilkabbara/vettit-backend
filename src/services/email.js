@@ -432,6 +432,36 @@ async function sendChatOverageEmail({ to, name, messagesGranted = 50, priceUsd =
   } catch (err) { logger.warn('sendChatOverageEmail failed', { err: err.message }); }
 }
 
+
+// ─── Payment refunded: the mission changed after checkout ────────────────
+// The customer paid a checkout session that was priced before they changed
+// the mission (respondents, questions, targeting). The payment did not cover
+// the mission as it now stands, so it was refunded in full and nothing ran.
+async function sendPaymentRefundedMissionChangedEmail({ to, name, missionStatement, missionId, paidUsd, owedUsd }) {
+  try {
+    return await resend.emails.send({
+      from: FROM,
+      to,
+      subject: 'We refunded your payment - your mission changed after checkout',
+      html: shell({
+        preheader: 'Your mission was changed after checkout, so we refunded the payment in full. Nothing has run.',
+        body: `
+          <h1 style="color:#fff;font-size:22px;margin:0 0 12px;">Your payment has been refunded</h1>
+          <p style="color:#9ca3af;">Hi ${name || 'there'},</p>
+          <p style="color:#9ca3af;line-height:1.7;">You paid ${paidUsd} at checkout, but the mission was changed after that checkout was opened and now costs ${owedUsd}. So we did not run it: we refunded the ${paidUsd} in full. Refunds usually reach your card within 5 to 10 business days.</p>
+          ${card(`
+            <div style="color:#6b7280;font-size:11px;letter-spacing:.1em;">MISSION</div>
+            <div style="color:#fff;font-size:14px;margin:4px 0 0;">${missionStatement || ''}</div>
+          `)}
+          <p style="color:#9ca3af;">Your mission is saved as a draft with your changes. Open it to pay the updated price and launch it.</p>
+          <div style="margin-top:20px;">${btn('Open your mission', `${APP_URL}/dashboard/${missionId}`)}</div>
+          <p style="color:#6b7280;font-size:12px;margin-top:18px;">Questions? Reply to this email.</p>
+        `,
+      }),
+    });
+  } catch (err) { logger.warn('sendPaymentRefundedMissionChangedEmail failed', { err: err.message }); }
+}
+
 module.exports = {
   sendAdminAlertDigest,
   sendWelcomeEmail,
@@ -439,6 +469,7 @@ module.exports = {
   sendMissionCompletedEmail,
   sendInvoiceEmail,
   sendPaymentFailedEmail,
+  sendPaymentRefundedMissionChangedEmail,
   sendChatOverageEmail,
   sendRetargetingRefundEmail,
   sendMissionFailedEmail, // Pass 44 P0 - no-refund failure notification
