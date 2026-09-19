@@ -110,6 +110,10 @@ const ESTIMATED_FULL_SURVEY_COST_USD = Number(
  * we'd need 20 personas to qualify 1, so this allows the worst
  * realistic case before bailing.
  */
+// Personas per generation call. Small enough that the few left unused when
+// the target is hit cost a fraction of a cent; large enough that one call's
+// fixed prompt cost is shared and the clone guard always has alternatives.
+const LOOP_BATCH_SIZE = 5;
 const MAX_PERSONAS_PER_TARGET = 20;
 
 /**
@@ -223,6 +227,10 @@ async function runRecruitmentLoop(mission, supabase) {
   // Pass 46 Phase 2 — rows whose incremental insert failed; runMission's
   // completion insert picks these up so no qualified data is ever lost.
   const unpersistedResponses = [];
+  // Every persona generated for this mission so far, qualified or screened
+  // out, so a new batch never regenerates someone already seen.
+  const generatedPersonas = [...qualifiedPersonas];
+  const personaBuffer = [];
 
   while (qualifiedCount < target) {
     // ── Hard guard against runaway loops ───────────────────────────────
@@ -331,28 +339,47 @@ async function runRecruitmentLoop(mission, supabase) {
     // spend vs a $2.70 ceiling. Customers got partial deliveries
     // (2/5) implicitly blamed on screener strictness when the cause
     // was OUR transient infra failure — unacceptable with NO REFUNDS.
-    let personaBatch = null;
-    for (let attempt = 0; attempt < 3 && !personaBatch; attempt += 1) {
-      try {
-        personaBatch = await generatePersonas(mission, 1, {
-          startOffset: recruitedCount,
-        });
-      } catch (err) {
-        const delayMs = [2000, 8000, 20000][attempt];
-        logger.warn('Recruitment loop: persona generation failed (will retry)', {
-          missionId, err: err.message, recruitedCount, attempt: attempt + 1, delayMs,
-        });
-        if (attempt < 2) await new Promise((r) => setTimeout(r, delayMs));
+    //
+    // Distinct respondents — personas come from a small buffer filled a few
+    // at a time, and every fill is told who is already in the panel. This
+    // used to call generatePersonas(mission, 1) with the same prompt every
+    // time and so received the model's single most likely persona on repeat:
+    // 239 "Marcus, 34, Austin" out of 240 (10ecb820), five "Marcus, 41,
+    // London" delivered to a paying customer (bae6613a). The guard that
+    // rejects clones lives in generatePersonas (panelDistinctness.js).
+    if (personaBuffer.length === 0) {
+      // Always a full batch, even for the last respondent: a batch of one
+      // from a model stuck on its mode is that mode every time, and the
+      // clone guard would have nothing else to keep.
+      const want = LOOP_BATCH_SIZE;
+      let personaBatch = null;
+      for (let attempt = 0; attempt < 3 && !personaBatch; attempt += 1) {
+        try {
+          personaBatch = await generatePersonas(mission, want, {
+            startOffset: recruitedCount,
+            excludeIds: knownPersonaIds,
+            priorPersonas: generatedPersonas,
+            panelSize: target,
+          });
+        } catch (err) {
+          const delayMs = [2000, 8000, 20000][attempt];
+          logger.warn('Recruitment loop: persona generation failed (will retry)', {
+            missionId, err: err.message, recruitedCount, attempt: attempt + 1, delayMs,
+          });
+          if (attempt < 2) await new Promise((r) => setTimeout(r, delayMs));
+        }
       }
+      if (!personaBatch) {
+        logger.error('Recruitment loop: persona generation failed after 3 attempts', {
+          missionId, recruitedCount, qualifiedCount,
+        });
+        breakReason = 'persona_gen_failed';
+        break;
+      }
+      personaBuffer.push(...personaBatch.filter(Boolean));
+      generatedPersonas.push(...personaBatch.filter(Boolean));
     }
-    if (!personaBatch) {
-      logger.error('Recruitment loop: persona generation failed after 3 attempts', {
-        missionId, recruitedCount, qualifiedCount,
-      });
-      breakReason = 'persona_gen_failed';
-      break;
-    }
-    const persona = personaBatch[0];
+    const persona = personaBuffer.shift();
     if (!persona) {
       logger.warn('Recruitment loop: persona generation returned empty', {
         missionId, recruitedCount,
@@ -657,4 +684,5 @@ module.exports = {
   // exported for tests
   ESTIMATED_FULL_SURVEY_COST_USD,
   MAX_PERSONAS_PER_TARGET,
+  LOOP_BATCH_SIZE,
 };
