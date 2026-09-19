@@ -697,6 +697,8 @@ async function runMission(missionId, opts = {}) {
             stricter: true,
             startOffset: personas.length + retryRound * 1000,
             excludeIds: heldPersonaIds,
+            // Replacements must be new people, not copies of the panel.
+            priorPersonas: personas,
           },
         );
         // Replacements are already a best-effort top-up; a persona we

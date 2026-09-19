@@ -19,6 +19,7 @@ const { DEFAULT_SIM_TEMPERATURE } = require('./simMeta');
 const { WRITING_STYLE } = require('./writingStyle');
 const logger = require('../../utils/logger');
 const { resolveEffectiveTargeting } = require('../missions/effectiveTargeting');
+const { identity, isNearDuplicate, allowedTopName } = require('./panelDistinctness');
 
 // Stable system prompt, cached across all calls within a mission to cut costs ~50% on inputs.
 const PERSONA_SYSTEM_PROMPT = `You are VETT's persona simulation engine. Your job is to create realistic, diverse synthetic market-research respondents that match a given targeting specification.
@@ -91,6 +92,71 @@ function buildScreenerConstraints(mission, { stricter = false } = {}) {
   return lines.join('\n');
 }
 
+// ── Panel diversity ──────────────────────────────────────────────────────
+// An identical prompt returns the model's single most likely persona. The
+// recruit loop asked for one persona at a time with the same prompt and got
+// "Marcus, 34, Austin" 239 times out of 240 (10ecb820). Temperature does not
+// fix that; information does. Every batch now carries (a) a code-assigned
+// age and gender slot per persona, spread evenly across the requested ranges,
+// and (b) a summary of who is already in the panel. The guard in
+// generatePersonas then rejects any clone that still slips through
+// (panelDistinctness.js is the definition) and tops up.
+
+/** Parse "25-34", "55+", "18 - 24" into [lo, hi]. */
+function parseAgeRange(r) {
+  const m = String(r).match(/(\d{2})\s*(?:-|–|to)\s*(\d{2})/);
+  if (m) return [Number(m[1]), Number(m[2])];
+  const plus = String(r).match(/(\d{2})\s*\+/);
+  if (plus) return [Number(plus[1]), Math.min(Number(plus[1]) + 15, 80)];
+  return null;
+}
+
+/**
+ * Deterministic, evenly spread slot for panel position `index`. Ages follow a
+ * golden-ratio sequence over the union of the requested ranges, so any run of
+ * consecutive slots (a batch of 1 or of 10, a resumed run) is spread out.
+ */
+function slotFor(index, targeting) {
+  const demo = targeting.demographics || {};
+  const ranges = (demo.ageRanges || targeting.ageRanges || []).map(parseAgeRange).filter(Boolean);
+  const spans = ranges.length ? ranges : [[18, 65]];
+  const total = spans.reduce((s, [lo, hi]) => s + (hi - lo + 1), 0);
+  let pos = Math.floor(((index * 0.6180339887498949) % 1) * total);
+  let age = spans[0][0];
+  for (const [lo, hi] of spans) {
+    const width = hi - lo + 1;
+    if (pos < width) { age = lo + pos; break; }
+    pos -= width;
+  }
+  const allowed = (demo.genders || targeting.genders || [])
+    .map((g) => String(g).toLowerCase())
+    .filter((g) => /^(male|female|men|women|man|woman)$/.test(g))
+    .map((g) => (g.startsWith('f') || g.startsWith('wom') ? 'female' : 'male'));
+  const genders = allowed.length ? [...new Set(allowed)] : ['female', 'male'];
+  return { age, gender: genders[index % genders.length] };
+}
+
+/** Compact "who is already here" block. Bounded so a 1,000-person panel stays a small prompt. */
+function buildPanelSoFar(prior) {
+  if (!prior || prior.length === 0) return '';
+  const count = (key) => {
+    const m = new Map();
+    for (const p of prior) {
+      const v = identity(p)[key];
+      if (v) m.set(v, (m.get(v) || 0) + 1);
+    }
+    return [...m.entries()].sort((a, b) => b[1] - a[1]);
+  };
+  const names = count('name').map(([n]) => n).slice(0, 250);
+  const fmt = (rows, max) => rows.slice(0, max).map(([v, c]) => `${v} (${c})`).join(', ');
+  return `
+ALREADY IN THIS PANEL (${prior.length} respondents). Each new persona must be a different person from all of them:
+- First names already used, do not reuse any: ${names.join(', ')}
+- Cities so far: ${fmt(count('city'), 30)}
+- Occupations so far: ${fmt(count('occupation'), 40)}
+Spread new personas across cities and occupations that are under-represented above, within the targeting.`;
+}
+
 /**
  * Generate N personas in batches of BATCH_SIZE.
  * @param {object} mission  Full mission row
@@ -102,6 +168,8 @@ function buildScreenerConstraints(mission, { stricter = false } = {}) {
  * @param {number}  [options.startOffset=0]    Persona id offset; used by the retry path
  *                                            so replacement IDs don't collide with the
  *                                            originals.
+ * @param {Array}   [options.priorPersonas]    Everyone already in the panel. New personas
+ *                                            are told about them and must not duplicate them.
  * @returns {Promise<Array>} Array of persona objects
  */
 /**
@@ -158,6 +226,19 @@ async function generatePersonas(mission, count, options = {}) {
   const kept = [];
   let droppedDuplicate = 0;
   let droppedNoId = 0;
+  let droppedClone = 0;
+
+  // Everyone the new personas must differ from: the panel so far plus what
+  // this call has already kept. Opinions do not exist yet at this point, so
+  // this is the identity half of panelDistinctness's rule.
+  const prior = Array.isArray(options.priorPersonas) ? options.priorPersonas.filter(Boolean) : [];
+  const panel = prior.map(identity);
+  const nameCounts = new Map();
+  for (const p of panel) if (p.name) nameCounts.set(p.name, (nameCounts.get(p.name) || 0) + 1);
+  // Half the measured ceiling: generation keeps well clear of the line the
+  // panel is judged against.
+  const panelSize = Math.max(prior.length + count, Number(options.panelSize) || 0);
+  const nameCap = Math.max(1, Math.floor(allowedTopName(panelSize) / 2));
 
   const absorb = (batch) => {
     for (const persona of (batch || [])) {
@@ -166,7 +247,14 @@ async function generatePersonas(mission, count, options = {}) {
       if (!rawId) { droppedNoId += 1; continue; }
       const key = String(rawId);
       if (seen.has(key)) { droppedDuplicate += 1; continue; }
+      const me = identity(persona);
+      if (panel.some((p) => isNearDuplicate(me, p)) || (me.name && (nameCounts.get(me.name) || 0) >= nameCap)) {
+        droppedClone += 1;
+        continue;
+      }
       seen.add(key);
+      panel.push(me);
+      if (me.name) nameCounts.set(me.name, (nameCounts.get(me.name) || 0) + 1);
       kept.push(persona);
     }
   };
@@ -179,9 +267,14 @@ async function generatePersonas(mission, count, options = {}) {
       for (let j = i; j < Math.min(i + CONCURRENCY, batches); j += 1) {
         const batchCount = Math.min(BATCH_SIZE, need - j * BATCH_SIZE);
         const startIndex = offset + j * BATCH_SIZE;
-        wave.push(generatePersonaBatch(mission, targeting, batchCount, startIndex, options));
+        wave.push({ batchCount, startIndex });
       }
-      const results = await Promise.all(wave);
+      // Batches in a wave run in parallel, so they cannot see each other.
+      // Each gets the panel as it stood when the wave began, and distinct
+      // slots; the guard in absorb() catches any cross-batch clone.
+      const soFar = [...prior, ...kept];
+      const results = await Promise.all(wave.map(({ batchCount, startIndex }) =>
+        generatePersonaBatch(mission, targeting, batchCount, startIndex, { ...options, soFar })));
       for (const batch of results) absorb(batch);
     }
   };
@@ -209,7 +302,7 @@ async function generatePersonas(mission, count, options = {}) {
     nextOffset += PERSONA_ID_ROUND_STRIDE;
     logger.warn('Persona generation: short after de-duplication, topping up', {
       missionId, need, have: kept.length, requested: count,
-      droppedDuplicate, droppedNoId, topUpRound: topUpRounds, nextOffset,
+      droppedDuplicate, droppedNoId, droppedClone, topUpRound: topUpRounds, nextOffset,
     });
     await runRound(need, nextOffset);
   }
@@ -220,7 +313,7 @@ async function generatePersonas(mission, count, options = {}) {
     // outright. runMission's own accounting reports the real delivered n.
     logger.error('Persona generation: still short after top-up rounds', {
       missionId, requested: count, generated: kept.length,
-      droppedDuplicate, droppedNoId, topUpRounds,
+      droppedDuplicate, droppedNoId, droppedClone, topUpRounds,
     });
   }
 
@@ -231,6 +324,7 @@ async function generatePersonas(mission, count, options = {}) {
     uniqueIds: new Set(kept.map((p) => String(p.persona_id || p.id))).size,
     droppedDuplicate,
     droppedNoId,
+    droppedClone,
     topUpRounds,
   });
   return kept;
@@ -250,6 +344,10 @@ async function generatePersonaBatch(mission, targeting, batchCount, startIndex, 
   const b2b = targeting.b2b || targeting.professional;
   const psycho = targeting.psychographics;
   const screenerBlock = buildScreenerConstraints(mission, { stricter: !!options.stricter });
+  const slotLines = Array.from({ length: batchCount }, (_, i) => {
+    const slot = slotFor(startIndex + i, targeting);
+    return `- P${String(startIndex + i + 1).padStart(3, '0')}: ${slot.gender}, age ${slot.age}`;
+  }).join('\n');
 
   const userPrompt = `Generate ${batchCount} synthetic respondents for this research mission.
 
@@ -265,34 +363,39 @@ ${b2b ? `- B2B/Professional: ${JSON.stringify(b2b)}` : ''}
 ${psycho ? `- Psychographics: ${JSON.stringify(psycho)}` : ''}
 ${screenerBlock}
 
+${buildPanelSoFar(options.soFar)}
+
 Starting persona ID index: P${String(startIndex + 1).padStart(3, '0')}
+
+Persona slots (one persona per slot, in this order; age and gender are fixed, everything else is yours to vary; if a slot contradicts the screening criteria, the screening criteria win):
+${slotLines}
 
 Return ONLY this JSON:
 {
   "personas": [
     {
-      "id": "P001",
-      "first_name": "Layla",
-      "age": 28,
-      "gender": "female",
-      "country": "AE",
-      "city": "Dubai",
-      "occupation": "Product Manager",
-      "industry": "Fintech",
-      "seniority": "mid",
-      "income_band": "mid",
-      "education": "Bachelor's",
-      "marital_status": "single",
-      "psychographics": ["tech-forward", "career-driven", "time-poor"],
-      "values": ["efficiency", "family", "status"],
-      "pain_points": ["juggling work and personal life"],
-      "decision_style": "analytical",
-      "short_bio": "A 28-year-old Dubai-based PM who ..."
+      "id": "<slot id>",
+      "first_name": "<first name plausible for the country and gender>",
+      "age": <slot age>,
+      "gender": "<slot gender>",
+      "country": "<ISO country code within the targeting>",
+      "city": "<city>",
+      "occupation": "<occupation>",
+      "industry": "<industry>",
+      "seniority": "<junior|mid|senior|executive|n/a>",
+      "income_band": "<low|lower-mid|mid|upper-mid|high>",
+      "education": "<highest education>",
+      "marital_status": "<status>",
+      "psychographics": ["<trait>", "<trait>", "<trait>"],
+      "values": ["<value>", "<value>", "<value>"],
+      "pain_points": ["<pain point>"],
+      "decision_style": "<style>",
+      "short_bio": "<one or two sentences>"
     }
   ]
 }
 
-Generate exactly ${batchCount} personas. Vary ALL attributes realistically. IDs must be sequential starting from P${String(startIndex + 1).padStart(3, '0')}.`;
+Generate exactly ${batchCount} personas, one per slot. Every persona must be a different person: no two share a first name, and none repeats a first name already in the panel.`;
 
   // 10 rich personas (prose bios + several arrays) overflowed the old 4000-token
   // cap → truncated JSON → "Unexpected end of JSON input" → the WHOLE batch was
@@ -328,4 +431,4 @@ Generate exactly ${batchCount} personas. Vary ALL attributes realistically. IDs 
   return personas;
 }
 
-module.exports = { generatePersonas };
+module.exports = { generatePersonas, slotFor, buildPanelSoFar };
