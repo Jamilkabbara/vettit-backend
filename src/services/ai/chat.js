@@ -22,6 +22,7 @@ const { callClaude, streamClaude, MODEL_ROUTING } = require('./anthropic');
 const { sanitizeDashesString } = require('../../utils/textSanitize');
 const { aggregate } = require('./insights');
 const logger = require('../../utils/logger');
+const { resolveEffectiveTargeting } = require('../missions/effectiveTargeting');
 
 // ─── Quotas ─────────────────────────────────────────────────
 const QUOTAS = {
@@ -241,7 +242,8 @@ async function buildSetupContext(missionId, userId, pageState) {
         brief: mission.brief || mission.mission_statement,
         goal_type: mission.goal_type,
         respondent_count: mission.respondent_count,
-        targeting: mission.targeting,
+        // What the dashboard shows and personas run with, not only the saved column.
+        targeting: resolveEffectiveTargeting(mission).targeting,
         questions: mission.questions,
       };
     }
