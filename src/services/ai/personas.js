@@ -18,6 +18,7 @@ const { callClaude, extractJSON } = require('./anthropic');
 const { DEFAULT_SIM_TEMPERATURE } = require('./simMeta');
 const { WRITING_STYLE } = require('./writingStyle');
 const logger = require('../../utils/logger');
+const { resolveEffectiveTargeting } = require('../missions/effectiveTargeting');
 
 // Stable system prompt, cached across all calls within a mission to cut costs ~50% on inputs.
 const PERSONA_SYSTEM_PROMPT = `You are VETT's persona simulation engine. Your job is to create realistic, diverse synthetic market-research respondents that match a given targeting specification.
@@ -115,7 +116,11 @@ const PERSONA_ID_ROUND_STRIDE = 1000;
 async function generatePersonas(mission, count, options = {}) {
   const BATCH_SIZE = 10;
   const CONCURRENCY = 5;
-  const targeting = mission.targeting || {};
+  // The targeting the customer sees on their dashboard, not only the saved
+  // column: the setup page never saves targeting, and an empty column used to
+  // prompt "Countries: Global" (see services/missions/effectiveTargeting.js).
+  const effective = resolveEffectiveTargeting(mission);
+  const targeting = effective.targeting || {};
   const startOffset = Number(options.startOffset) || 0;
   const missionId = mission.id;
 
@@ -183,6 +188,7 @@ async function generatePersonas(mission, count, options = {}) {
 
   logger.info('Persona generation starting', {
     missionId, count, batches: Math.ceil(count / BATCH_SIZE),
+    targetingSource: effective.source, countries: effective.countries,
     stricter: !!options.stricter, startOffset, excludedIds: seen.size,
   });
 

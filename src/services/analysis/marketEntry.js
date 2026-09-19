@@ -31,6 +31,7 @@ const {
   resolveBoxSet, offScaleCount, auditZeroBox,
 } = require('./shared');
 const logger = require('../../utils/logger');
+const { resolveEffectiveTargeting } = require('../missions/effectiveTargeting');
 
 const MIN_RELIABLE_N = 30; // WO §2.4 — below this a market reads directional
 // Pass 51 — intent is scored POSITIONALLY off the question's own options.
@@ -203,9 +204,9 @@ function computeMarketEntry(rows, questions, mission) {
     // row only if it's in the targeted set (when known) AND clears a small base
     // floor, so a generation stray — e.g. one off-target "AE" persona leaking
     // into an SA+EG study — doesn't become an n=1 market alongside the real ones.
+    // The same targeting persona generation ran with (effectiveTargeting.js).
     const allowedMarkets = new Set([
-      ...(Array.isArray(mission?.targeting?.geography?.countries) ? mission.targeting.geography.countries : []),
-      ...(Array.isArray(mission?.targeting?.countries) ? mission.targeting.countries : []),
+      ...resolveEffectiveTargeting(mission || {}).countries,
       ...declared,
     ].map((x) => norm(x)).filter(Boolean));
     // Primary filter is the targeted set; the base floor only culls literal
