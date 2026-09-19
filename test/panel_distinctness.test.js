@@ -65,6 +65,11 @@ jest.mock('../src/services/ai/anthropic', () => ({
       }
       takenHere.add(idx);
       const slot = slots[i];
+      // A model stuck on its mode: every other persona is the same Marcus
+      // whatever the prompt says. Only the code-side guard can stop this.
+      if (mockState.mode === 'stuck' && i % 2 === 0) {
+        return { id: `P${String(start + i).padStart(3, '0')}`, first_name: 'Marcus', age: 34, gender: 'male', country: 'AE', city: 'Dubai', occupation: 'Software engineer' };
+      }
       return {
         id: `P${String(start + i).padStart(3, '0')}`,
         first_name: mockNames[idx],
@@ -170,8 +175,17 @@ describe('recruit loop delivers distinct people (production path)', () => {
     expect(m.reasons).toEqual([]);
   });
 
-  test('a model that ignores the "already used" list is still stopped by the clone guard', async () => {
+  test('a model that ignores the "already used" list still yields distinct people', async () => {
     mockState.mode = 'stubborn';
+    const supabase = makeSupabase();
+    const r = await runRecruitmentLoop(mission(60), supabase);
+    const m = panelFromRows(supabase.rows);
+    expect(r.qualifiedCount).toBe(60);
+    expect(m.reasons).toEqual([]);
+  });
+
+  test('a model stuck on one persona is stopped by the clone guard', async () => {
+    mockState.mode = 'stuck';
     const supabase = makeSupabase();
     const r = await runRecruitmentLoop(mission(60), supabase);
     const m = panelFromRows(supabase.rows);

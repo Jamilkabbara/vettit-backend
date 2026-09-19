@@ -111,9 +111,8 @@ const ESTIMATED_FULL_SURVEY_COST_USD = Number(
  * realistic case before bailing.
  */
 // Personas per generation call. Small enough that the few left unused when
-// the target is hit cost almost nothing; large enough that one call's fixed
-// prompt cost is shared. Diversity does NOT depend on it: a batch of 1 still
-// carries the panel so far and a distinct slot.
+// the target is hit cost a fraction of a cent; large enough that one call's
+// fixed prompt cost is shared and the clone guard always has alternatives.
 const LOOP_BATCH_SIZE = 5;
 const MAX_PERSONAS_PER_TARGET = 20;
 
@@ -349,7 +348,10 @@ async function runRecruitmentLoop(mission, supabase) {
     // London" delivered to a paying customer (bae6613a). The guard that
     // rejects clones lives in generatePersonas (panelDistinctness.js).
     if (personaBuffer.length === 0) {
-      const want = Math.min(LOOP_BATCH_SIZE, Math.max(1, target - qualifiedCount));
+      // Always a full batch, even for the last respondent: a batch of one
+      // from a model stuck on its mode is that mode every time, and the
+      // clone guard would have nothing else to keep.
+      const want = LOOP_BATCH_SIZE;
       let personaBatch = null;
       for (let attempt = 0; attempt < 3 && !personaBatch; attempt += 1) {
         try {
