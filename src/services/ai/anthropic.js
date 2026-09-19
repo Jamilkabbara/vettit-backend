@@ -3,6 +3,7 @@
  * Every call is logged to public.ai_calls for margin auditing.
  */
 
+const { reportProviderRefusal } = require('./providerRefusal');
 const Anthropic = require('@anthropic-ai/sdk');
 const supabase = require('../../db/supabase');
 const logger = require('../../utils/logger');
@@ -278,6 +279,8 @@ async function callClaude({
     }).then(() => {}).catch(() => {});
 
     logger.error('Claude call failed', { callType, model, error: error.message });
+    // A spend cap, empty credit or bad key stops every mission: page an admin.
+    reportProviderRefusal(error, { callType, model, missionId, userId });
     throw error;
   }
 }
@@ -346,6 +349,7 @@ async function streamClaude({
     return { text: fullText, costUsd, inputTokens, outputTokens, model };
   } catch (error) {
     logger.error('Claude stream failed', { callType, model, error: error.message });
+    reportProviderRefusal(error, { callType, model, missionId, userId });
     throw error;
   }
 }
