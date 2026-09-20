@@ -34,18 +34,30 @@ const path = require('path');
 const supabase = require('../src/db/supabase');
 const fetchAllResponses = require('../src/db/fetchAllResponses');
 const { measurePanel } = require('../src/services/ai/panelDistinctness');
+const {
+  calculateMissionPrice, extractCountriesFromMission, listPriceUsd, aiSpendCeilingUsd,
+} = require('../src/utils/pricingEngine');
 
 const argv = process.argv.slice(2);
 const missionId = argv.find((a) => !a.startsWith('--'));
 const DO_RUN = argv.includes('--run');
-const archiveDirArg = (() => {
-  const i = argv.indexOf('--archive');
+const flagValue = (name) => {
+  const i = argv.indexOf(`--${name}`);
   return i >= 0 ? argv[i + 1] : null;
-})();
+};
+const archiveDirArg = flagValue('archive');
+// An internal study of our own (a marketing study, an un-gate proof) was never
+// charged, so the payment gate - which prices the study as it will run and
+// compares that to what Stripe captured - refuses it. --promo is the platform's
+// own answer: a free-type code prices the study at zero, so the gate is
+// SATISFIED rather than bypassed, exactly as the free-launch route does it. The
+// use is claimed and recorded like any other redemption, so the code stays
+// bounded. A customer study never needs this; their own payment covers it.
+const PROMO = flagValue('promo');
 const ARCHIVE_DIR = (archiveDirArg || path.join(os.homedir(), 'vett-archives')).replace(/^~(?=$|\/)/, os.homedir());
 
 if (!missionId) {
-  console.error('usage: rerun-mission.js <missionId> [--run] [--archive <dir>]');
+  console.error('usage: rerun-mission.js <missionId> [--run] [--archive <dir>] [--promo <CODE>]');
   process.exit(2);
 }
 
@@ -83,10 +95,42 @@ async function plan(id) {
     if (!personas.has(r.persona_id)) personas.set(r.persona_id, { ...(r.persona_profile || {}), id: r.persona_id });
     (answers[r.persona_id] = answers[r.persona_id] || {})[r.question_id] = r.answer;
   }
+  // What the study must carry to be runnable, beyond clearing the old results.
+  const extraPatch = {};
+  let promo = null;
+  let pricing = null;
+  if (PROMO) {
+    const { data: row, error: pErr } = await supabase
+      .from('promo_codes').select('*').eq('code', PROMO.toUpperCase().trim()).maybeSingle();
+    if (pErr) throw pErr;
+    if (!row) throw new Error(`promo code not found: ${PROMO}`);
+    promo = row;
+    extraPatch.promo_code = row.code;
+  }
+  // The run refuses a study with no positive spend ceiling, and an old internal
+  // study has none: it predates the rule. Derive it the way every create path
+  // does, from a fraction of the LIST price - the work is the same work whether
+  // or not it was charged for, so the bound comes from the list price, not $0.
+  if (!Number(mission.ai_spend_ceiling_usd)) {
+    pricing = calculateMissionPrice({
+      respondentCount: mission.respondent_count,
+      targeting:       mission.targeting || {},
+      questionCount:   (mission.questions || []).length,
+      countries:       extractCountriesFromMission(mission),
+      goalType:        mission.goal_type,
+      mediaType:       mission.media_type,
+      promoCode:       promo,
+    });
+    extraPatch.ai_spend_ceiling_usd = aiSpendCeilingUsd(pricing);
+    if (!extraPatch.ai_spend_ceiling_usd) throw new Error('could not derive a spend ceiling; refusing to run uncapped');
+  }
   return {
     mission,
     rows: rows || [],
     reasoning: reasoning || [],
+    promo,
+    pricing,
+    extraPatch,
     before: measurePanel([...personas.values()], { answersByPersona: answers }),
     archivePath: path.join(ARCHIVE_DIR, `${id}-original-${new Date().toISOString().slice(0, 10)}.json`),
   };
@@ -111,9 +155,19 @@ async function plan(id) {
   console.log(`     ${p.archivePath}`);
   console.log(`  2. DELETE FROM persona_response_reasoning WHERE mission_id = '${m.id}';   -- ${p.reasoning.length} rows`);
   console.log(`  3. DELETE FROM mission_responses WHERE mission_id = '${m.id}';            -- ${p.rows.length} rows`);
-  console.log(`  4. UPDATE missions SET ${Object.entries(RESET_PATCH).map(([k, v]) => `${k} = ${v === null ? 'NULL' : `'${v}'`}`).join(', ')}`);
+  const fullPatch = { ...RESET_PATCH, ...p.extraPatch };
+  console.log(`  4. UPDATE missions SET ${Object.entries(fullPatch).map(([k, v]) => `${k} = ${v === null ? 'NULL' : `'${v}'`}`).join(', ')}`);
   console.log(`     WHERE id = '${m.id}';`);
-  console.log(`  5. runMission('${m.id}')   -- real AI spend, capped at $${m.ai_spend_ceiling_usd}`);
+  const cap = fullPatch.ai_spend_ceiling_usd != null ? fullPatch.ai_spend_ceiling_usd : m.ai_spend_ceiling_usd;
+  if (p.promo) {
+    console.log(`  5. claim one use of ${p.promo.code} (now ${p.promo.uses_count} of ${p.promo.max_uses == null ? 'unlimited' : p.promo.max_uses}) and record the redemption`);
+    console.log(`  6. runMission('${m.id}')   -- real AI spend, capped at $${cap}`);
+    if (!p.promo.active) console.log(`\nBLOCKED: ${p.promo.code} is not active. The gate only honours an active, unexpired code.`);
+    if (p.promo.type !== 'free') console.log(`\nBLOCKED: ${p.promo.code} is type '${p.promo.type}', not 'free', so it does not price this study at zero.`);
+    if (p.pricing) console.log(`\nPriced with ${p.promo.code}: list $${listPriceUsd(p.pricing)}, charged $${p.pricing.total}, ceiling $${p.extraPatch.ai_spend_ceiling_usd}`);
+  } else {
+    console.log(`  5. runMission('${m.id}')   -- real AI spend, capped at $${cap}`);
+  }
   console.log('\nNothing about the payment is touched.');
 
   if (!DO_RUN) {
@@ -147,13 +201,42 @@ async function plan(id) {
     .from('mission_responses').select('id', { count: 'exact', head: true }).eq('mission_id', m.id);
   console.log(`[2/5] old responses deleted (${leftover || 0} remain)`);
 
+  // A code that is inactive, expired or not free-type leaves the study owing
+  // money, and the run would refuse it after the old delivery was already
+  // deleted. The archive has to come first, so this is checked before the
+  // reset and stops here.
+  if (p.promo && (!p.promo.active || p.promo.type !== 'free')) {
+    throw new Error(`${p.promo.code} is ${p.promo.active ? `type '${p.promo.type}'` : 'inactive'}; the run would be refused for non-payment`);
+  }
+
   // 4. Put the mission back into a runnable state.
-  const { error: updErr } = await supabase.from('missions').update(RESET_PATCH).eq('id', m.id);
+  const { error: updErr } = await supabase.from('missions').update({ ...RESET_PATCH, ...p.extraPatch }).eq('id', m.id);
   if (updErr) throw updErr;
   const { data: after } = await supabase.from('missions').select('status, executive_summary, recruited_persona_count').eq('id', m.id).single();
   console.log(`[3/5] mission reset: status=${after.status}, summary=${after.executive_summary === null ? 'null' : 'STILL SET'}`);
 
-  // 5. Run it.
+  // 5. Claim the promo use BEFORE the run, the order the free-launch route
+  // uses: a use spent on a run that then fails is a bounded loss, a run that
+  // happened without spending one is not bounded at all. Conditional on the
+  // count that was read, so two runs cannot both take the last use.
+  if (p.promo) {
+    const next = Number(p.promo.uses_count || 0) + 1;
+    if (p.promo.max_uses != null && next > Number(p.promo.max_uses)) {
+      throw new Error(`${p.promo.code} has no uses left (${p.promo.uses_count} of ${p.promo.max_uses})`);
+    }
+    const { data: claimed, error: claimErr } = await supabase
+      .from('promo_codes').update({ uses_count: next })
+      .eq('code', p.promo.code).eq('uses_count', p.promo.uses_count)
+      .select('code, uses_count');
+    if (claimErr) throw claimErr;
+    if (!claimed || claimed.length !== 1) throw new Error(`could not claim a use of ${p.promo.code}; another run may have taken it`);
+    const { error: redErr } = await supabase.from('promo_redemptions')
+      .insert({ code: p.promo.code, mission_id: m.id, source: 'rerun_script', redeemed_at: new Date().toISOString() });
+    if (redErr) console.error(`  WARNING: redemption row not recorded: ${redErr.message}`);
+    console.log(`[3b/5] claimed one use of ${p.promo.code} (now ${claimed[0].uses_count} of ${p.promo.max_uses == null ? 'unlimited' : p.promo.max_uses})`);
+  }
+
+  // 6. Run it.
   console.log('[4/5] running the full pipeline (minutes)...');
   const { runMission } = require('../src/jobs/runMission');
   const result = await runMission(m.id);
