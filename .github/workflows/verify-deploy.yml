@@ -136,3 +136,32 @@ jobs:
             } else {
               core.info('✅ Production screenshot link found in PR description.');
             }
+
+  # ─────────────────────────────────────────────────────────────────────
+  # The test suite, on every pull request and every push to main.
+  #
+  # 2026-09-20: until today NOTHING ran the tests in CI. The only checks
+  # were this file's deploy verification, the screenshot rule and secret
+  # scanning, so a change could reach production with a red suite as long
+  # as nobody ran `npm test` locally first. The panel-collapse defect
+  # (one respondent repeated across a whole paid study, live from 12 June
+  # to 19 September) is what that gap cost: 17 of 32 delivered studies.
+  #
+  # The suite includes the guards that defect needed:
+  #   - test/panel_distinctness.test.js       panels are different people
+  #   - test/panel_collapse_fails_mission.test.js  a collapsed panel never ships
+  #   - test/panel_guards_wired.test.js       the guards stay wired in
+  # ─────────────────────────────────────────────────────────────────────
+  tests:
+    if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - name: npm test
+        run: npm test

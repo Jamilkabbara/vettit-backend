@@ -342,8 +342,8 @@ async function runRecruitmentLoop(mission, supabase) {
     //
     // Distinct respondents — personas come from a small buffer filled a few
     // at a time, and every fill is told who is already in the panel. This
-    // used to call generatePersonas(mission, 1) with the same prompt every
-    // time and so received the model's single most likely persona on repeat:
+    // used to ask for exactly one persona per call, with the same prompt every
+    // time, and so received the model's single most likely persona on repeat:
     // 239 "Marcus, 34, Austin" out of 240 (10ecb820), five "Marcus, 41,
     // London" delivered to a paying customer (bae6613a). The guard that
     // rejects clones lives in generatePersonas (panelDistinctness.js).
