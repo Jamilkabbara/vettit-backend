@@ -52,6 +52,7 @@ const emailService = require('../services/email');
 // capture time: recomputes owed from the mission AS IT WILL RUN and
 // refuses if what Stripe actually captured does not cover it.
 const { checkPaymentCoversRun } = require('../services/payments/paymentCoversRun');
+const { measurePanel } = require('../services/ai/panelDistinctness');
 
 // Pass 23 Bug 23.12 — notification copy templates. Truncate long mission
 // titles so the body stays scannable in the bell dropdown (max ~80 chars
@@ -837,6 +838,50 @@ async function runMission(missionId, opts = {}) {
       }
     }
 
+    // FAIL LOUD — a collapsed panel must never be delivered.
+    //
+    // Until 2026-09-19 the recruit loop asked for one respondent at a time
+    // with an identical prompt and received the model's most likely person
+    // over and over: 239 "Marcus" of 240 (10ecb820), 300 of 300 (0a494ef7),
+    // and five "Marcus, 41, London" to a paying customer (bae6613a). Every
+    // one of those reports read as a normal study. Nothing in the pipeline
+    // asked whether the respondents were different people, so a study holding
+    // one opinion was delivered as a panel of hundreds.
+    //
+    // Generation now guards against it (services/ai/panelDistinctness.js holds
+    // the definition; the guard itself is in personas.js), but a rule enforced
+    // only where it is implemented is one refactor from being gone. This is the
+    // delivery gate: it judges the panel that was actually simulated, whichever
+    // path produced it, and refuses rather than deliver.
+    //
+    // Throwing routes to the fatal handler: the mission is marked failed, ops
+    // are alerted for a re-run, and the customer is told - the same treatment
+    // as unsaved responses above. A partial panel is a smaller study; a
+    // collapsed one is a fabricated study, which is worse than none.
+    if (mission.goal_type !== 'creative_attention' && (responses || []).length > 0) {
+      const byPersona = new Map();
+      const answersByPersona = {};
+      for (const r of responses) {
+        const pid = r.persona_id;
+        if (!pid) continue;
+        if (!byPersona.has(pid)) byPersona.set(pid, r.persona_profile || { id: pid });
+        (answersByPersona[pid] = answersByPersona[pid] || {})[r.question_id] = r.answer;
+      }
+      const panel = measurePanel([...byPersona.values()], { answersByPersona });
+      logger.info('Mission run: panel distinctness', {
+        missionId, n: panel.n, distinct: panel.distinct, nearDuplicates: panel.nearDuplicates,
+        allowed: panel.allowedNearDuplicates, topName: panel.topName, topNameCount: panel.topNameCount,
+        pass: panel.pass,
+      });
+      if (!panel.pass) {
+        logger.error('Mission run: REFUSING to deliver a collapsed panel', { missionId, ...panel });
+        throw new Error(
+          `panel collapsed: ${panel.distinct} of ${panel.n} respondents are different people `
+          + `(${panel.reasons.join('; ')}); refusing to deliver a study that repeats the same people`,
+        );
+      }
+    }
+
     // Per-persona reasoning — capped at 50 personas per Pass 22 Bug 22.14.
     if (responses.length > 0 && (personas?.length || 0) <= 50) {
       const reasoningRows = responses
@@ -1399,6 +1444,11 @@ function friendlyFailureReason(raw) {
   }
   if (/parse|JSON|extractJSON/.test(r)) {
     return 'The AI response did not match the expected format.';
+  }
+  // A collapsed panel: say what it means for the study, not how it was
+  // detected. The full measurement is in the log and the admin alert.
+  if (/panel collapsed/.test(r)) {
+    return 'The respondents generated for this study were not different enough people, so we stopped before delivering it.';
   }
   // Generic — first sentence only.
   const firstSentence = r.split(/[.\n]/)[0] || r;
