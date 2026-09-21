@@ -34,6 +34,7 @@ const path = require('path');
 const supabase = require('../src/db/supabase');
 const fetchAllResponses = require('../src/db/fetchAllResponses');
 const { measurePanel } = require('../src/services/ai/panelDistinctness');
+const { normalizeQuestions, findViolations } = require('../src/services/ai/multiSelectHygiene');
 const {
   calculateMissionPrice, extractCountriesFromMission, listPriceUsd, aiSpendCeilingUsd,
 } = require('../src/utils/pricingEngine');
@@ -54,10 +55,17 @@ const archiveDirArg = flagValue('archive');
 // use is claimed and recorded like any other redemption, so the code stays
 // bounded. A customer study never needs this; their own payment covers it.
 const PROMO = flagValue('promo');
+// A study delivered before 2026-09-21 may carry a multi-select nobody could
+// decline: no "none of these", no cap on selections. Generation now normalises
+// that, but a STORED instrument is left alone on purpose - it is what the
+// customer approved. --fix-questions applies the same normaliser to the stored
+// questions before the re-run, for a study being re-delivered as a remedy. It
+// changes what respondents are asked, so it is opt-in and printed in full.
+const FIX_QUESTIONS = argv.includes('--fix-questions');
 const ARCHIVE_DIR = (archiveDirArg || path.join(os.homedir(), 'vett-archives')).replace(/^~(?=$|\/)/, os.homedir());
 
 if (!missionId) {
-  console.error('usage: rerun-mission.js <missionId> [--run] [--archive <dir>] [--promo <CODE>]');
+  console.error('usage: rerun-mission.js <missionId> [--run] [--archive <dir>] [--promo <CODE>] [--fix-questions]');
   process.exit(2);
 }
 
@@ -124,8 +132,20 @@ async function plan(id) {
     extraPatch.ai_spend_ceiling_usd = aiSpendCeilingUsd(pricing);
     if (!extraPatch.ai_spend_ceiling_usd) throw new Error('could not derive a spend ceiling; refusing to run uncapped');
   }
+  // The instrument, as it stands and as it would be asked.
+  const questions = Array.isArray(mission.questions) ? mission.questions : [];
+  const questionViolations = findViolations(questions);
+  let questionChanges = [];
+  if (FIX_QUESTIONS && questionViolations.length) {
+    const normalized = normalizeQuestions(questions);
+    questionChanges = normalized.changes;
+    extraPatch.questions = normalized.questions;
+  }
+
   return {
     mission,
+    questionViolations,
+    questionChanges,
     rows: rows || [],
     reasoning: reasoning || [],
     promo,
@@ -150,13 +170,37 @@ async function plan(id) {
   console.log(`  most common first name: ${p.before.topName} x${p.before.topNameCount}`);
   for (const r of p.before.reasons) console.log(`  FAILS: ${r}`);
 
+  if (p.questionViolations.length) {
+    console.log('\nThe instrument has questions a respondent cannot decline:');
+    for (const v of p.questionViolations) console.log(`  ${v.questionId}: ${v.rule} (${v.detail})`);
+    if (!FIX_QUESTIONS) {
+      console.log('  Re-running WITHOUT --fix-questions leaves these as they are: the answers to');
+      console.log('  those questions will carry the same artefact as the delivered study.');
+    }
+  }
+  if (p.questionChanges.length) {
+    console.log('\nQuestion changes (this changes what respondents are asked):');
+    for (const c of p.questionChanges) console.log(`  ${c.questionId}: ${c.change} -> ${c.detail}`);
+    for (const q of p.extraPatch.questions || []) {
+      if (q.type === 'multi') console.log(`  ${q.id} options now: ${JSON.stringify(q.options)}${q.maxSelections ? `, max ${q.maxSelections}` : ''}`);
+    }
+  }
+
   console.log('\nStatements this will run:');
   console.log(`  1. write ${p.rows.length} responses + ${p.reasoning.length} reasoning rows + the mission row to`);
   console.log(`     ${p.archivePath}`);
   console.log(`  2. DELETE FROM persona_response_reasoning WHERE mission_id = '${m.id}';   -- ${p.reasoning.length} rows`);
   console.log(`  3. DELETE FROM mission_responses WHERE mission_id = '${m.id}';            -- ${p.rows.length} rows`);
   const fullPatch = { ...RESET_PATCH, ...p.extraPatch };
-  console.log(`  4. UPDATE missions SET ${Object.entries(fullPatch).map(([k, v]) => `${k} = ${v === null ? 'NULL' : `'${v}'`}`).join(', ')}`);
+  // A jsonb column prints as what it is, not as "[object Object]": a preview
+  // you cannot read is not a preview.
+  const showValue = (k, v) => {
+    if (v === null) return 'NULL';
+    if (k === 'questions' && Array.isArray(v)) return `<${v.length} questions, listed above>`;
+    if (typeof v === 'object') return `<${k} json>`;
+    return `'${v}'`;
+  };
+  console.log(`  4. UPDATE missions SET ${Object.entries(fullPatch).map(([k, v]) => `${k} = ${showValue(k, v)}`).join(', ')}`);
   console.log(`     WHERE id = '${m.id}';`);
   const cap = fullPatch.ai_spend_ceiling_usd != null ? fullPatch.ai_spend_ceiling_usd : m.ai_spend_ceiling_usd;
   if (p.promo) {

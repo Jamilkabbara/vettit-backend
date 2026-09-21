@@ -49,15 +49,19 @@ beforeEach(() => { jest.clearAllMocks(); });
 
 /** 12 free (metadata-free) questions behind one screener. */
 function freeSurvey(n = 12) {
-  const qs = [{ id: 'q1', text: 'screener', type: 'single', options: ['Yes', 'No'], isScreening: true }];
-  for (let i = 2; i <= n; i += 1) qs.push({ id: `q${i}`, text: `free ${i}`, type: 'single', options: ['A', 'B'] });
+  // Options are unique per question on purpose: an answer must both identify
+  // the question it belongs to (what these tests are about) and be a value the
+  // question actually offered (simulate.js drops answers that are not, which
+  // is what catches a model answering by position - see answerFitsQuestion).
+  const qs = [{ id: 'q1', text: 'screener', type: 'single', options: ['Yes-q1', 'No-q1'], isScreening: true }];
+  for (let i = 2; i <= n; i += 1) qs.push({ id: `q${i}`, text: `free ${i}`, type: 'single', options: [`A-q${i}`, `B-q${i}`] });
   return qs;
 }
 
 /** Screener + Van Westendorp (4) + Gabor-Granger (5) + 2 free tail questions. */
 function pricingSurvey() {
   return [
-    { id: 'q1', text: 'screener', type: 'single', options: ['Yes', 'No'], isScreening: true, methodology: 'screener' },
+    { id: 'q1', text: 'screener', type: 'single', options: ['Yes-q1', 'No-q1'], isScreening: true, methodology: 'screener' },
     { id: 'vw1', text: 'too cheap', type: 'text', methodology: 'van_westendorp', vw_band: 'too_cheap' },
     { id: 'vw2', text: 'bargain', type: 'text', methodology: 'van_westendorp', vw_band: 'bargain' },
     { id: 'vw3', text: 'expensive', type: 'text', methodology: 'van_westendorp', vw_band: 'expensive' },
@@ -67,8 +71,8 @@ function pricingSurvey() {
     { id: 'gg3', text: 'at $39', type: 'single', methodology: 'gabor_granger', gg_anchor_index: 2 },
     { id: 'gg4', text: 'at $79', type: 'single', methodology: 'gabor_granger', gg_anchor_index: 3 },
     { id: 'gg5', text: 'at $149', type: 'single', methodology: 'gabor_granger', gg_anchor_index: 4 },
-    { id: 'f1', text: 'free one', type: 'single', options: ['A', 'B'] },
-    { id: 'f2', text: 'free two', type: 'single', options: ['A', 'B'] },
+    { id: 'f1', text: 'free one', type: 'single', options: ['A-f1', 'B-f1'] },
+    { id: 'f2', text: 'free two', type: 'single', options: ['A-f2', 'B-f2'] },
   ];
 }
 
@@ -480,17 +484,23 @@ test('the safety net is a no-op on modern TAGGED surveys (tagged blocks decide)'
 function mockAnswersInAskedOrder({ shuffleReply = false } = {}) {
   mockCallClaude.mockImplementation(async ({ messages }) => {
     const prompt = messages[0].content;
-    // question ids appear as "N. [qid] (type) text" in the prompt, in ASKED order
-    const asked = [...prompt.matchAll(/^\d+\. \[([^\]]+)\]/gm)].map((m) => m[1]);
-    const responses = asked.map((qid) => ({
+    // "N. [qid] (type) text" in ASKED order, each optionally followed by an
+    // "options: [...]" line. A question with options is answered with its OWN
+    // first option; a free-text one keeps the sentinel.
+    const asked = [...prompt.matchAll(/^\d+\. \[([^\]]+)\][^\n]*(?:\n\s+options: (\[[^\n]*\]))?/gm)]
+      .map((m) => ({ qid: m[1], options: m[2] ? JSON.parse(m[2]) : null }));
+    const responses = asked.map(({ qid, options }) => ({
       question_id: qid,
-      answer: `ANS::${qid}`,
+      answer: options && options.length ? options[0] : `ANS::${qid}`,
       reasoning: `because ${qid}`,
     }));
     if (shuffleReply) responses.reverse(); // model may answer out of order too
     return { text: JSON.stringify({ responses }) };
   });
 }
+
+/** What the mock above answers for a question: its first option, or the sentinel. */
+const expectedAnswer = (q) => (Array.isArray(q.options) && q.options.length ? q.options[0] : `ANS::${q.id}`);
 
 test('CRITICAL: every answer lands on its ORIGINAL question_id, however aggressively the order is shuffled', async () => {
   const questions = freeSurvey(12);
@@ -503,7 +513,8 @@ test('CRITICAL: every answer lands on its ORIGINAL question_id, however aggressi
 
     // Every answer is keyed to its own question — the ONLY safe invariant.
     expect(rows).toHaveLength(questions.length);
-    for (const r of rows) expect(r.answer).toBe(`ANS::${r.question_id}`);
+    const byId = Object.fromEntries(questions.map((q) => [q.id, q]));
+    for (const r of rows) expect(r.answer).toBe(expectedAnswer(byId[r.question_id]));
 
     // Returned rows are in ORIGINAL question order, not asked order.
     expect(rows.map((r) => r.question_id)).toEqual(ids(questions));
@@ -520,7 +531,8 @@ test('CRITICAL: re-keying holds even when the model replies out of order too', a
   for (let i = 0; i < 20; i += 1) {
     const rows = await simulateResponses(P(`p${i}`), questions, pricingMission);
     expect(rows.map((r) => r.question_id)).toEqual(ids(questions));
-    for (const r of rows) expect(r.answer).toBe(`ANS::${r.question_id}`);
+    const byId = Object.fromEntries(questions.map((q) => [q.id, q]));
+    for (const r of rows) expect(r.answer).toBe(expectedAnswer(byId[r.question_id]));
   }
 });
 
@@ -529,12 +541,17 @@ test('CRITICAL: the retry pass for missing questions also re-keys correctly', as
   let call = 0;
   mockCallClaude.mockImplementation(async ({ messages }) => {
     call += 1;
-    const asked = [...messages[0].content.matchAll(/^\d+\. \[([^\]]+)\]/gm)].map((m) => m[1]);
+    const asked = [...messages[0].content.matchAll(/^\d+\. \[([^\]]+)\][^\n]*(?:\n\s+options: (\[[^\n]*\]))?/gm)]
+      .map((m) => ({ qid: m[1], options: m[2] ? JSON.parse(m[2]) : null }));
     // First call drops the last three asked questions (simulated truncation).
     const subset = call === 1 ? asked.slice(0, asked.length - 3) : asked;
     return {
       text: JSON.stringify({
-        responses: subset.map((qid) => ({ question_id: qid, answer: `ANS::${qid}`, reasoning: 'r' })),
+        responses: subset.map(({ qid, options }) => ({
+          question_id: qid,
+          answer: options && options.length ? options[0] : `ANS::${qid}`,
+          reasoning: 'r',
+        })),
       }),
     };
   });
@@ -542,7 +559,8 @@ test('CRITICAL: the retry pass for missing questions also re-keys correctly', as
   const rows = await simulateResponses(P('p-retry'), questions, mission);
   expect(call).toBe(2);
   expect(rows.map((r) => r.question_id)).toEqual(ids(questions));
-  for (const r of rows) expect(r.answer).toBe(`ANS::${r.question_id}`);
+  const byId = Object.fromEntries(questions.map((q) => [q.id, q]));
+  for (const r of rows) expect(r.answer).toBe(expectedAnswer(byId[r.question_id]));
 });
 
 /**
