@@ -188,10 +188,13 @@ async function deriveOneAsset(supabase, path) {
     logger.warn('missions.create: could not stat a mission asset', { path, err: err.message });
   }
 
-  const { data: pub } = supabase.storage.from(MISSION_ASSET_BUCKET).getPublicUrl(path);
-
+  // No permanent URL is stored. The bucket is private, so a URL is minted at
+  // read time and expires (services/media/storageUrls.js). Rows written before
+  // this change still carry a public URL and still resolve, because the
+  // resolver accepts either a path or an old URL.
   return {
-    url: (pub && pub.publicUrl) || null,
+    url: null,
+    bucket: MISSION_ASSET_BUCKET,
     path,
     type,
     filename: basename(path),
