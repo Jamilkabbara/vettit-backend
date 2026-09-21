@@ -9,6 +9,7 @@ const fetchAllResponses = require('../db/fetchAllResponses');
 // SUM over the spend log is short without ever looking wrong. See the helper.
 const fetchAllRows = require('../db/fetchAllRows');
 const { NET_REVENUE_COLUMNS, isStripeCharged, netRevenueUsd, sumNetRevenueUsd } = require('../services/payments/netRevenue');
+const { CHAT_TOPUP_COLUMNS, sumTopupNetUsd } = require('../services/payments/chatTopups');
 const { isComingSoon, notAvailableError } = require('../config/comingSoon');
 const logger = require('../utils/logger');
 // Pass 42 F2 — Stripe promo sync. Lazy fail at call time so a
@@ -137,7 +138,7 @@ router.get('/overview', async (req, res, next) => {
       label: 'overview net revenue',
     });
     if (liveRevErr) throw liveRevErr;
-    const totalRevenue = sumNetRevenueUsd(liveRevRows);
+    const missionRevenue = sumNetRevenueUsd(liveRevRows);
     const chargedMissions = (liveRevRows || []).filter(isStripeCharged).length;
 
     // Match prior-window revenue via the same direct path so the delta
@@ -149,7 +150,23 @@ router.get('/overview', async (req, res, next) => {
       label: 'overview prior net revenue',
     });
     if (priorRevErr) throw priorRevErr;
-    const priorTotalRev = sumNetRevenueUsd(priorRevRows);
+    const priorMissionRev = sumNetRevenueUsd(priorRevRows);
+
+    // Chat top-ups are revenue too, net of their own refunds. They were
+    // recorded nowhere until pass-61, so this line used to read $0 whatever
+    // was sold (services/payments/chatTopups.js).
+    const [{ data: topupRows, error: topupErr }, { data: priorTopupRows, error: priorTopupErr }] = await Promise.all([
+      supabase.from('chat_topups').select(CHAT_TOPUP_COLUMNS)
+        .gte('paid_at', start.toISOString()).lt('paid_at', end.toISOString()),
+      supabase.from('chat_topups').select(CHAT_TOPUP_COLUMNS)
+        .gte('paid_at', priorStart.toISOString()).lt('paid_at', start.toISOString()),
+    ]);
+    if (topupErr) throw topupErr;
+    if (priorTopupErr) throw priorTopupErr;
+    const topupRevenue = sumTopupNetUsd(topupRows);
+    const priorTotalRev = priorMissionRev + sumTopupNetUsd(priorTopupRows);
+
+    const totalRevenue = missionRevenue + topupRevenue;
 
     // Defensive no-cache headers on /overview so browsers/CDNs don't
     // serve a stale response after a fresh mission completion.
@@ -165,7 +182,9 @@ router.get('/overview', async (req, res, next) => {
         // Kept per mission Stripe charged. Dividing by every paid mission
         // spread the revenue over admin overrides and free promos too.
         avg_mission_value: {
-          value: chargedMissions > 0 ? totalRevenue / chargedMissions : 0,
+          // Missions only: a chat top-up is not a mission, and averaging it in
+          // would understate what a study is worth.
+          value: chargedMissions > 0 ? missionRevenue / chargedMissions : 0,
           delta_pct: 0,
         },
       },
