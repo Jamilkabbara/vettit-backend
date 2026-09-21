@@ -22,6 +22,9 @@
  *   that does not sum.
  * - No list price is invented for a free-promo mission: price_estimated is a
  *   setup-time estimate and does not match the ladder for those rows.
+ * - An admin-override mission is $0. It was never charged and nothing is owed,
+ *   so pricing it at the list price invoices the customer for money that was
+ *   never taken. `providedByVett` is set and the payment note names VETT.
  * - Refunds (September 2026). `total` stays the amount charged, because that
  *   is what the customer bought; `refunded` is refunded_amount_cents, written
  *   from Stripe by the refund webhook, and `net` is what VETT kept. A fully
@@ -45,16 +48,29 @@ function paidVia(m) {
 
 function buildInvoice(m) {
   const via = paidVia(m);
-  const totalCents =
-    m.paid_amount_cents != null ? Number(m.paid_amount_cents)
+
+  // A mission run on an admin override was never charged: no card, no Stripe,
+  // nothing owed. `paid_amount_cents` is null on every one of them, so the
+  // fallback below billed them at their LIST price - 11 test missions carried
+  // invoices totalling $849 for money nobody paid and nobody owed. An override
+  // invoice is $0, and the payment note already says who provided it.
+  //
+  // This changes no revenue: net revenue has never counted these (they have no
+  // Stripe charge, see services/payments/netRevenue.js), which is exactly why
+  // the invoice must not price them either.
+  const providedByVett = via === 'admin';
+
+  const totalCents = providedByVett ? 0
+    : m.paid_amount_cents != null ? Number(m.paid_amount_cents)
       : cents(m.total_price_usd) != null ? cents(m.total_price_usd)
         : 0;   // free promo, or nothing recorded (paidVia says which)
 
-  const base = cents(m.base_cost_usd) ?? 0;
-  const targeting = cents(m.targeting_surcharge_usd) ?? 0;
-  const extraQuestions = cents(m.extra_questions_cost_usd) ?? 0;
-  const discount = cents(m.discount_usd) ?? 0;
-  const itemised = m.base_cost_usd != null && base + targeting + extraQuestions - discount === totalCents;
+  const base = providedByVett ? 0 : (cents(m.base_cost_usd) ?? 0);
+  const targeting = providedByVett ? 0 : (cents(m.targeting_surcharge_usd) ?? 0);
+  const extraQuestions = providedByVett ? 0 : (cents(m.extra_questions_cost_usd) ?? 0);
+  const discount = providedByVett ? 0 : (cents(m.discount_usd) ?? 0);
+  const itemised = !providedByVett && m.base_cost_usd != null
+    && base + targeting + extraQuestions - discount === totalCents;
 
   const lines = itemised
     ? { base, targetingSurcharge: targeting, extraQuestionsCost: extraQuestions, discount }
@@ -67,6 +83,10 @@ function buildInvoice(m) {
   const usd = (c) => Math.round(c) / 100;
   return {
     invoiceId:        `VTT-${m.id.substring(0, 8).toUpperCase()}`,
+    // Named so a surface can say it plainly rather than inferring it from a
+    // zero. The invoice document's payment note already reads
+    // "Provided by VETT; no card payment was taken".
+    providedByVett,
     missionId:        m.id,
     missionStatement: m.brief || m.title || '',
     goalType:         m.goal_type || null,
