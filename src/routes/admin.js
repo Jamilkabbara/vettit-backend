@@ -231,7 +231,8 @@ router.get('/missions', async (req, res, next) => {
          respondent_count, country, promo_code, discount_usd, payment_method,
          paid_amount_cents, refunded_amount_cents, stripe_refund_ids,
          latest_payment_intent_id, checkout_session_id,
-         created_at, paid_at, completed_at, executive_summary`,
+         created_at, paid_at, completed_at, executive_summary,
+         quality_flags, quality_flagged_at`,
         { count: 'exact' }
       )
       // `created_at` is NOT unique. It defaults to now(), which in Postgres is

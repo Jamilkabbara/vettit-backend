@@ -297,6 +297,9 @@ router.get('/recent-vetted', async (req, res, next) => {
     const { data, error } = await supabase
       .from('missions')
       .select('goal_type, targeting, completed_at')
+      // A study flagged as produced before the quality fixes of 20 September is
+      // never shown publicly: this endpoint is anonymous social proof.
+      .is('quality_flags', null)
       .eq('status', 'completed')
       .order('completed_at', { ascending: false, nullsFirst: false })
       .limit(40);

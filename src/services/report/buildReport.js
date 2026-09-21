@@ -17,6 +17,7 @@
  */
 
 const { computeRatingStats } = require('../ai/insights');
+const { qualityNotice } = require('./qualityNotice');
 const { analysisHeadlines } = require('../exports/analysisHeadlines');
 const { computeStatGate } = require('./statGate');
 const { deriveFocalBrand, isGeneric } = require('../../utils/focalBrand');
@@ -532,6 +533,10 @@ function buildCanonicalReport(mission, analysis, responses) {
   return sanitizeDashesDeep({
     schema_version: 1,
     header: {
+      // A study produced before the quality fixes of 20 September carries the
+      // notice on the report itself, not only in admin: the person reading the
+      // figures is the person who needs to know (services/report/qualityNotice.js).
+      quality: qualityNotice(mission),
       title: cleanText(mission.title) || 'Untitled mission',
       brief: cleanText(mission.brief || mission.mission_statement || ''),
       methodology: mission.goal_type || null,
