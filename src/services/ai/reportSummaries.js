@@ -26,6 +26,7 @@
 const { callClaude } = require('./anthropic');
 const { clusterOpenEndThemes } = require('./openEndThemes');
 const { WRITING_STYLE } = require('./writingStyle');
+const { checkAgainstReport } = require('../report/headlineBasis');
 const { checkNarrativeFigures, distributionPercentages } = require('../report/narrativeFigures');
 const { computedFigureUniverse, tileValueDerivable } = require('../report/tileFigures');
 const logger = require('../../utils/logger');
@@ -358,7 +359,15 @@ async function generateReportSummaries(report, opts = {}) {
     });
     const obj = extractJSONObject(res.text) || {};
     const txt = typeof obj.executive_summary === 'string' ? clampSentence(obj.executive_summary) : '';
-    if (txt && txt.length > 40 && !/unavailable|apolog|as an ai/i.test(txt)) { execSummary = txt; execSource = 'ai'; }
+    // A figure that describes only one market or segment must say so, or the
+    // deterministic summary keeps the slot (services/report/headlineBasis.js).
+    const basis = txt ? checkAgainstReport(txt, report, report.centerpiece && report.centerpiece.data) : [];
+    if (basis.length) {
+      logger.error('Report summary: subgroup figure presented as the whole study; keeping the computed summary', {
+        missionId: opts.missionId || null, violations: basis,
+      });
+    }
+    if (txt && txt.length > 40 && !basis.length && !/unavailable|apolog|as an ai/i.test(txt)) { execSummary = txt; execSource = 'ai'; }
     // KPIs — keep AI's only if shaped right (label+value); else deterministic floor.
     if (Array.isArray(obj.kpis)) {
       // A KPI here becomes report.key_findings, which the results page renders as

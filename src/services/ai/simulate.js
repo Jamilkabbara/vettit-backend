@@ -9,6 +9,7 @@ const { orderQuestionsForPersona } = require('./questionOrder');
 const { DEFAULT_SIM_TEMPERATURE } = require('./simMeta');
 const { WRITING_STYLE } = require('./writingStyle');
 const logger = require('../../utils/logger');
+const { optionsForRespondent } = require('./multiSelectHygiene');
 
 /**
  * Pass 47 — the authoritative set of question `type` values the
@@ -88,7 +89,7 @@ async function simulateResponses(persona, questions, mission) {
   // best/worst object contract the roadmap analysis module consumes.
   const formatInstructions = `Answer every question below as this persona. Match the answer FORMAT to the question's (type):
 - "single" / "opinion" → pick exactly ONE option, returned as the option's EXACT text.
-- "multi"              → an ARRAY of 1-N options the persona genuinely agrees with (exact option text).
+- "multi"              → an ARRAY of the options that genuinely apply to this persona (exact option text), at most (max_selections) where given. If none apply, answer with the "none" option alone. Do NOT pad the list: ticking an option the persona would not raise unprompted is what turns a concern battery into a list of everything plausible.
 - "rating"            → a whole number on THIS question's scale. When options are provided they list the valid numbers (e.g. 0-10 for NPS, 1-7 for CES) — answer within that range. If no options, use 1 to 5.
 - "max_diff_set"      → from the options, choose the SINGLE MOST important and the SINGLE LEAST important. Answer as an object: {"best": "<exact option text>", "worst": "<exact option text>"} — best and worst MUST differ.
 - "text"              → 1-3 sentences in the persona's voice (free text).
@@ -104,8 +105,15 @@ ${formatInstructions}
 
 Questions:
 ${qs.map((q, i) => {
-  const opts = (q.options && q.options.length) ? `\n   options: ${JSON.stringify(q.options)}` : '';
-  return `${i + 1}. [${q.id}] (${q.type}) ${q.text}${opts}`;
+  // Option order rotates per respondent, so the first option does not collect
+  // the extra ticks that a first option always collects. Deterministic per
+  // (persona, question), so a re-run reproduces the same presentation.
+  // Scales, price bands and frequency ladders keep their order; the "none"
+  // option stays last (services/ai/multiSelectHygiene.js).
+  const presented = optionsForRespondent(q, persona && (persona.persona_id || persona.id));
+  const opts = presented.length ? `\n   options: ${JSON.stringify(presented)}` : '';
+  const cap = Number(q.maxSelections) > 0 ? `\n   max_selections: ${Number(q.maxSelections)}` : '';
+  return `${i + 1}. [${q.id}] (${q.type}) ${q.text}${opts}${cap}`;
 }).join('\n')}
 
 Return ONLY this JSON (answer shape matches each question's type):

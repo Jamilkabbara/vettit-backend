@@ -27,6 +27,8 @@ const logger = require('../utils/logger');
 // so the prompt cache hit rate is maximised.  Anthropic caches prefixes that
 // are ≥ 1024 tokens — both prompts below comfortably exceed that.
 
+const { normalizeQuestions, MULTI_SELECT_PROMPT_RULES } = require('./ai/multiSelectHygiene');
+
 const SURVEY_GEN_SYSTEM = `You are a senior market researcher at a top-tier research consultancy.
 Your job is to design professional surveys. Always return ONLY valid JSON with no markdown fences.
 
@@ -416,7 +418,46 @@ async function extractSubject(brief) {
   }
 }
 
-async function generateSurvey({
+/**
+ * Every generator's output passes through multi-select hygiene: a battery of
+ * concerns with no way to decline measures the question, not the market (see
+ * services/ai/multiSelectHygiene.js). The escape option and the selection cap
+ * are added here rather than trusted to 13 separate prompts, so a new
+ * generator cannot forget them. Options that merge two concerns are reported,
+ * never auto-split - splitting changes what was asked.
+ */
+/**
+ * Every survey generator gets the multi-select rules appended to its system
+ * prompt. Appended in one place rather than pasted into 13 prompts, so a new
+ * generator inherits them and none of them can drift apart. The rules are
+ * guidance; the guarantee is normalizeQuestions() on the way out.
+ */
+function withMultiSelectRules(systemPrompt) {
+  return `${systemPrompt}\n${MULTI_SELECT_PROMPT_RULES}`;
+}
+
+async function generateSurvey(args) {
+  const out = await generateSurveyRaw(args);
+  if (!out || !Array.isArray(out.questions) || out.questions.length === 0) return out;
+  const { questions, changes, remaining, advisories } = normalizeQuestions(out.questions);
+  if (changes.length) {
+    logger.info('Survey generation: multi-select hygiene applied', { goal: args && args.goal, changes });
+  }
+  if (remaining.length) {
+    // Should be empty: normalisation fixes everything findViolations can
+    // decide. Not empty means the normaliser and the checker disagree, which
+    // is a bug in one of them.
+    logger.error('Survey generation: multi-select violations survived normalisation', { goal: args && args.goal, remaining });
+  }
+  if (advisories && advisories.length) {
+    // Advisory: a text rule cannot tell "halal certification or religious
+    // compliance" (two concerns) from "supermarkets or delivery apps" (one).
+    logger.debug('Survey generation: options a human should check for merged concerns', { goal: args && args.goal, advisories });
+  }
+  return { ...out, questions };
+}
+
+async function generateSurveyRaw({
   goal,
   description,
   targetingHints = {},
@@ -491,7 +532,7 @@ Then generate the survey JSON as specified in your instructions.`;
 
   const response = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: prompt }],
     maxTokens: 2000,
     enablePromptCache: true,
@@ -521,7 +562,7 @@ async function generateBrandLiftSurvey({ description, clarify, missionAssets }) 
 
   const firstResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: BRAND_LIFT_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(BRAND_LIFT_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 4000,
     enablePromptCache: true,
@@ -547,7 +588,7 @@ Return the JSON again with that issue fixed. Keep all other rules.`;
 
   const retryResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: BRAND_LIFT_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(BRAND_LIFT_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: retryPrompt }],
     maxTokens: 4000,
     enablePromptCache: true,
@@ -683,7 +724,7 @@ async function generatePricingSurvey({ description, clarify }) {
   const userPrompt = buildPricingUserPrompt({ description, clarify });
   const firstResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: PRICING_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(PRICING_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 3000,
     enablePromptCache: true,
@@ -697,7 +738,7 @@ async function generatePricingSurvey({ description, clarify }) {
   logger.info('pricing survey: retry on validation failure', { reason: validationErr });
   const retryResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: PRICING_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(PRICING_SURVEY_GEN_SYSTEM),
     messages: [{
       role: 'user',
       content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
@@ -833,7 +874,7 @@ async function generateRoadmapSurvey({ description, clarify }) {
 
   const firstResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: ROADMAP_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(ROADMAP_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 4500,
     enablePromptCache: true,
@@ -847,7 +888,7 @@ async function generateRoadmapSurvey({ description, clarify }) {
   logger.info('roadmap survey: retry on validation failure', { reason: validationErr });
   const retryResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: ROADMAP_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(ROADMAP_SURVEY_GEN_SYSTEM),
     messages: [{
       role: 'user',
       content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
@@ -997,7 +1038,7 @@ async function generateCSATSurvey({ description, clarify }) {
   const userPrompt = buildCSATUserPrompt({ description, clarify });
   const firstResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: CSAT_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(CSAT_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 2500,
     enablePromptCache: true,
@@ -1011,7 +1052,7 @@ async function generateCSATSurvey({ description, clarify }) {
   logger.info('csat survey: retry on validation failure', { reason: validationErr });
   const retryResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: CSAT_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(CSAT_SURVEY_GEN_SYSTEM),
     messages: [{
       role: 'user',
       content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
@@ -1128,7 +1169,7 @@ async function generateValidateSurvey({ description, clarify }) {
   const hasPrice = !!(clarify && clarify.concept_price_usd);
   const firstResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: VALIDATE_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(VALIDATE_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 2500,
     enablePromptCache: true,
@@ -1142,7 +1183,7 @@ async function generateValidateSurvey({ description, clarify }) {
   logger.info('validate survey: retry on validation failure', { reason: validationErr });
   const retryResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: VALIDATE_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(VALIDATE_SURVEY_GEN_SYSTEM),
     messages: [{
       role: 'user',
       content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
@@ -1277,7 +1318,7 @@ async function generateCompareSurvey({ description, clarify }) {
 
   const firstResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: COMPARE_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(COMPARE_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 5000,
     enablePromptCache: true,
@@ -1291,7 +1332,7 @@ async function generateCompareSurvey({ description, clarify }) {
   logger.info('compare survey: retry on validation failure', { reason: validationErr });
   const retryResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: COMPARE_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(COMPARE_SURVEY_GEN_SYSTEM),
     messages: [{
       role: 'user',
       content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
@@ -1402,7 +1443,7 @@ async function generateMarketingSurvey({ description, clarify }) {
 
   const firstResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: MARKETING_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(MARKETING_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 3000,
     enablePromptCache: true,
@@ -1416,7 +1457,7 @@ async function generateMarketingSurvey({ description, clarify }) {
   logger.info('marketing survey: retry on validation failure', { reason: validationErr });
   const retryResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: MARKETING_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(MARKETING_SURVEY_GEN_SYSTEM),
     messages: [{
       role: 'user',
       content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
@@ -1604,7 +1645,7 @@ async function generateCompetitorSurvey({ description, clarify }) {
   const userPrompt = buildCompetitorUserPrompt({ description, clarify });
   const firstResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: COMPETITOR_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(COMPETITOR_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 3000,
     enablePromptCache: true,
@@ -1618,7 +1659,7 @@ async function generateCompetitorSurvey({ description, clarify }) {
   logger.info('competitor survey: retry on validation failure', { reason: validationErr });
   const retryResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: COMPETITOR_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(COMPETITOR_SURVEY_GEN_SYSTEM),
     messages: [{
       role: 'user',
       content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
@@ -1785,7 +1826,7 @@ async function generateNamingSurvey({ description, clarify }) {
 
   const firstResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: NAMING_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(NAMING_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 6000,
     enablePromptCache: true,
@@ -1799,7 +1840,7 @@ async function generateNamingSurvey({ description, clarify }) {
   logger.info('naming survey: retry on validation failure', { reason: validationErr });
   const retryResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: NAMING_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(NAMING_SURVEY_GEN_SYSTEM),
     messages: [{
       role: 'user',
       content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
@@ -1931,7 +1972,7 @@ async function generateChurnSurvey({ description, clarify }) {
   const userPrompt = buildChurnUserPrompt({ description, clarify });
   const firstResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: CHURN_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(CHURN_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 2500,
     enablePromptCache: true,
@@ -1945,7 +1986,7 @@ async function generateChurnSurvey({ description, clarify }) {
   logger.info('churn survey: retry on validation failure', { reason: validationErr });
   const retryResp = await callClaude({
     callType: 'survey_gen',
-    systemPrompt: CHURN_SURVEY_GEN_SYSTEM,
+    systemPrompt: withMultiSelectRules(CHURN_SURVEY_GEN_SYSTEM),
     messages: [{
       role: 'user',
       content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that issue fixed. Keep all other rules.`,
@@ -2175,7 +2216,7 @@ function buildAudienceProfilingUserPrompt({ description, clarify }) {
 async function generateAudienceProfilingSurvey({ description, clarify }) {
   const userPrompt = buildAudienceProfilingUserPrompt({ description, clarify });
   const first = await callClaude({
-    callType: 'survey_gen', systemPrompt: AUDIENCE_PROFILING_SURVEY_GEN_SYSTEM,
+    callType: 'survey_gen', systemPrompt: withMultiSelectRules(AUDIENCE_PROFILING_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }], maxTokens: 2800, enablePromptCache: true,
   });
   let parsed;
@@ -2184,7 +2225,7 @@ async function generateAudienceProfilingSurvey({ description, clarify }) {
   if (!validationErr) return parsed;
   logger.info('audience_profiling survey: retry on validation failure', { reason: validationErr });
   const retry = await callClaude({
-    callType: 'survey_gen', systemPrompt: AUDIENCE_PROFILING_SURVEY_GEN_SYSTEM,
+    callType: 'survey_gen', systemPrompt: withMultiSelectRules(AUDIENCE_PROFILING_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that fixed. Keep all other rules.` }],
     maxTokens: 2800, enablePromptCache: true,
   });
@@ -2259,7 +2300,7 @@ function buildMarketEntryUserPrompt({ description, clarify }) {
 async function generateMarketEntrySurvey({ description, clarify }) {
   const userPrompt = buildMarketEntryUserPrompt({ description, clarify });
   const first = await callClaude({
-    callType: 'survey_gen', systemPrompt: MARKET_ENTRY_SURVEY_GEN_SYSTEM,
+    callType: 'survey_gen', systemPrompt: withMultiSelectRules(MARKET_ENTRY_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }], maxTokens: 2500, enablePromptCache: true,
   });
   let parsed;
@@ -2268,7 +2309,7 @@ async function generateMarketEntrySurvey({ description, clarify }) {
   if (!validationErr) return parsed;
   logger.info('market_entry survey: retry on validation failure', { reason: validationErr });
   const retry = await callClaude({
-    callType: 'survey_gen', systemPrompt: MARKET_ENTRY_SURVEY_GEN_SYSTEM,
+    callType: 'survey_gen', systemPrompt: withMultiSelectRules(MARKET_ENTRY_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that fixed. Keep all other rules.` }],
     maxTokens: 2500, enablePromptCache: true,
   });
