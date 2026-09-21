@@ -11,9 +11,12 @@ describe('buildInvoice', () => {
   });
 
   test('targeting and extra questions are itemised and sum to the total', () => {
-    const inv = buildInvoice({ id: '3cd77b6c-0000', goal_type: 'naming_messaging', base_cost_usd: '9.00', targeting_surcharge_usd: '5.00', extra_questions_cost_usd: '300.00', discount_usd: '0.00', total_price_usd: '314.00', paid_amount_cents: null, payment_method: 'admin_override', paid_at: '2026-06-13', respondent_count: 5 });
+    // A CHARGED mission: itemisation is about a real bill. This fixture used
+    // to be an admin_override paying $314, which is the defect an override
+    // invoice now avoids - nothing was charged, so nothing is itemised.
+    const inv = buildInvoice({ id: '3cd77b6c-0000', goal_type: 'naming_messaging', base_cost_usd: '9.00', targeting_surcharge_usd: '5.00', extra_questions_cost_usd: '300.00', discount_usd: '0.00', total_price_usd: '314.00', paid_amount_cents: 31400, latest_payment_intent_id: 'pi_itemised', paid_at: '2026-06-13', respondent_count: 5 });
     expect(inv.lines).toEqual({ base: 9, targetingSurcharge: 5, extraQuestionsCost: 300, discount: 0 });
-    expect(inv).toMatchObject({ paidVia: 'admin', itemised: true, total: 314 });
+    expect(inv).toMatchObject({ paidVia: 'stripe', itemised: true, total: 314 });
     expect(sum(inv)).toBe(314);
   });
 
