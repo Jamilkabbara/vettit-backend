@@ -8,6 +8,7 @@ const { callClaude, extractJSON } = require('./anthropic');
 const { WRITING_STYLE } = require('./writingStyle');
 const logger = require('../../utils/logger');
 const { computePersonas } = require('../analysis/personas');
+const { checkHeadlineBasis, fullSampleFigures, subgroupFigures, subgroupLabels } = require('../report/headlineBasis');
 const { isSkip } = require('../../utils/answerValue');
 const { sigLabel } = require('../exports/analysisHeadlines');
 
@@ -246,6 +247,43 @@ function buildComputedSummary(analysis, mission) {
  * @param {object} [analysis] deterministic methodology analysis (Pass 46 Phase 3)
  * @returns {Promise<object>} { executive_summary, kpis, per_question_insights, recommendations, follow_ups, contradictions }
  */
+/**
+ * A headline figure must describe the whole study.
+ *
+ * Mission 3fc15087 opened its delivered report with "purchase intent of 82.5%".
+ * That was the Saudi figure (33 of 40); the study was 75% (60 of 80). The
+ * number was real and sat in the analysis, so nothing that checks whether a
+ * figure is derivable could catch it. This checks which population it belongs
+ * to (services/report/headlineBasis.js).
+ *
+ * A subgroup figure is allowed when the sentence says whose it is.
+ */
+function headlineBasisViolations(text, agg, analysis, mission) {
+  if (!text || !analysis) return [];
+  const survey = Object.values(agg || {}).map((q) => ({
+    id: q.id,
+    type: q.type,
+    data: {
+      n: q.n,
+      n_respondents: q.n_respondents != null ? q.n_respondents : q.n,
+      distribution: q.distribution,
+      average: q.average,
+    },
+  }));
+  const report = {
+    header: {
+      sample: { n: (mission && mission.respondent_count) || null },
+      markets: (mission && mission.targeted_markets) || null,
+    },
+    survey,
+  };
+  return checkHeadlineBasis(text, {
+    full: fullSampleFigures(report),
+    subgroup: subgroupFigures(analysis),
+    labels: subgroupLabels(analysis, report),
+  });
+}
+
 async function synthesizeInsights(mission, responses, analysis = null) {
   const questions = mission.questions || [];
   const agg = aggregate(responses, questions);
@@ -562,6 +600,35 @@ If chart_data cannot be reliably emitted (very small sample, malformed responses
     // Round over-precise figures in the KPI tiles before they are persisted.
     // See roundHeadlineFigures.
     parsed.kpis = roundHeadlineFigures(parsed.kpis);
+
+    // A subgroup figure presented as the study's finding is replaced by the
+    // computed summary, which cannot misattribute one. The prose layer is a
+    // nice-to-have; the basis of a number is not.
+    const execViolations = headlineBasisViolations(parsed.executive_summary, agg, analysis, mission);
+    if (execViolations.length) {
+      logger.error('Insight synthesis: executive summary presented a subgroup figure as the whole study', {
+        missionId: mission.id, violations: execViolations,
+      });
+      const computed = buildComputedSummary(analysis, mission);
+      if (computed) {
+        parsed.executive_summary = computed;
+        parsed.exec_summary_source = 'computed_after_basis_violation';
+      }
+    }
+    // Same rule for the hero tiles: a tile is a headline with a bigger font.
+    if (Array.isArray(parsed.kpis)) {
+      const before = parsed.kpis.length;
+      parsed.kpis = parsed.kpis.filter((k) => {
+        if (!k) return false;
+        const v = headlineBasisViolations(`${k.label || ''} ${k.value || ''}`, agg, analysis, mission);
+        return v.length === 0;
+      });
+      if (parsed.kpis.length !== before) {
+        logger.warn('Insight synthesis: dropped KPI tiles whose figure was a subgroup', {
+          missionId: mission.id, dropped: before - parsed.kpis.length,
+        });
+      }
+    }
     return sanitizeAIOutputDeep(parsed);
   } catch (err) {
     logger.error('Insight synthesis failed; using computed fallback', { missionId: mission.id, err: err.message });
