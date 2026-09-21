@@ -141,6 +141,8 @@ async function selectFlagged() {
   }
 
   console.log('\nStatements this will run (one per study, nothing else touched):');
+  console.log('  (and a flag is CLEARED from any study whose data no longer shows a defect,');
+  console.log('   which is what a re-run on the fixed code produces)');
   for (const f of flagged.slice(0, 3)) {
     console.log(`  UPDATE missions SET quality_flags = '{${f.flags.join(',')}}', quality_flagged_at = now() WHERE id = '${f.id}';`);
   }
@@ -150,6 +152,20 @@ async function selectFlagged() {
   if (!DO_RUN) {
     console.log('\nDRY RUN. Nothing was changed. Re-run with --run to apply.');
     process.exit(0);
+  }
+
+  // A study that has been re-run on the fixed code is clean, and must not keep
+  // a flag that is no longer true. The flag describes the data as it stands.
+  const flaggedIds = new Set(flagged.map((f) => f.id));
+  const { data: stale, error: staleErr } = await supabase
+    .from('missions').select('id').not('quality_flags', 'is', null);
+  if (staleErr) throw staleErr;
+  const toClear = (stale || []).filter((m) => !flaggedIds.has(m.id));
+  for (const m of toClear) {
+    const { error } = await supabase
+      .from('missions').update({ quality_flags: null, quality_flagged_at: null }).eq('id', m.id);
+    if (error) { console.error(`FAILED to clear ${m.id}: ${error.message}`); continue; }
+    console.log(`  cleared the flag on ${m.id.slice(0, 8)}: its data no longer shows any defect`);
   }
 
   let written = 0;
