@@ -549,8 +549,12 @@ describe('POST /api/missions - server-owned columns cannot be set from the body'
     const [asset] = global.__lastInsert.mission_assets;
     expect(asset.path).toBe('u1/999-clip.mp4');
     expect(asset.type).toBe('video');                       // bytes, not the claim
-    expect(asset.url).toBe('https://storage.test/public/vettit-uploads/u1/999-clip.mp4');
-    expect(asset.url).not.toContain('evil.test');           // server composes the URL
+    // No permanent URL is stored any more: the bucket is private and a URL is
+    // minted at read time and expires. What matters here is unchanged - the
+    // record comes from storage, and nothing the body claimed survives.
+    expect(asset.url).toBeNull();
+    expect(asset.bucket).toBe('vettit-uploads');            // server picks the bucket
+    expect(JSON.stringify(asset)).not.toContain('evil.test');
     expect(asset.filename).toBe('999-clip.mp4');            // storage path, not originalName
     expect(asset.mimeType).toBe('video/mp4');               // storage, not the claim
     expect(asset.sizeBytes).toBe(2_600_000);                // storage, not 12

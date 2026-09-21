@@ -4,6 +4,7 @@ const multer = require('multer');
 const { authenticate } = require('../middleware/auth');
 const supabase = require('../db/supabase');
 const logger = require('../utils/logger');
+const { signedUrlFor } = require('../services/media/storageUrls');
 
 // Store files in memory then push to Supabase Storage
 const upload = multer({
@@ -38,10 +39,36 @@ router.post('/image', authenticate, upload.single('image'), async (req, res, nex
 
     if (error) throw error;
 
-    const { data: { publicUrl } } = supabase.storage.from(bucket).getPublicUrl(filename);
+    // A signed URL, not a public one. This bucket was marked public, which
+    // bypasses row level security on read and made every customer's uploads
+    // readable by anyone holding the link (services/media/storageUrls.js).
+    // The path is returned so the client can ask for a fresh URL later rather
+    // than storing one that dies in an hour.
+    const url = await signedUrlFor(supabase, bucket, filename);
 
     logger.info('Image uploaded', { userId: req.user.id, filename });
-    res.json({ url: publicUrl, filename });
+    res.json({ url, path: filename, filename });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/uploads/signed-url — a fresh URL for a file you own
+//
+// Signed URLs expire, which is the point. The browser asks for a new one when
+// it needs to show the file again. Ownership is checked exactly as the delete
+// route checks it: the path must sit under your own user id.
+router.get('/signed-url', authenticate, async (req, res, next) => {
+  try {
+    const path = typeof req.query.path === 'string' ? req.query.path : '';
+    if (!path) return res.status(400).json({ error: 'path is required' });
+    if (!path.startsWith(req.user.id + '/')) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+    const bucket = process.env.STORAGE_BUCKET || 'vettit-uploads';
+    const url = await signedUrlFor(supabase, bucket, path);
+    if (!url) return res.status(404).json({ error: 'not found' });
+    res.json({ url, path });
   } catch (err) {
     next(err);
   }
