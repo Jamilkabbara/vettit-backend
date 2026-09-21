@@ -52,6 +52,48 @@ ${WRITING_STYLE}`;
  * @param {object} mission    full mission row (for context)
  * @returns {Promise<Array<{question_id, answer}>>}
  */
+/**
+ * An answer has to be an answer to THIS question.
+ *
+ * Questions are presented to each persona in a seeded order, and a multi-select
+ * now rotates its options, so a model that answers by position instead of by id
+ * produces a response that parses cleanly and is completely wrong: on mission
+ * bae6613a a persona answered q2 with q4's options and answered q3, a
+ * five-point opinion scale, with an array of q2's options. Nothing noticed,
+ * because nothing compared an answer with the option list it came from.
+ *
+ * Across the delivered studies, 468 of 6,243 stored choice answers (7.5%, 11
+ * studies, 140 respondents) are values that were never on offer for the
+ * question they are filed under. The worst is 19% of a 300-respondent study.
+ * Every one of those rows became a bar in a chart.
+ *
+ * Free text and ratings are not checked here: text has no option list, and the
+ * rating scale is enforced where the scale is known.
+ */
+function answerFitsQuestion(question, answer) {
+  const options = Array.isArray(question && question.options) ? question.options.filter((o) => o != null) : [];
+  if (!options.length) return true;
+  const type = String((question && question.type) || '').toLowerCase();
+  if (type === 'text' || type === 'open_ended' || type === 'rating') return true;
+
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+  const allowed = new Set(options.map(norm));
+
+  if (type === 'max_diff_set') {
+    if (!answer || typeof answer !== 'object' || Array.isArray(answer)) return false;
+    return allowed.has(norm(answer.best)) && allowed.has(norm(answer.worst));
+  }
+  if (Array.isArray(answer)) {
+    // A multi-select answer is right only if every value was on offer. One
+    // stray value means the model was answering a different question.
+    return answer.length > 0 && answer.every((v) => allowed.has(norm(v)));
+  }
+  // A single-choice answer given as an array, or an array answer given as a
+  // single value, are both the same mistake in different clothes.
+  if (type === 'multi') return allowed.has(norm(answer));
+  return allowed.has(norm(answer));
+}
+
 async function simulateResponses(persona, questions, mission) {
   // Pass 27 — Brand Lift incrementality. When the persona is tagged
   // _exposure_status=exposed, instruct the model that this persona was
@@ -171,6 +213,24 @@ Return ONLY this JSON (answer shape matches each question's type):
   // the retry is cheap and can't itself truncate. This is what lifts
   // late-funnel stages (sharing intent, final paired comparisons) and
   // big max-diff batteries from "0 answers" to fully covered.
+  // Discard answers that do not belong to their question BEFORE working out
+  // what is missing: a wrong answer and a missing one need the same treatment,
+  // and the retry below re-asks only those questions, without the neighbours
+  // that confused the model the first time.
+  const misfiled = [];
+  for (const q of askOrder) {
+    const row = answersById.get(q.id);
+    if (row && !answerFitsQuestion(q, row.answer)) {
+      misfiled.push(q.id);
+      answersById.delete(q.id);
+    }
+  }
+  if (misfiled.length) {
+    logger.warn('Response sim: answers did not match their question\'s options; re-asking', {
+      personaId: persona.id, missionId: mission.id, questionIds: misfiled,
+    });
+  }
+
   const missing = askOrder.filter((q) => !answersById.has(q.id));
   if (missing.length > 0) {
     logger.info('Response sim: retrying missing questions', {
@@ -196,6 +256,28 @@ Return ONLY this JSON (answer shape matches each question's type):
   // answersById is already deduped (first answer per question_id wins,
   // Pass 32 X1) and merged across the initial call + the missing-question
   // retry. Return rows in question order.
+  // Anything still misfiled after the retry is dropped: a wrong answer is
+  // worse than a missing one, because it is counted.
+  for (const q of askOrder) {
+    const row = answersById.get(q.id);
+    if (row && !answerFitsQuestion(q, row.answer)) {
+      logger.warn('Response sim: answer still did not fit after the retry; dropping it', {
+        personaId: persona.id, missionId: mission.id, questionId: q.id,
+      });
+      answersById.delete(q.id);
+    }
+  }
+  // A persona that could not answer most of its own survey is not a
+  // respondent. Returning nothing marks it wasted, and the caller recruits
+  // another one (recruitLoop's zero-response guard).
+  const answerable = askOrder.filter((q) => String(q.type || '').toLowerCase() !== 'text').length || askOrder.length;
+  if (answersById.size * 2 < answerable) {
+    logger.warn('Response sim: too few answers fitted their questions; treating the persona as wasted', {
+      personaId: persona.id, missionId: mission.id, fitted: answersById.size, answerable,
+    });
+    return [];
+  }
+
   try {
     const ordered = questions.map((q) => answersById.get(q.id)).filter(Boolean);
     if (ordered.length < questions.length) {
@@ -590,6 +672,7 @@ async function simulateAllResponses(personas, questions, mission, onProgress, op
 // services/ai/recruitLoop.js can apply the same screening logic
 // without duplicating it.
 module.exports = {
+  answerFitsQuestion,
   simulateResponses,
   simulateAllResponses,
   passesScreening,
