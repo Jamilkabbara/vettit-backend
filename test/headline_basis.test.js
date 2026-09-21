@@ -1,19 +1,17 @@
 /**
  * The headline belongs to the whole study; a subgroup figure says whose.
  *
- * Anchored on a real delivered report. Mission 3fc15087 (n=80, Saudi Arabia and
- * Egypt) opened with:
+ * The fixture is a real shape: mission 3fc15087, n=80 across Saudi Arabia and
+ * Egypt, where purchase intent was 75% overall and 82.5% in Saudi Arabia. Both
+ * figures are real and both are derivable from the data, so neither the
+ * narrative guard nor the tile guard can tell them apart. Only the basis can.
  *
- *   "... scoring a demand index of 62/100 and purchase intent of 82.5%"
- *
- * 82.5% is the Saudi figure (33 of 40). The study was 75% (60 of 80). The
- * number was real, which is why the existing derivability check passed it: that
- * check asks whether a figure exists in the data, not which population it
- * describes.
+ * (That report attributed its 82.5% correctly. The sentences below are written
+ * to test both readings of the same true number.)
  */
 
 const {
-  checkHeadlineBasis, fullSampleFigures, subgroupFigures, subgroupLabels, checkAgainstReport,
+  checkHeadlineBasis, fullSampleFigures, subgroupFigureMap, subgroupLabels, checkAgainstReport,
 } = require('../src/services/report/headlineBasis');
 
 /** The stored q3 distribution, exactly as delivered. */
@@ -47,12 +45,12 @@ const ANALYSIS = {
 
 const ctx = () => ({
   full: fullSampleFigures(REPORT),
-  subgroup: subgroupFigures(ANALYSIS),
+  subgroupMap: subgroupFigureMap(ANALYSIS),
   labels: subgroupLabels(ANALYSIS, REPORT),
 });
 
-describe('the sentence that shipped', () => {
-  test('is caught', () => {
+describe('an unlabelled subgroup figure', () => {
+  test('is caught, and named for what it is', () => {
     const v = checkHeadlineBasis(
       'Premium plant-based ready-meals show real demand, scoring a demand index of 62/100 and purchase intent of 82.5%.',
       ctx(),
@@ -60,6 +58,7 @@ describe('the sentence that shipped', () => {
     expect(v).toHaveLength(1);
     expect(v[0].figure).toBe(82.5);
     expect(v[0].reason).toMatch(/whole-study/);
+    expect(v[0].belongsTo).toContain('saudi arabia');
   });
 
   test('the same figure passes once it says whose it is', () => {

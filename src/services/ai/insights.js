@@ -8,7 +8,7 @@ const { callClaude, extractJSON } = require('./anthropic');
 const { WRITING_STYLE } = require('./writingStyle');
 const logger = require('../../utils/logger');
 const { computePersonas } = require('../analysis/personas');
-const { checkHeadlineBasis, fullSampleFigures, subgroupFigures, subgroupLabels } = require('../report/headlineBasis');
+const { checkHeadlineBasis, fullSampleFigures, subgroupFigureMap, subgroupLabels } = require('../report/headlineBasis');
 const { isSkip } = require('../../utils/answerValue');
 const { sigLabel } = require('../exports/analysisHeadlines');
 
@@ -279,7 +279,7 @@ function headlineBasisViolations(text, agg, analysis, mission) {
   };
   return checkHeadlineBasis(text, {
     full: fullSampleFigures(report),
-    subgroup: subgroupFigures(analysis),
+    subgroupMap: subgroupFigureMap(analysis),
     labels: subgroupLabels(analysis, report),
   });
 }

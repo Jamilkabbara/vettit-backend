@@ -1,26 +1,38 @@
 /**
  * A headline figure is a whole-study figure. A subgroup figure says whose.
  *
- * Mission 3fc15087 (market_entry, n=80, Saudi Arabia and Egypt) opened its
- * delivered report with "a demand index of 62/100 and purchase intent of
- * 82.5%". 82.5% is the SAUDI figure (33 of 40). The whole study was 75%
- * (60 of 80). Nothing was invented - the number existed in the analysis, which
- * is exactly why the existing tile check passed it: that check asks whether a
- * figure is derivable, not what it is a figure OF. A reader was told the study
- * found 82.5% intent. It did not; half of it did.
+ * A study of 80 people across two markets computes a figure per market. Both
+ * are true; only one is the study's finding. "Purchase intent is 82.5%" and
+ * "purchase intent reaches 82.5% in Saudi Arabia" differ by the only thing
+ * that matters to a reader deciding whether to enter a market.
+ *
+ * Nothing catches this today. narrativeFigures.js asks whether a figure is
+ * real, and tileFigures.js asks whether it is derivable from the data. A
+ * subgroup figure passes both: it IS real and it IS derivable. What neither
+ * asks is which population it describes.
+ *
+ * Provenance, stated honestly: this module was written after I claimed mission
+ * 3fc15087 had published its Saudi figure (82.5%) as the whole study's. It had
+ * not. The delivered sentence was "Saudi Arabia is the clear market to enter
+ * first, scoring a demand index of 62/100 and purchase intent of 82.5%, well
+ * ahead of Egypt's ...", which attributes it correctly. I had read a fragment
+ * of that sentence out of context. The audit's positive control is what caught
+ * my error - see scripts/audit-report-headlines.js. The guard is kept because
+ * the failure it prevents is real and cheap to prevent, not because it has
+ * ever fired on a delivered report.
  *
  * Two sets, and the difference between them is the whole point:
  *   - fullSampleFigures(): everything computed over ALL respondents.
- *   - subgroupFigures():   everything computed over a slice (per market, per
- *                          segment, exposed vs control, a screened base).
+ *   - subgroupFigureMap(): figures carried by a NAMED slice (a market, a
+ *     segment, exposed vs control), mapped back to the slice that owns them.
+ *     The name is required: a number that merely appears somewhere inside a
+ *     per-market container is a coincidence, not a misattribution, and
+ *     treating it as one produced a false positive on a real report
+ *     ("the screener filtered out 80% of respondents").
  *
- * A figure that is only in the second set may still be used - subgroups are
- * often the interesting part - but the sentence carrying it has to say which
- * slice it describes. Unlabelled, it reads as the study's finding.
- *
- * This is a BASIS check, not a truth check: narrativeFigures.js already asks
- * whether a per-question figure is real. This asks which population it belongs
- * to, which is a different way to mislead with true numbers.
+ * A figure owned by a slice may still be used - subgroups are often the
+ * interesting part - but the sentence carrying it has to say which slice it
+ * describes. Unlabelled, it reads as the study's finding.
  */
 'use strict';
 
@@ -49,41 +61,73 @@ function fullSampleFigures(report) {
   );
 }
 
-/** Figures that exist only inside a per-market, per-segment or per-group block. */
-function subgroupFigures(analysis) {
-  const set = new Set();
-  const walk = (node, inSubgroup) => {
-    if (node == null) return;
-    if (Array.isArray(node)) { for (const v of node) walk(v, inSubgroup); return; }
-    if (typeof node === 'number') { if (inSubgroup) addNumber(set, node); return; }
-    if (typeof node === 'string') {
-      if (inSubgroup) for (const n of figuresIn(node)) addNumber(set, n);
-      return;
-    }
-    if (typeof node !== 'object') return;
-    for (const [k, v] of Object.entries(node)) walk(v, inSubgroup || SUBGROUP_KEY_RE.test(k));
-  };
-  walk(analysis, false);
-  return set;
+/** The name a block of numbers belongs to: "Saudi Arabia", "Heavy users", "exposed". */
+function blockName(node) {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return null;
+  for (const k of ['market', 'segment', 'name', 'label', 'country', 'group', 'cohort', 'cluster', 'code']) {
+    const v = node[k];
+    if (typeof v === 'string' && v.trim().length >= 2 && v.trim().length <= 40) return v.trim();
+  }
+  return null;
 }
 
-/** Names a sentence can use to say which slice it means. */
+/**
+ * Figures that belong to a NAMED slice, mapped figure -> the slices that carry
+ * it. The name matters: without it there is nothing to accuse the prose of
+ * hiding, and a bare number that happens to appear somewhere inside a
+ * per-market container is a coincidence, not a misattribution.
+ *
+ * A screening rate ("80% were screened out") is exactly that coincidence, and
+ * it is why the earlier version of this function - which collected every number
+ * under a subgroup key - produced a false positive on a delivered report.
+ */
+function subgroupFigureMap(analysis) {
+  const map = new Map();
+  const attach = (v, name) => {
+    if (!Number.isFinite(v) || !name) return;
+    const keys = new Set();
+    addNumber(keys, v);
+    for (const k of keys) {
+      if (!map.has(k)) map.set(k, new Set());
+      map.get(k).add(name.toLowerCase());
+    }
+  };
+  const walk = (node, name) => {
+    if (node == null) return;
+    if (Array.isArray(node)) { for (const v of node) walk(v, name); return; }
+    if (typeof node !== 'object') return;
+    const here = blockName(node) || name;
+    for (const [k, v] of Object.entries(node)) {
+      if (typeof v === 'number') { if (here) attach(v, here); continue; }
+      if (typeof v === 'string') { if (here) for (const n of figuresIn(v)) attach(n, here); continue; }
+      walk(v, SUBGROUP_KEY_RE.test(k) ? (blockName(v) || here) : here);
+    }
+  };
+  walk(analysis, null);
+  return map;
+}
+
+/** Back-compat: the set of figures carried by a named slice. */
+function subgroupFigures(analysis) {
+  return new Set(subgroupFigureMap(analysis).keys());
+}
+
+/**
+ * Names a sentence can use to say which slice it means.
+ *
+ * Read from the SAME source as subgroupFigureMap: every name that can own a
+ * figure is a name that can label one. When the two disagreed, a naming study's
+ * tile ("Brightly", "50% win rate") was flagged for hiding a slice it had named
+ * in its own label, because candidate names reached the figure map but not this
+ * list. One walk now feeds both.
+ */
 function subgroupLabels(analysis, report) {
   const labels = new Set();
   const add = (v) => {
     const s = String(v == null ? '' : v).trim();
     if (s.length >= 2 && s.length <= 40 && /[a-z]/i.test(s)) labels.add(s.toLowerCase());
   };
-  const walk = (node, inSubgroup) => {
-    if (node == null || typeof node !== 'object') return;
-    if (Array.isArray(node)) { for (const v of node) walk(v, inSubgroup); return; }
-    for (const [k, v] of Object.entries(node)) {
-      const here = inSubgroup || SUBGROUP_KEY_RE.test(k);
-      if (here && typeof v === 'string') add(v);
-      walk(v, here);
-    }
-  };
-  walk(analysis, false);
+  for (const owners of subgroupFigureMap(analysis).values()) for (const o of owners) add(o);
   const markets = (report && report.header && report.header.markets) || null;
   if (typeof markets === 'string') for (const m of markets.split(/,| and /)) add(m);
   return labels;
@@ -141,20 +185,29 @@ function labelMatcher(labels) {
  */
 function checkHeadlineBasis(text, ctx = {}) {
   const full = ctx.full || new Set();
-  const subgroup = ctx.subgroup || new Set();
+  const map = ctx.subgroupMap || new Map();
   const labels = ctx.labels || new Set();
   const out = [];
   const namesASlice = labelMatcher(labels);
+  const ownersOf = (pct) => {
+    for (const dp of [0, 1, 2]) {
+      const hit = map.get(round(pct, dp));
+      if (hit && hit.size) return [...hit];
+    }
+    return null;
+  };
   for (const sentence of sentencesOf(text)) {
     const labelled = LABEL_HINT_RE.test(sentence) || namesASlice(sentence);
+    if (labelled) continue;                  // the sentence says which slice it means
     for (const pct of percentagesIn(sentence)) {
       if (inSet(full, pct)) continue;        // a whole-study figure: fine
-      if (!inSet(subgroup, pct)) continue;   // not this check's business (narrativeFigures covers invention)
-      if (labelled) continue;                // a subgroup figure that says so: fine
+      const owners = ownersOf(pct);
+      if (!owners) continue;                 // belongs to no named slice: not this check's business
       out.push({
         figure: pct,
+        belongsTo: owners,
         sentence: sentence.slice(0, 240),
-        reason: 'subgroup figure presented as a whole-study figure',
+        reason: `figure belongs to ${owners.join(' / ')}, presented as a whole-study figure`,
       });
     }
   }
@@ -165,7 +218,7 @@ function checkHeadlineBasis(text, ctx = {}) {
 function checkAgainstReport(text, report, analysis) {
   return checkHeadlineBasis(text, {
     full: fullSampleFigures(report),
-    subgroup: subgroupFigures(analysis),
+    subgroupMap: subgroupFigureMap(analysis),
     labels: subgroupLabels(analysis, report),
   });
 }
@@ -173,6 +226,7 @@ function checkAgainstReport(text, report, analysis) {
 module.exports = {
   fullSampleFigures,
   subgroupFigures,
+  subgroupFigureMap,
   subgroupLabels,
   checkHeadlineBasis,
   checkAgainstReport,
