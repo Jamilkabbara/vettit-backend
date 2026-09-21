@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { constructWebhookEvent, stripeClient } = require('../services/stripe');
 const { syncMissionRefunds } = require('../services/payments/syncMissionRefunds');
+const { recordChatTopup, syncChatTopupRefunds } = require('../services/payments/chatTopups');
 const { guardPaymentCoversMission } = require('../services/payments/checkoutInvalidation');
 const { checkPaymentCoversRun } = require('../services/payments/paymentCoversRun');
 const supabase = require('../db/supabase');
@@ -193,6 +194,20 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
       // ─ Chat overage purchase ─────────────────────────────
       if (pi.metadata?.purpose === 'chat_overage') {
         const sessionId = pi.metadata.sessionId;
+
+        // Record the MONEY first. The credit below has always been
+        // idempotent; the payment itself was recorded nowhere, so a paid
+        // top-up never reached revenue, invoices or the admin dashboard.
+        // Recording is idempotent on the PaymentIntent id, and the amount is
+        // read from the PaymentIntent rather than from metadata we set.
+        try {
+          await recordChatTopup({ supabase, pi, logger });
+        } catch (e) {
+          // Stripe retries, and recording is idempotent, so a failure here is
+          // worth a retry rather than a silently unrecorded payment.
+          logger.error('Chat top-up could not be recorded', { paymentIntentId: pi.id, err: e.message });
+          return res.status(500).json({ error: 'chat top-up not recorded' });
+        }
         if (sessionId) {
           try {
             // Idempotent: track which PaymentIntents have been applied
@@ -560,6 +575,12 @@ router.post('/stripe', express.raw({ type: 'application/json' }), async (req, re
         const result = await syncMissionRefunds({
           stripe: stripeClient, supabase, updateMission, logger, paymentIntentId,
         });
+        // The same PaymentIntent may belong to a chat top-up rather than a
+        // mission. Both are checked: net revenue has one meaning.
+        const topup = await syncChatTopupRefunds({ stripe: stripeClient, supabase, paymentIntentId, logger });
+        if (topup.matched) {
+          logger.info('Chat top-up refund handled', { paymentIntentId, written: topup.written, refundedCents: topup.refundedCents });
+        }
         logger.info('Refund event handled', {
           type: event.type, matched: result.matched, written: result.written ?? false,
           missionId: result.plan?.missionId, refundedCents: result.plan?.refundedCents,

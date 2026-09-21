@@ -4,6 +4,7 @@ const { authenticate } = require('../middleware/auth');
 const supabase = require('../db/supabase');
 const logger = require('../utils/logger');
 const { buildInvoice, INVOICE_COLUMNS } = require('../services/invoices/buildInvoice');
+const { buildTopupInvoice, CHAT_TOPUP_COLUMNS } = require('../services/payments/chatTopups');
 
 // GET /api/profile — get current user's profile
 router.get('/', authenticate, async (req, res, next) => {
@@ -74,7 +75,14 @@ router.get('/invoices', authenticate, async (req, res, next) => {
 
     if (error) throw error;
 
-    const invoices = (data || []).map(buildInvoice);
+    // Chat top-ups are charges too, and a customer who paid for one should
+    // find it here rather than only on their card statement.
+    const { data: topups, error: topupErr } = await supabase
+      .from('chat_topups').select(CHAT_TOPUP_COLUMNS).eq('user_id', req.user.id);
+    if (topupErr) throw topupErr;
+
+    const invoices = [...(data || []).map(buildInvoice), ...(topups || []).map(buildTopupInvoice)]
+      .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
 
     res.json(invoices);
   } catch (err) {
