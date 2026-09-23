@@ -102,8 +102,12 @@ jobs:
           exit 1
 
   require-screenshot-in-pr:
-    # Pass 38 A10 — Doctrine #19: PR description must include a
-    # production screenshot link. Enforced on PR open / synchronize.
+    # Doctrine #19: a PR must SHOW the page, not mention it.
+    #
+    # Ported from vett-platform#161. The previous version tested the body
+    # against /screenshot/i, so the word alone passed and "Screenshot: not
+    # applicable" was green. In the website repo that is how the change which
+    # blanked every Creative Attention report reached production.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -114,27 +118,71 @@ jobs:
             const pr = context.payload.pull_request;
             if (!pr) return;
             const body = pr.body || '';
-            const patterns = [
-              /screenshot/i,
-              /prnt\.sc/i,
-              /imgur\.com/i,
-              /cleanshot\.com/i,
-              /d\.pr\//i,
-              /dropbox\.com/i,
-              /github\.com\/.*\.(png|jpg|jpeg)/i,
+
+            // Why this is stricter than "does the word appear".
+            //
+            // The first pattern used to be /screenshot/i, so the WORD passed.
+            // #156 said "Screenshot: ... I cannot screenshot the authenticated
+            // results page" and sailed through; it was the change that left
+            // every Creative Attention report blank in production for a day.
+            // #157 said "Screenshot: not applicable". Both were green.
+            const excuses = [
+              /screenshots?\s*[:\-]?\s*(not applicable|n\/?a\b|none|skipped|tbd)/i,
+              /(cannot|can't|could not|couldn't|unable to)\s+screenshot/i,
+              /no screenshots?\s+(needed|required|possible)/i,
+            ];
+            // Quoting an excuse is not making one. A post-mortem that cites
+            // "Screenshot: not applicable" to explain why this check changed
+            // must not be blocked by its own example, so fenced code, inline
+            // code and blockquotes are stripped before the excuse scan.
+            const prose = body
+              .replace(/```[\s\S]*?```/g, ' ')
+              .replace(/`[^`\n]*`/g, ' ')
+              .split('\n').filter((l) => !/^\s*>/.test(l)).join('\n');
+
+            const excuse = excuses.find((re) => re.test(prose));
+            if (excuse) {
+              core.setFailed(
+                'Doctrine #19 - this PR explains why it has no screenshot. ' +
+                'That is the failure mode this check exists to stop: a change ' +
+                'can pass every data check and still render a blank page. ' +
+                'Open the page and say what you saw.'
+              );
+              return;
+            }
+
+            // An image, where one can be published.
+            const imageHosts = [
+              /prnt\.sc/i, /imgur\.com/i, /cleanshot\.com/i, /d\.pr\//i,
+              /dropbox\.com/i, /github\.com\/.*\.(png|jpg|jpeg)/i,
               /user-images\.githubusercontent\.com/i,
               /private-user-images\.githubusercontent\.com/i,
+              /!\[[^\]]*\]\([^)]+\)/,
             ];
-            const hasScreenshot = patterns.some((re) => re.test(body));
-            if (!hasScreenshot) {
-              core.setFailed(
-                'Doctrine #19 — PR description must include a production ' +
-                'screenshot link (post-deploy, not localhost). Acceptable ' +
-                'hosts: GitHub attachment, prnt.sc, imgur, cleanshot, d.pr, ' +
-                'or a direct .png/.jpg URL.'
+            const hasImage = imageHosts.some((re) => re.test(body));
+
+            // This repository is PUBLIC, so a signed-in page must not be
+            // screenshotted into it - that would republish the customer content
+            // the app takes care to keep private. For those, the evidence is a
+            // named URL plus what was on it, handed over out of band.
+            const hasUrl = /https:\/\/(www\.)?vettit\.ai\/\S+/i.test(body);
+            const hasLooked = /^\s*(looked at|verified on|evidence)\s*:/im.test(body);
+
+            if (hasImage || (hasUrl && hasLooked)) {
+              core.info(
+                hasImage
+                  ? '✅ Screenshot image found in the PR description.'
+                  : '✅ Named production URL plus an Evidence/Looked at line.'
               );
             } else {
-              core.info('✅ Production screenshot link found in PR description.');
+              core.setFailed(
+                'Doctrine #19 - a PR must show the page, not mention it. Either:\n' +
+                '  (a) embed a screenshot image, or\n' +
+                '  (b) for a signed-in page (this repo is public, so do not post ' +
+                'customer content here): give the https://www.vettit.ai/... URL ' +
+                'you opened AND a line starting "Looked at:" or "Evidence:" ' +
+                'saying what rendered.'
+              );
             }
 
   # ─────────────────────────────────────────────────────────────────────
