@@ -78,6 +78,18 @@ selection function, so the preview cannot drift from the execution.
 
 ## Deploying
 
+**Test a credential against the live service before production traffic moves to
+it.** A key can be the right shape, the right length and still be rejected. On
+23 September a new Supabase secret key went into Railway and every backend
+request came back 401 for two hours. Sign-in still worked, so the site looked
+healthy, but the missions list was empty for every signed-in customer and the
+scheduler could not take its lock - because the backend validates each user's
+token by asking Supabase with that key. One authenticated call with the new
+value would have caught it in seconds, with nobody affected. The order is: I
+test the new credential against the real service, then it goes into the
+platform, then the old one is revoked. Never the other way round, and never
+"deploy it and we will see".
+
 **One at a time, with a live check after each.** Not a green build - an actual
 request against the running site.
 
