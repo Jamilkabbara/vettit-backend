@@ -113,6 +113,16 @@ checkouts have produced confidently wrong analysis more than once.
 
 **Never `npm install` through a symlinked `node_modules`.**
 
+**Never `npm audit fix --force`, in either repository.** The `--force` flag
+accepts whatever npm proposes, including moving a package BACKWARDS across a
+major version. On 23 September npm offered `pptxgenjs@2.2.0` as the "fix" for a
+3.12.0 install - an older major that would have quietly broken PowerPoint
+export, a paid deliverable, while reporting the advisory as resolved. Plain
+`npm audit fix` applies only in-range upgrades and is safe to run. Anything that
+needs a major version is a decision, made with the package's own changelog open,
+not something a flag decides.
+
+
 **Copy `.env` into a worktree when you need to run the app, never commit it.**
 
 ## Things that stay true
