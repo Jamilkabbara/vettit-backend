@@ -50,6 +50,12 @@ async function ensureMissionQuestions(supabase, mission) {
     description,
     clarify:       {},
     missionAssets: [],
+    // Unlike the setup-page path, this runs INSIDE runMission: the mission
+    // row exists and we are holding it. This is the one survey_gen call that
+    // can and must be attributed to a mission, and it was being logged with
+    // mission_id null like all the pre-mission ones.
+    missionId:     mission.id,
+    userId:        mission.user_id || null,
   });
 
   const questions = Array.isArray(result?.questions) ? result.questions : [];

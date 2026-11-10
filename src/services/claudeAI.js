@@ -381,7 +381,7 @@ function buildBrandLiftUserPrompt({ description, clarify, missionAssets }) {
  * Defensive: returns the original brief truncated if the Haiku
  * call fails — question generation should never crash on this.
  */
-async function extractSubject(brief) {
+async function extractSubject(brief, attribution = {}) {
   if (!brief || typeof brief !== 'string') return '';
   const text = brief.trim();
   if (text.length === 0) return '';
@@ -391,8 +391,7 @@ async function extractSubject(brief) {
   try {
     const response = await callClaude({
       callType: 'subject_extract',
-      missionId: null,
-      userId:    null,
+      ...attribution,
       model:     'claude-haiku-4-5',
       maxTokens: 40,
       systemPrompt: 'You extract the subject of research briefs as short noun phrases.',
@@ -463,7 +462,13 @@ async function generateSurveyRaw({
   targetingHints = {},
   clarify = {},
   missionAssets = [],
+  missionId = null,
+  userId = null,
 }) {
+  // Attribution evidence, forwarded to every call this path makes.
+  // missionId is normally null here (the survey is generated BEFORE the
+  // mission row exists); userId is the signed-in customer and must survive.
+  const attribution = { missionId, userId };
   // Pass 45 T4 (BUG-013, dormant since Pass 42) — extract the subject
   // noun phrase ONCE and append it to the description every generator
   // interpolates (all 11 specialized paths + the generic path embed
@@ -474,7 +479,7 @@ async function generateSurveyRaw({
   // extractSubject self-skips briefs ≤8 words and falls back to
   // truncation on API failure, so this never blocks generation.
   try {
-    const subject = await extractSubject(description);
+    const subject = await extractSubject(description, attribution);
     if (subject && subject.trim() && subject.trim() !== (description || '').trim()) {
       description = `${description}
 
@@ -487,40 +492,40 @@ SUBJECT (extracted noun phrase — use THIS short phrase when wording questions;
   }
 
   if (goal === 'brand_lift') {
-    return generateBrandLiftSurvey({ description, clarify, missionAssets });
+    return generateBrandLiftSurvey({ description, clarify, missionAssets, attribution });
   }
   if (goal === 'pricing') {
-    return generatePricingSurvey({ description, clarify });
+    return generatePricingSurvey({ description, clarify, attribution });
   }
   if (goal === 'roadmap') {
-    return generateRoadmapSurvey({ description, clarify });
+    return generateRoadmapSurvey({ description, clarify, attribution });
   }
   if (goal === 'satisfaction') {
-    return generateCSATSurvey({ description, clarify });
+    return generateCSATSurvey({ description, clarify, attribution });
   }
   if (goal === 'validate') {
-    return generateValidateSurvey({ description, clarify });
+    return generateValidateSurvey({ description, clarify, attribution });
   }
   if (goal === 'compare') {
-    return generateCompareSurvey({ description, clarify });
+    return generateCompareSurvey({ description, clarify, attribution });
   }
   if (goal === 'marketing') {
-    return generateMarketingSurvey({ description, clarify });
+    return generateMarketingSurvey({ description, clarify, attribution });
   }
   if (goal === 'competitor') {
-    return generateCompetitorSurvey({ description, clarify });
+    return generateCompetitorSurvey({ description, clarify, attribution });
   }
   if (goal === 'naming_messaging') {
-    return generateNamingSurvey({ description, clarify });
+    return generateNamingSurvey({ description, clarify, attribution });
   }
   if (goal === 'churn_research') {
-    return generateChurnSurvey({ description, clarify });
+    return generateChurnSurvey({ description, clarify, attribution });
   }
   if (goal === 'audience_profiling') {
-    return generateAudienceProfilingSurvey({ description, clarify });
+    return generateAudienceProfilingSurvey({ description, clarify, attribution });
   }
   if (goal === 'market_entry') {
-    return generateMarketEntrySurvey({ description, clarify });
+    return generateMarketEntrySurvey({ description, clarify, attribution });
   }
 
   const prompt = `Mission Goal: ${goal}
@@ -532,6 +537,7 @@ Then generate the survey JSON as specified in your instructions.`;
 
   const response = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: prompt }],
     maxTokens: 2000,
@@ -541,7 +547,7 @@ Then generate the survey JSON as specified in your instructions.`;
   return extractJSON(response.text);
 }
 
-async function generateBrandLiftSurvey({ description, clarify, missionAssets }) {
+async function generateBrandLiftSurvey({ description, clarify, missionAssets, attribution = {} }) {
   // Pass 34 B2 — refuse if focal brand_name is missing. Production
   // audit (DRAFT a912f5ab) had brand_name=null and the generator emitted
   // 5 questions all using "this concept" because Claude had no brand
@@ -562,6 +568,7 @@ async function generateBrandLiftSurvey({ description, clarify, missionAssets }) 
 
   const firstResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(BRAND_LIFT_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 4000,
@@ -588,6 +595,7 @@ Return the JSON again with that issue fixed. Keep all other rules.`;
 
   const retryResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(BRAND_LIFT_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: retryPrompt }],
     maxTokens: 4000,
@@ -720,10 +728,11 @@ function buildPricingUserPrompt({ description, clarify }) {
   return lines.join('\n');
 }
 
-async function generatePricingSurvey({ description, clarify }) {
+async function generatePricingSurvey({ description, clarify, attribution = {} }) {
   const userPrompt = buildPricingUserPrompt({ description, clarify });
   const firstResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(PRICING_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 3000,
@@ -738,6 +747,7 @@ async function generatePricingSurvey({ description, clarify }) {
   logger.info('pricing survey: retry on validation failure', { reason: validationErr });
   const retryResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(PRICING_SURVEY_GEN_SYSTEM),
     messages: [{
       role: 'user',
@@ -865,7 +875,7 @@ function buildRoadmapUserPrompt({ description, clarify }) {
   return lines.join('\n');
 }
 
-async function generateRoadmapSurvey({ description, clarify }) {
+async function generateRoadmapSurvey({ description, clarify, attribution = {} }) {
   const userPrompt = buildRoadmapUserPrompt({ description, clarify });
   let features;
   try { features = JSON.parse(clarify?.roadmap_features || '[]'); }
@@ -874,6 +884,7 @@ async function generateRoadmapSurvey({ description, clarify }) {
 
   const firstResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(ROADMAP_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 4500,
@@ -888,6 +899,7 @@ async function generateRoadmapSurvey({ description, clarify }) {
   logger.info('roadmap survey: retry on validation failure', { reason: validationErr });
   const retryResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(ROADMAP_SURVEY_GEN_SYSTEM),
     messages: [{
       role: 'user',
@@ -1022,7 +1034,7 @@ function buildCSATUserPrompt({ description, clarify }) {
   return lines.join('\n');
 }
 
-async function generateCSATSurvey({ description, clarify }) {
+async function generateCSATSurvey({ description, clarify, attribution = {} }) {
   // Pass 35 B3 — refuse if brand_name missing (mirrors brand_lift B2).
   const brand = (clarify?.brand_name || '').trim();
   if (!brand) {
@@ -1038,6 +1050,7 @@ async function generateCSATSurvey({ description, clarify }) {
   const userPrompt = buildCSATUserPrompt({ description, clarify });
   const firstResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(CSAT_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 2500,
@@ -1052,6 +1065,7 @@ async function generateCSATSurvey({ description, clarify }) {
   logger.info('csat survey: retry on validation failure', { reason: validationErr });
   const retryResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(CSAT_SURVEY_GEN_SYSTEM),
     messages: [{
       role: 'user',
@@ -1164,11 +1178,12 @@ function buildValidateUserPrompt({ description, clarify }) {
   return lines.join('\n');
 }
 
-async function generateValidateSurvey({ description, clarify }) {
+async function generateValidateSurvey({ description, clarify, attribution = {} }) {
   const userPrompt = buildValidateUserPrompt({ description, clarify });
   const hasPrice = !!(clarify && clarify.concept_price_usd);
   const firstResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(VALIDATE_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 2500,
@@ -1183,6 +1198,7 @@ async function generateValidateSurvey({ description, clarify }) {
   logger.info('validate survey: retry on validation failure', { reason: validationErr });
   const retryResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(VALIDATE_SURVEY_GEN_SYSTEM),
     messages: [{
       role: 'user',
@@ -1310,7 +1326,7 @@ function buildCompareUserPrompt({ description, clarify }) {
   return lines.join('\n');
 }
 
-async function generateCompareSurvey({ description, clarify }) {
+async function generateCompareSurvey({ description, clarify, attribution = {} }) {
   const userPrompt = buildCompareUserPrompt({ description, clarify });
   let concepts = [];
   try { concepts = JSON.parse(clarify?.concepts || '[]'); } catch { concepts = []; }
@@ -1318,6 +1334,7 @@ async function generateCompareSurvey({ description, clarify }) {
 
   const firstResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(COMPARE_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 5000,
@@ -1332,6 +1349,7 @@ async function generateCompareSurvey({ description, clarify }) {
   logger.info('compare survey: retry on validation failure', { reason: validationErr });
   const retryResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(COMPARE_SURVEY_GEN_SYSTEM),
     messages: [{
       role: 'user',
@@ -1437,12 +1455,13 @@ function buildMarketingUserPrompt({ description, clarify }) {
   return lines.join('\n');
 }
 
-async function generateMarketingSurvey({ description, clarify }) {
+async function generateMarketingSurvey({ description, clarify, attribution = {} }) {
   const userPrompt = buildMarketingUserPrompt({ description, clarify });
   const hasMessage = !!(clarify && clarify.intended_message && clarify.intended_message.trim());
 
   const firstResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(MARKETING_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 3000,
@@ -1457,6 +1476,7 @@ async function generateMarketingSurvey({ description, clarify }) {
   logger.info('marketing survey: retry on validation failure', { reason: validationErr });
   const retryResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(MARKETING_SURVEY_GEN_SYSTEM),
     messages: [{
       role: 'user',
@@ -1641,10 +1661,11 @@ function buildCompetitorUserPrompt({ description, clarify }) {
   return lines.join('\n');
 }
 
-async function generateCompetitorSurvey({ description, clarify }) {
+async function generateCompetitorSurvey({ description, clarify, attribution = {} }) {
   const userPrompt = buildCompetitorUserPrompt({ description, clarify });
   const firstResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(COMPETITOR_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 3000,
@@ -1659,6 +1680,7 @@ async function generateCompetitorSurvey({ description, clarify }) {
   logger.info('competitor survey: retry on validation failure', { reason: validationErr });
   const retryResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(COMPETITOR_SURVEY_GEN_SYSTEM),
     messages: [{
       role: 'user',
@@ -1784,7 +1806,7 @@ function buildNamingUserPrompt({ description, clarify }) {
   return lines.join('\n');
 }
 
-async function generateNamingSurvey({ description, clarify }) {
+async function generateNamingSurvey({ description, clarify, attribution = {} }) {
   let candidates = [];
   try { candidates = JSON.parse(clarify?.naming_candidates || '[]'); } catch { /* ignore */ }
   let criteria = [];
@@ -1826,6 +1848,7 @@ async function generateNamingSurvey({ description, clarify }) {
 
   const firstResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(NAMING_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 6000,
@@ -1840,6 +1863,7 @@ async function generateNamingSurvey({ description, clarify }) {
   logger.info('naming survey: retry on validation failure', { reason: validationErr });
   const retryResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(NAMING_SURVEY_GEN_SYSTEM),
     messages: [{
       role: 'user',
@@ -1956,7 +1980,7 @@ function buildChurnUserPrompt({ description, clarify }) {
   return lines.join('\n');
 }
 
-async function generateChurnSurvey({ description, clarify }) {
+async function generateChurnSurvey({ description, clarify, attribution = {} }) {
   // Pass 35 B4 — refuse if brand_name missing.
   const brand = (clarify?.brand_name || '').trim();
   if (!brand) {
@@ -1972,6 +1996,7 @@ async function generateChurnSurvey({ description, clarify }) {
   const userPrompt = buildChurnUserPrompt({ description, clarify });
   const firstResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(CHURN_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 2500,
@@ -1986,6 +2011,7 @@ async function generateChurnSurvey({ description, clarify }) {
   logger.info('churn survey: retry on validation failure', { reason: validationErr });
   const retryResp = await callClaude({
     callType: 'survey_gen',
+    ...attribution,
     systemPrompt: withMultiSelectRules(CHURN_SURVEY_GEN_SYSTEM),
     messages: [{
       role: 'user',
@@ -2009,7 +2035,7 @@ async function generateChurnSurvey({ description, clarify }) {
 /**
  * Refine a single question using AI
  */
-async function refineQuestion({ questionText, questionType, missionContext }) {
+async function refineQuestion({ questionText, questionType, missionContext, missionId = null, userId = null }) {
   const prompt = `You are a professional survey researcher. Improve this survey question to be clearer, more unbiased, and more professionally worded.
 
 Mission context: "${missionContext}"
@@ -2024,6 +2050,8 @@ Return ONLY a JSON object:
 
   const response = await callClaude({
     callType: 'question_refine',
+    missionId,
+    userId,
     messages: [{ role: 'user', content: prompt }],
     maxTokens: 500,
   });
@@ -2034,7 +2062,7 @@ Return ONLY a JSON object:
 /**
  * Refine a user's one-liner mission description into a clearer research brief
  */
-async function refineMissionDescription({ rawDescription, goal }) {
+async function refineMissionDescription({ rawDescription, goal, missionId = null, userId = null }) {
   const prompt = `You are a market research consultant. A client gave you this rough description of what they want to research:
 
 Goal type: ${goal}
@@ -2049,6 +2077,8 @@ Return ONLY a JSON object:
 
   const response = await callClaude({
     callType: 'question_refine',
+    missionId,
+    userId,
     messages: [{ role: 'user', content: prompt }],
     maxTokens: 500,
   });
@@ -2123,7 +2153,7 @@ Return ONLY a JSON object with this structure:
  * cultural sensitivity flags.
  * Pass 16: long rules extracted to TARGETING_SUGGEST_SYSTEM (cached system prompt).
  */
-async function suggestTargeting({ missionStatement, description, goal }) {
+async function suggestTargeting({ missionStatement, description, goal, missionId = null, userId = null }) {
   const prompt = `Mission: "${missionStatement}"
 Description: "${description}"
 Goal: ${goal}
@@ -2132,6 +2162,8 @@ Return a JSON targeting configuration as specified in your instructions.`;
 
   const response = await callClaude({
     callType: 'targeting_suggest',
+    missionId,
+    userId,
     systemPrompt: TARGETING_SUGGEST_SYSTEM,
     messages: [{ role: 'user', content: prompt }],
     maxTokens: 1200,
@@ -2213,10 +2245,11 @@ function buildAudienceProfilingUserPrompt({ description, clarify }) {
   return lines.join('\n');
 }
 
-async function generateAudienceProfilingSurvey({ description, clarify }) {
+async function generateAudienceProfilingSurvey({ description, clarify, attribution = {} }) {
   const userPrompt = buildAudienceProfilingUserPrompt({ description, clarify });
   const first = await callClaude({
-    callType: 'survey_gen', systemPrompt: withMultiSelectRules(AUDIENCE_PROFILING_SURVEY_GEN_SYSTEM),
+    callType: 'survey_gen',
+    ...attribution, systemPrompt: withMultiSelectRules(AUDIENCE_PROFILING_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }], maxTokens: 2800, enablePromptCache: true,
   });
   let parsed;
@@ -2225,7 +2258,8 @@ async function generateAudienceProfilingSurvey({ description, clarify }) {
   if (!validationErr) return parsed;
   logger.info('audience_profiling survey: retry on validation failure', { reason: validationErr });
   const retry = await callClaude({
-    callType: 'survey_gen', systemPrompt: withMultiSelectRules(AUDIENCE_PROFILING_SURVEY_GEN_SYSTEM),
+    callType: 'survey_gen',
+    ...attribution, systemPrompt: withMultiSelectRules(AUDIENCE_PROFILING_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that fixed. Keep all other rules.` }],
     maxTokens: 2800, enablePromptCache: true,
   });
@@ -2297,10 +2331,11 @@ function buildMarketEntryUserPrompt({ description, clarify }) {
   return lines.join('\n');
 }
 
-async function generateMarketEntrySurvey({ description, clarify }) {
+async function generateMarketEntrySurvey({ description, clarify, attribution = {} }) {
   const userPrompt = buildMarketEntryUserPrompt({ description, clarify });
   const first = await callClaude({
-    callType: 'survey_gen', systemPrompt: withMultiSelectRules(MARKET_ENTRY_SURVEY_GEN_SYSTEM),
+    callType: 'survey_gen',
+    ...attribution, systemPrompt: withMultiSelectRules(MARKET_ENTRY_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: userPrompt }], maxTokens: 2500, enablePromptCache: true,
   });
   let parsed;
@@ -2309,7 +2344,8 @@ async function generateMarketEntrySurvey({ description, clarify }) {
   if (!validationErr) return parsed;
   logger.info('market_entry survey: retry on validation failure', { reason: validationErr });
   const retry = await callClaude({
-    callType: 'survey_gen', systemPrompt: withMultiSelectRules(MARKET_ENTRY_SURVEY_GEN_SYSTEM),
+    callType: 'survey_gen',
+    ...attribution, systemPrompt: withMultiSelectRules(MARKET_ENTRY_SURVEY_GEN_SYSTEM),
     messages: [{ role: 'user', content: `${userPrompt}\n\nYour previous reply failed validation: ${validationErr}\nReturn the JSON again with that fixed. Keep all other rules.` }],
     maxTokens: 2500, enablePromptCache: true,
   });

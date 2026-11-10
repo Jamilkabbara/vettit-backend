@@ -40,6 +40,12 @@ router.post('/generate-survey', optionalAuthenticate, async (req, res, next) => 
       targetingHints,
       clarify: clarify_answers || clarify || {},
       missionAssets: Array.isArray(mission_assets) ? mission_assets : [],
+      // Survey generation runs BEFORE the mission row exists, so there is no
+      // mission to attribute to. The signed-in user is the only attribution
+      // evidence that exists here — dropping it (as this did until now) left
+      // every survey_gen row in ai_calls with mission_id AND user_id null,
+      // i.e. $3.54 of spend that no backfill can ever tie to anyone.
+      userId: req.user?.id || null,
     });
     logger.info('Survey generated', { userId: req.user?.id, goal: resolvedGoal });
     res.json(result);
@@ -184,7 +190,10 @@ router.post('/refine-question', optionalAuthenticate, async (req, res, next) => 
     const { questionText, questionType, missionContext } = req.body;
     if (!questionText) return res.status(400).json({ error: 'questionText is required' });
 
-    const result = await ai.refineQuestion({ questionText, questionType, missionContext });
+    const result = await ai.refineQuestion({
+      questionText, questionType, missionContext,
+      userId: req.user?.id || null,
+    });
     res.json(result);
   } catch (err) {
     next(err);
@@ -249,6 +258,7 @@ router.post('/refine-description', optionalAuthenticate, async (req, res, next) 
       questionText: trimmed,
       questionType: questionType || 'single',
       missionContext: context || (goal ? `Goal: ${goal}` : ''),
+      userId: req.user?.id || null,
     });
 
     const refinedText =
@@ -277,7 +287,10 @@ router.post('/suggest-targeting', optionalAuthenticate, async (req, res, next) =
     const { missionStatement, description, goal } = req.body;
     if (!description) return res.status(400).json({ error: 'description is required' });
 
-    const result = await ai.suggestTargeting({ missionStatement, description, goal });
+    const result = await ai.suggestTargeting({
+      missionStatement, description, goal,
+      userId: req.user?.id || null,
+    });
     res.json(result);
   } catch (err) {
     next(err);
