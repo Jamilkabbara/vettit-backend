@@ -61,7 +61,16 @@ app.use(express.json());
 app.use('/api/admin', require('../src/routes/admin'));
 app.use((err, _req, res, _next) => res.status(500).json({ error: err.message }));
 
-const DAY = '2026-09-01';
+// Every request below asks for `?range=30d`, so the seeded day has to BE in the
+// last 30 days. A literal date cannot be: '2026-09-01' was inside the window
+// when this suite was written and fell out of it roughly 30 days later, at which
+// point 9 of the 14 tests started failing for a reason that has nothing to do
+// with what they assert. The route saw no missions and no calls in the window,
+// `mission_margins` came back empty, and the assertions died on
+// `Cannot read properties of undefined`. A rotted date does not read as a rotted
+// date - it reads as a broken cost rollup - and it silently retired the only
+// guard on this whole code path. Derived from now() so it cannot rot again.
+const DAY = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);
 const TS = (d, h = 0) => `${d}T${String(h).padStart(2, '0')}:00:00.000+00:00`;
 
 function reset() {
@@ -307,5 +316,98 @@ describe('admin revenue is money kept, net of Stripe refunds', () => {
     expect(row.refunded.margin_usd).toBeCloseTo(-0.5, 4);
     expect(row.override.total_price_usd).toBe(314); // the list price is still shown as the price
     expect(row.override.net_revenue_usd).toBe(0);
+  });
+});
+
+/**
+ * UNATTRIBUTED SPEND IS STILL SPEND.
+ *
+ * 1,931 of production's 4,902 ai_calls rows carry no mission_id, and they cost
+ * $15.26 of the $36.15 total - 42% of real money. GET /api/admin/revenue built
+ * its headline cost by rolling up calls PER MISSION over the missions paid in
+ * the window, so every one of those rows was invisible to it: measured
+ * read-only against production, the headline said $20.74 where the log said
+ * $36.15, and gross profit read -$11.74 instead of -$27.15.
+ *
+ * The daily chart directly underneath that headline already summed every call
+ * in the window, unattributed included, so the two halves of one response
+ * disagreed by $15.41 - and the flattering number was the headline.
+ *
+ * Cost here is every ai_calls row created in the window. That is the spend the
+ * business incurred in the window, it is what the chart draws, and it is what
+ * admin_ai_cost_summary already returns. A mission with no logged calls
+ * contributes nothing, because the log is the record; the stored column is not
+ * consulted at all.
+ */
+describe('GET /api/admin/revenue — unattributed AI spend', () => {
+  /** Calls with no mission_id: chatbot, clarify, targeting, failed retries. */
+  function seedUnattributed(costs) {
+    costs.forEach((cost, i) => {
+      tables.ai_calls.push({
+        id: `orphan-call-${String(i).padStart(5, '0')}`,
+        mission_id: null,
+        cost_usd: cost,
+        purpose: 'chatbot',
+        created_at: TS(DAY, 2),
+      });
+    });
+  }
+
+  it('counts spend with no mission_id in the headline cost', async () => {
+    seedMission({ id: 'm1', price: 100, storedCost: 0, calls: [1, 1, 1, 1] });
+    seedUnattributed([3, 3]);
+    rpcResponses.daily_revenue_buckets = [{ bucket_date: DAY, revenue_usd: 100, mission_count: 1 }];
+
+    const res = await request(app).get('/api/admin/revenue?range=30d');
+    expect(res.status).toBe(200);
+    // $4 attributed + $6 unattributed. Rolling up per mission reports $4 and a
+    // $96 profit, which is the defect.
+    expect(res.body.ai_spend.total_usd).toBeCloseTo(10, 4);
+    expect(res.body.gross_profit.value).toBeCloseTo(90, 4);
+  });
+
+  it('reports the unattributed share on its own line instead of hiding it', async () => {
+    seedMission({ id: 'm1', price: 100, storedCost: 0, calls: [1, 1, 1, 1] });
+    seedUnattributed([3, 3]);
+    rpcResponses.daily_revenue_buckets = [];
+
+    const res = await request(app).get('/api/admin/revenue?range=30d');
+    expect(res.body.ai_spend.attributed_usd).toBeCloseTo(4, 4);
+    expect(res.body.ai_spend.unattributed_usd).toBeCloseTo(6, 4);
+    expect(res.body.ai_spend.unattributed_calls).toBe(2);
+    // Unattributed money is never folded into a mission.
+    const byId = Object.fromEntries((res.body.mission_costs || []).map((m) => [m.mission_id, m]));
+    if (byId.m1) expect(byId.m1.cost_usd).toBeCloseTo(4, 4);
+  });
+
+  it('agrees with the daily cost line it draws underneath itself', async () => {
+    seedMission({ id: 'm1', price: 100, storedCost: 0, calls: [1, 1, 1, 1] });
+    seedUnattributed([3, 3]);
+    rpcResponses.daily_revenue_buckets = [{ bucket_date: DAY, revenue_usd: 100, mission_count: 1 }];
+
+    const res = await request(app).get('/api/admin/revenue?range=30d');
+    const chart = res.body.daily_buckets.reduce((s, b) => s + b.cost_usd, 0);
+    expect(chart).toBeCloseTo(res.body.ai_spend.total_usd, 4);
+    expect(res.body.revenue.value - chart).toBeCloseTo(res.body.gross_profit.value, 4);
+  });
+
+  it('never lets missions.ai_cost_usd reach the headline', async () => {
+    // Stored column claims $7. The log holds nothing for this mission, and
+    // nothing is what it cost as far as the record goes.
+    seedMission({ id: 'legacy', price: 100, storedCost: 7, calls: [] });
+    rpcResponses.daily_revenue_buckets = [];
+
+    const res = await request(app).get('/api/admin/revenue?range=30d');
+    expect(res.body.ai_spend.total_usd).toBeCloseTo(0, 4);
+    expect(res.body.gross_profit.value).toBeCloseTo(100, 4);
+  });
+
+  it('sums more than 1000 unattributed calls instead of stopping at the ceiling', async () => {
+    seedUnattributed(Array(1400).fill(0.01));
+    rpcResponses.daily_revenue_buckets = [];
+
+    const res = await request(app).get('/api/admin/revenue?range=30d');
+    // An unpaged read stops at 1000 rows and reports $10.00.
+    expect(res.body.ai_spend.unattributed_usd).toBeCloseTo(14, 4);
   });
 });

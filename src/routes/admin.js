@@ -1431,7 +1431,10 @@ router.get('/revenue', async (req, res, next) => {
     const [missionsRes, priorMissionsRes, bucketsRes, dailyCallsRes] = await Promise.all([
       fetchAllRows(supabase, {
         table: 'missions',
-        columns: `id, ai_cost_usd, status, goal_type, user_id, ${NET_REVENUE_COLUMNS}`,
+        // `ai_cost_usd` is deliberately NOT selected. Cost on this endpoint comes
+        // from ai_calls and nothing else; selecting the stale column here is how
+        // it kept creeping back into the headline.
+        columns: `id, status, goal_type, user_id, ${NET_REVENUE_COLUMNS}`,
         build: (q) => q.gte('paid_at', start.toISOString())
           .lt('paid_at', end.toISOString()),
         label: 'revenue current missions',
@@ -1450,11 +1453,14 @@ router.get('/revenue', async (req, res, next) => {
       // use it: the chart and the headline must not disagree about what a day
       // cost.
       fetchAllRows(supabase, {
+        // `mission_id` so the attributed / unattributed split below can be read
+        // off the same rows the total and the chart are built from. One read,
+        // one population, no way for the three figures to disagree.
         table: 'ai_calls',
-        columns: 'id, cost_usd, created_at',
+        columns: 'id, mission_id, cost_usd, created_at',
         build: (q) => q.gte('created_at', start.toISOString())
           .lt('created_at', end.toISOString()),
-        label: 'revenue daily cost',
+        label: 'revenue window spend',
       }),
     ]);
     if (missionsRes.error)      throw missionsRes.error;
@@ -1464,54 +1470,68 @@ router.get('/revenue', async (req, res, next) => {
     const curr = missionsRes.data      || [];
     const prev = priorMissionsRes.data || [];
 
-    // Cost comes from the ai_calls LOG, not the denormalised mission column.
+    // -- Cost is EVERY logged call in the window, attributed or not -----------
     //
-    // The column is a running sum maintained at the call site, and it has been
-    // wrong three separate ways: vision calls never rolled up at all, the newer
-    // spend column was added late and never backfilled, and float drift. On the
-    // 36 affected missions it understated real spend by $1.80 on $10.25 - and
-    // gross profit here is revenue MINUS that number, so every margin figure
-    // this endpoint has ever served was flattering.
+    // Two things were wrong here, and both understated spend, which flatters
+    // margin.
     //
-    // The missions-list handler above already takes the log as truth and falls
-    // back to the column only when a mission has no logged calls. This does the
-    // same, so the two admin surfaces agree and neither depends on the backfill
-    // having been run.
-    const currIds = curr.map((m) => m.id).filter(Boolean);
-    const { data: currCalls, error: currCallsErr } = currIds.length
-      ? await fetchAllRows(supabase, {
-        table: 'ai_calls',
-        columns: 'id, mission_id, cost_usd',
-        build: (q) => q.in('mission_id', currIds),
-        label: 'revenue mission cost rollup',
-      })
-      : { data: [], error: null };
-    if (currCallsErr) throw currCallsErr;
-    const loggedCostByMission = {};
-    for (const c of (currCalls || [])) {
-      if (!c.mission_id) continue;
-      loggedCostByMission[c.mission_id] = (loggedCostByMission[c.mission_id] || 0) + Number(c.cost_usd || 0);
-    }
-
-    // Same log, bucketed by day for the chart series below.
+    // 1. THE STORED COLUMN. missions.ai_cost_usd is a running sum maintained at
+    //    the call site and it has been wrong three separate ways: vision calls
+    //    never rolled up, the newer spend column was added late and never
+    //    backfilled, and float drift (still $0.06 across production today).
+    //
+    // 2. THE SHAPE OF THE QUESTION, which is the bigger hole. Cost was built by
+    //    rolling calls up PER MISSION across the missions paid in the window. A
+    //    call with no mission_id cannot appear in a per-mission rollup at all,
+    //    and 1,931 of production's 4,902 ai_calls rows have none - $15.26 of the
+    //    $36.15 total, 42% of real money, structurally invisible. Measured
+    //    read-only against production on 2026-11-10: this headline reported
+    //    $20.74 where the log held $36.15, so gross profit read -$11.74 against
+    //    a true -$27.15. The chart drawn directly underneath already summed
+    //    every call in the window, so one response carried two different costs
+    //    and the headline was the flattering one.
+    //
+    // Cost is now every ai_calls row created in the window: the spend the
+    // business actually incurred, the same population the chart draws and the
+    // same one admin_ai_cost_summary returns, so the headline, the chart and the
+    // AI Costs tab cannot disagree. There is no fallback to the stored column -
+    // a mission with no logged calls cost nothing as far as the record goes,
+    // which is how /ai-costs mission_margins has already treated it. Verified
+    // read-only against production: zero missions carry a non-zero
+    // ai_cost_usd and no ai_calls rows, so removing the fallback moves no
+    // real figure.
+    //
+    // The unattributed share is reported on its own line rather than folded into
+    // a mission or dropped. It is real money with a missing label, and labelling
+    // it $0 of cost is the one thing it is not.
+    let attributedCost   = 0;
+    let unattributedCost = 0;
+    let unattributedCalls = 0;
     const loggedCostByDay = {};
     for (const c of (dailyCallsRes.data || [])) {
+      const cost = Number(c.cost_usd || 0);
+      if (c.mission_id) {
+        attributedCost += cost;
+      } else {
+        unattributedCost += cost;
+        unattributedCalls += 1;
+      }
       const day = String(c.created_at || '').slice(0, 10);
       if (!day) continue;
       loggedCostByDay[day] = Math.round(
-        ((loggedCostByDay[day] || 0) + Number(c.cost_usd || 0)) * 10000,
+        ((loggedCostByDay[day] || 0) + cost) * 10000,
       ) / 10000;
     }
+    const round4 = (n) => Math.round(n * 10000) / 10000;
+    const windowCost = attributedCost + unattributedCost;
 
     // Pass 59: money kept, net of refunds, from missions Stripe charged. Cost
-    // still covers every paid mission, because a free or refunded mission ran.
+    // is the window's whole spend above, so a free or refunded mission still
+    // costs what it burned - and so does a call that belongs to no mission.
     const currRevenue = sumNetRevenueUsd(curr);
     const prevRevenue = sumNetRevenueUsd(prev);
     const currCharged = curr.filter(isStripeCharged).length;
-    const currCost    = curr.reduce((s, m) => s + (
-      loggedCostByMission[m.id] != null ? loggedCostByMission[m.id] : Number(m.ai_cost_usd || 0)
-    ), 0);
-    const currGross   = currRevenue - currCost;
+    const currGross   = round4(currRevenue - windowCost);
     const avgOrder    = currCharged > 0 ? currRevenue / currCharged : 0;
 
     // Goal-type breakdown
@@ -1524,6 +1544,20 @@ router.get('/revenue', async (req, res, next) => {
       period_days:    days,
       revenue:        { value: currRevenue, delta_pct: calcDelta(currRevenue, prevRevenue) },
       gross_profit:   { value: currGross,   delta_pct: 0 },
+      // What the gross profit above was actually charged for, and how much of it
+      // nothing has claimed. `unattributed_usd` is spend the log recorded with
+      // no mission_id; it is in `total_usd` because it is money that left the
+      // business, and it is broken out because a bucket nobody owns is the one
+      // worth seeing.
+      ai_spend: {
+        total_usd:          round4(windowCost),
+        attributed_usd:     round4(attributedCost),
+        unattributed_usd:   round4(unattributedCost),
+        unattributed_calls: unattributedCalls,
+        unattributed_pct:   windowCost > 0
+          ? Math.round((100 * unattributedCost / windowCost) * 10) / 10
+          : 0,
+      },
       avg_order:      { value: avgOrder,    delta_pct: 0 },
       mission_count:  curr.length,
       charged_mission_count: currCharged,
