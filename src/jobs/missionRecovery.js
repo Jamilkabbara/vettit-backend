@@ -928,6 +928,52 @@ async function runJob5PaidAudit({ auditPaidMissions = require('../services/payme
   }
 }
 
+// ─── Job 6: monthly AI spend ceiling ─────────────────────────────────────
+//
+// All-time AI spend across the product is $36.15 and the worst month on
+// record is $9.87, so a month reaching $50 means something is wrong rather
+// than something is busy. This tick reads month-to-date spend from the
+// ai_calls LOG (not missions.ai_cost_usd, which misses 42% of real spend)
+// and alerts once per month when it crosses the line.
+//
+// HOURLY, not daily. The whole value of a tripwire is the size of the window
+// it closes: a runaway loop spending through a daily cadence can burn a full
+// day before anyone hears about it. The read is one indexed filter on
+// created_at returning three columns, so an hourly tick is free.
+//
+// The job only alerts. Refusing new work above the hard limit happens in
+// runMission's money gates, where a run actually starts.
+
+const SPEND_CEILING_INTERVAL_MS = Number(process.env.AI_SPEND_CEILING_INTERVAL_MS || 60 * 60 * 1000);
+let _job6Timer = null;
+let _job6Running = false;
+
+async function runJob6SpendCeiling({ runMonthlyCeilingCheck = require('../services/ai/monthlySpendCeiling').runMonthlyCeilingCheck } = {}) {
+  if (_job6Running) return { skipped: true, reason: 'overlap' };
+  _job6Running = true;
+  try {
+    if (!(await tryAcquireLock('ai_monthly_spend_ceiling'))) return { skipped: true, reason: 'lock' };
+    try {
+      const out = await runMonthlyCeilingCheck({ supabase });
+      logger.info('[cron] job6: monthly AI spend ceiling checked', {
+        month: out.month, spendUsd: out.spendUsd, ceilingUsd: out.ceilingUsd,
+        breached: out.breached, hardBreached: out.hardBreached, alerted: out.alert?.raised === true,
+      });
+      return out;
+    } finally {
+      await releaseLock('ai_monthly_spend_ceiling');
+    }
+  } catch (err) {
+    // Non-fatal by construction, like every other job here. A spend check
+    // that cannot run must not take down the recovery cron it shares a
+    // process with - a mission stuck in 'processing' is the worse outage.
+    logger.error('[cron] job6 spend ceiling failed (non-fatal)', { err: err?.message });
+    return { failed: true, reason: err?.message };
+  } finally {
+    _job6Running = false;
+  }
+}
+
 function init(opts = {}) {
   const { job1IntervalMs = JOB1_INTERVAL_MS_DEFAULT,
           job2IntervalMs = JOB2_INTERVAL_MS_DEFAULT } = opts;
@@ -945,6 +991,7 @@ function init(opts = {}) {
   _job2Timer = setInterval(() => { runJob2().catch(() => {}); }, job2IntervalMs);
   _job4Timer = setInterval(() => { runJob4().catch(() => {}); }, DIGEST_INTERVAL_MS);
   _job5Timer = setInterval(() => { runJob5PaidAudit().catch(() => {}); }, PAID_AUDIT_INTERVAL_MS);
+  _job6Timer = setInterval(() => { runJob6SpendCeiling().catch(() => {}); }, SPEND_CEILING_INTERVAL_MS);
 
   // Pass 22 Bug 22.10c hotfix — kick off both jobs ~30s after init so the
   // first tick happens regardless of redeploy frequency. Without this,
@@ -963,6 +1010,10 @@ function init(opts = {}) {
   setTimeout(() => { runJob3BootResume().catch(() => {}); }, 20 * 1000);
   // Job 5 ~2 minutes after boot, clear of the recovery primers.
   setTimeout(() => { runJob5PaidAudit().catch(() => {}); }, 120 * 1000);
+  // Job 6 ~3 minutes after boot. A redeploy is a likely response to a spend
+  // alert, so the first tick must not wait a full interval for the clock that
+  // the redeploy just reset.
+  setTimeout(() => { runJob6SpendCeiling().catch(() => {}); }, 180 * 1000);
 
   logger.info('[cron] missionRecovery started', {
     instance: _instanceId,
@@ -994,12 +1045,17 @@ function shutdown() {
     clearInterval(_job5Timer);
     _job5Timer = null;
   }
+  if (_job6Timer) {
+    clearInterval(_job6Timer);
+    _job6Timer = null;
+  }
 }
 
 module.exports = {
   init,
   runJob4,
   runJob5PaidAudit,
+  runJob6SpendCeiling,
   shutdown,
   // exported for tests / one-off admin tooling
   runJob1,

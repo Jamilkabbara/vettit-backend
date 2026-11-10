@@ -52,6 +52,7 @@ const emailService = require('../services/email');
 // capture time: recomputes owed from the mission AS IT WILL RUN and
 // refuses if what Stripe actually captured does not cover it.
 const { checkPaymentCoversRun } = require('../services/payments/paymentCoversRun');
+const { spendAllowsNewWork } = require('../services/ai/monthlySpendCeiling');
 const { measurePanel } = require('../services/ai/panelDistinctness');
 
 // Pass 23 Bug 23.12 — notification copy templates. Truncate long mission
@@ -189,6 +190,84 @@ async function runMission(missionId, opts = {}) {
       });
     }
     return { skipped: true, reason: 'no_spend_ceiling' };
+  }
+
+  // ─── Monthly platform spend gate ──────────────────────────────────────────
+  //
+  // The gate above governs what THIS mission may spend. This one governs what
+  // the whole product has spent this calendar month, read from the ai_calls
+  // log. The two are independent: every mission can be inside its own ceiling
+  // while the platform total is ten times normal, which is what a runaway
+  // loop or a leaked key looks like.
+  //
+  // Only the HARD limit refuses ($150 default, 3x the $50 ceiling). Reaching
+  // the ceiling itself raises an alert and stops nothing - a paid study is not
+  // cancelled by a smoke detector.
+  //
+  // NEVER refuses a resume. A resumed run is a paid study with half its data
+  // already written; there are no re-run credits, so killing it would turn an
+  // overspend into a refund and would rewrite what a customer bought. The gate
+  // short-circuits on resume, and is asked here (before the claim) precisely
+  // so that the resume path reaches it and is let through explicitly rather
+  // than by accident.
+  //
+  // A deferred mission is NOT marked failed. 'failed' is a customer-visible
+  // dead end, and this mission has not failed - it is waiting for a human to
+  // raise the limit or stop the cause, after which it is re-triggered by hand.
+  // Its status, its payment and its row are left exactly as they were.
+  //
+  // Placed before the payment gate so an over-limit month does not spend a
+  // Stripe call on a mission that is not going to run.
+  const spendGate = await spendAllowsNewWork({ resume });
+  if (!spendGate.allowed) {
+    const s = spendGate.state || {};
+    logger.error('Mission run: DEFERRED — monthly AI spend is over the hard limit', {
+      missionId,
+      resume,
+      status:       mission.status,
+      month:        s.month,
+      spendUsd:     s.spendUsd,
+      ceilingUsd:   s.ceilingUsd,
+      hardLimitUsd: s.hardLimitUsd,
+      reason:       spendGate.reason,
+    });
+    try {
+      await supabase.from('admin_alerts').insert({
+        alert_type: 'mission_deferred_monthly_spend',
+        mission_id: missionId,
+        user_id:    mission.user_id,
+        payload: {
+          reason: 'Monthly AI spend across the whole product is over the hard limit, so no NEW '
+                + 'mission is being started. This mission has NOT failed and has NOT been '
+                + 'cancelled: its status and its payment are untouched, and missions already '
+                + 'running are finishing normally.',
+          month:          s.month || null,
+          spend_usd:      s.spendUsd ?? null,
+          ceiling_usd:    s.ceilingUsd ?? null,
+          hard_limit_usd: s.hardLimitUsd ?? null,
+          calls:          s.calls ?? null,
+          biggest_contributor: s.topContributor
+            ? {
+              call_type: s.topContributor.callType,
+              spend_usd: s.topContributor.spendUsd,
+              calls:     s.topContributor.calls,
+            }
+            : null,
+          mission_status:   mission.status,
+          respondent_count: mission.respondent_count,
+          action_required: 'Find the cause first. If the spend is legitimate, raise '
+                         + 'AI_MONTHLY_HARD_LIMIT_USD and re-trigger this mission. If it is not, '
+                         + 'rotate the AI provider key and stop the runaway, then re-trigger. '
+                         + 'The customer is waiting on a study they have already paid for.',
+        },
+        resolved: false,
+      });
+    } catch (alertErr) {
+      logger.warn('Mission run: monthly-spend alert insert failed', {
+        missionId, err: alertErr.message,
+      });
+    }
+    return { skipped: true, reason: 'monthly_spend_hard_limit' };
   }
 
   // ─── Payment-covers-run gate ──────────────────────────────────────────────
