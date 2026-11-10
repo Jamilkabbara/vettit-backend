@@ -182,6 +182,40 @@ describe('pre-mission AI calls carry the signed-in user', () => {
   });
 });
 
+describe('every specialised generator path forwards the attribution', () => {
+  // The attribution is threaded into all 12 goal-specific generators plus the
+  // generic path. A generator that did not receive it would throw
+  // "attribution is not defined" on its first call — a 500 on the setup page
+  // for that study type only, which is exactly the shape of the unrouted
+  // call_type bugs this codebase has shipped before. So drive all of them.
+  const GOALS = [
+    'research', 'pricing', 'roadmap', 'satisfaction', 'validate', 'compare',
+    'marketing', 'competitor', 'naming_messaging', 'churn_research',
+    'audience_profiling', 'market_entry',
+  ];
+
+  test.each(GOALS)('goal "%s" stamps userId on every survey_gen call', async (goal) => {
+    const ai = require('../src/services/claudeAI');
+    mockClaudeCalls.length = 0;
+
+    // Generation may legitimately reject a brief that lacks the fields a
+    // methodology needs. What must never happen is a scope error, and every
+    // call that IS made must carry the user.
+    try {
+      await ai.generateSurvey({ goal, description: BRIEF, clarify: {}, missionAssets: [], userId: 'user-42' });
+    } catch (err) {
+      expect(err.message).not.toMatch(/attribution/i);
+      expect(err).not.toBeInstanceOf(ReferenceError);
+    }
+
+    const made = mockClaudeCalls.filter((c) => c.callType === 'survey_gen' || c.callType === 'subject_extract');
+    expect(made.length).toBeGreaterThan(0);
+    for (const c of made) {
+      expect(c.userId).toBe('user-42');
+    }
+  });
+});
+
 describe('run-time survey generation attributes to the mission it is for', () => {
   // This is the one case where a mission row DEFINITELY exists and the id
   // was simply not passed. ensureMissionQuestions is called from runMission
