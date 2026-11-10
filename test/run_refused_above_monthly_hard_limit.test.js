@@ -61,6 +61,9 @@ jest.mock('../src/services/payments/paymentCoversRun', () => ({
 // proved against a PostgREST-shaped double in monthly_spend_ceiling.test.js.
 jest.mock('../src/services/ai/monthlySpendCeiling', () => ({
   spendAllowsNewWork: jest.fn(),
+  // Real, not a stub: the alert sentence is the only part of the payload the
+  // digest email renders, so the month has to read as a month in it.
+  monthLabel: jest.requireActual('../src/services/ai/monthlySpendCeiling').monthLabel,
 }));
 
 const supabase = require('../src/db/supabase');
@@ -152,6 +155,14 @@ describe('a new mission above the hard limit does not start', () => {
     expect(raised[0].payload.hard_limit_usd).toBe(150);
     expect(raised[0].payload.biggest_contributor).toMatchObject({ call_type: 'response_sim' });
     expect(raised[0].payload.action_required).toMatch(/re-trigger|raise/i);
+    // The digest email renders only this sentence, so the numbers and the
+    // reassurance that nothing was cancelled have to live inside it.
+    const rendered = raised[0].payload.action_required;
+    expect(rendered).toContain('November 2026');
+    expect(rendered).toContain('$212.50');
+    expect(rendered).toContain('$150.00');
+    expect(rendered).toMatch(/NOT started/);
+    expect(rendered).toMatch(/not been cancelled/i);
   });
 
   test('the customer is not told their paid study failed - the row keeps its status', async () => {

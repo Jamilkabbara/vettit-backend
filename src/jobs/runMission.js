@@ -52,7 +52,7 @@ const emailService = require('../services/email');
 // capture time: recomputes owed from the mission AS IT WILL RUN and
 // refuses if what Stripe actually captured does not cover it.
 const { checkPaymentCoversRun } = require('../services/payments/paymentCoversRun');
-const { spendAllowsNewWork } = require('../services/ai/monthlySpendCeiling');
+const { spendAllowsNewWork, monthLabel } = require('../services/ai/monthlySpendCeiling');
 const { measurePanel } = require('../services/ai/panelDistinctness');
 
 // Pass 23 Bug 23.12 — notification copy templates. Truncate long mission
@@ -255,10 +255,16 @@ async function runMission(missionId, opts = {}) {
             : null,
           mission_status:   mission.status,
           respondent_count: mission.respondent_count,
-          action_required: 'Find the cause first. If the spend is legitimate, raise '
-                         + 'AI_MONTHLY_HARD_LIMIT_USD and re-trigger this mission. If it is not, '
-                         + 'rotate the AI provider key and stop the runaway, then re-trigger. '
-                         + 'The customer is waiting on a study they have already paid for.',
+          // The digest email renders only action_required, so the numbers go in
+          // the sentence rather than only in the fields above.
+          action_required: `This mission has NOT started: ${monthLabel(s.month)} AI spend is `
+                         + `$${Number(s.spendUsd || 0).toFixed(2)} against a hard limit of `
+                         + `$${Number(s.hardLimitUsd || 0).toFixed(2)}. It has not failed and has `
+                         + 'not been cancelled - its status and its payment are untouched. Find '
+                         + 'the cause first: if the spend is legitimate, raise '
+                         + 'AI_MONTHLY_HARD_LIMIT_USD and re-trigger this mission, and if it is '
+                         + 'not, rotate the AI provider key and stop the runaway, then '
+                         + 're-trigger. The customer is waiting on a study they have paid for.',
         },
         resolved: false,
       });

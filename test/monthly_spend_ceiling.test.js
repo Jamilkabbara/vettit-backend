@@ -273,6 +273,35 @@ describe('it fires above the ceiling', () => {
     expect(p.action_required).toBeTruthy();
   });
 
+  test('the facts survive into the part of the email that is actually rendered', async () => {
+    // services/email.js sendAdminAlertDigest renders exactly two things per
+    // alert: its type and payload.action_required. Every other payload field
+    // is invisible in the inbox. An alert whose month, spend, ceiling and
+    // biggest contributor live only in structured fields is an alert that
+    // shows the owner none of them, so they belong in this string.
+    const db = fakeDb({
+      aiCalls: [...calls(60, 1.0, 'response_sim'), ...calls(4, 0.5, 'persona_gen')],
+    });
+    await runMonthlyCeilingCheck({ supabase: db.supabase, email: db.email, now, env: {} });
+
+    const rendered = db.inserts[0].payload.action_required;
+    expect(rendered).toContain('November 2026');   // the month, spelled out
+    expect(rendered).toContain('$62.00');          // spend so far
+    expect(rendered).toContain('$50.00');          // the ceiling
+    expect(rendered).toContain('response_sim');    // where to look
+    expect(rendered).toContain('$60.00');          // and how much it was
+    expect(rendered).toContain('60 calls');
+  });
+
+  test('the hard-limit alert says in that same sentence that new work is stopping', async () => {
+    const db = fakeDb({ aiCalls: calls(200, 1.0) });
+    await runMonthlyCeilingCheck({ supabase: db.supabase, email: db.email, now, env: {} });
+    const rendered = db.inserts[0].payload.action_required;
+    expect(rendered).toContain('$200.00');
+    expect(rendered).toMatch(/REFUSED/);
+    expect(rendered).toMatch(/already running will finish/i);
+  });
+
   test('it pages now rather than waiting for tomorrow morning', async () => {
     // A runaway loop keeps spending while the nightly digest waits, so the
     // tripwire mails immediately - the same way a provider refusal does.

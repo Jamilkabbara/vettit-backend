@@ -203,6 +203,46 @@ async function checkMonthlyCeiling({ supabase, now = Date.now, env = process.env
   };
 }
 
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+
+/** 'November 2026' from '2026-11'. The reader should not have to parse a key. */
+function monthLabel(key) {
+  const [y, m] = String(key || '').split('-');
+  const name = MONTH_NAMES[Number(m) - 1];
+  return name ? `${name} ${y}` : String(key || 'this month');
+}
+
+const usd = (n) => `$${Number(n || 0).toFixed(2)}`;
+
+/**
+ * The facts, as one sentence, inside `action_required`.
+ *
+ * WHY HERE AND NOT IN THE PAYLOAD FIELDS
+ * --------------------------------------
+ * The structured fields (month, spend_usd, biggest_contributor) go into the
+ * admin_alerts row and are the machine-readable record. But the DIGEST EMAIL -
+ * the thing the owner actually reads - renders only two things from an alert:
+ * its type and `payload.action_required`. Everything else in the payload is
+ * invisible in the inbox.
+ *
+ * So an alert that put the numbers only in structured fields would be an alert
+ * that technically carries the month, the spend, the ceiling and the biggest
+ * contributor, and shows the owner none of them. The facts go in the sentence
+ * that gets rendered. The alternative was widening the shared digest renderer,
+ * which would change the wording of every other alert type in the product for
+ * the sake of this one.
+ */
+function summaryLine(state) {
+  const top = state.topContributor;
+  const where = top
+    ? `Biggest contributor: ${top.call_type}, ${usd(top.spendUsd)} over ${top.calls} call${top.calls === 1 ? '' : 's'}.`
+    : 'No call type stands out.';
+  return `${monthLabel(state.month)} AI spend is ${usd(state.spendUsd)} against a `
+       + `${usd(state.ceilingUsd)} ceiling (hard limit ${usd(state.hardLimitUsd)}), `
+       + `across ${state.calls} call${state.calls === 1 ? '' : 's'}. ${where}`;
+}
+
 function alertPayload(state) {
   const severity = state.hardBreached ? 'hard_limit' : 'ceiling';
   const top = state.topContributor;
@@ -225,12 +265,14 @@ function alertPayload(state) {
       : 'Nothing has been stopped. Every mission still runs. New missions are only refused '
       + `above the hard limit of $${state.hardLimitUsd}.`,
     action_required: severity === 'hard_limit'
-      ? 'Find the cause before raising the limit. If the spend is legitimate, raise '
-      + 'AI_MONTHLY_HARD_LIMIT_USD and re-trigger any deferred missions. If it is not, '
+      ? `${summaryLine(state)} New missions are being REFUSED; missions already running will `
+      + 'finish. Find the cause before raising the limit: if the spend is legitimate, raise '
+      + 'AI_MONTHLY_HARD_LIMIT_USD and re-trigger any deferred missions, and if it is not, '
       + 'rotate the AI provider key and stop the runaway first.'
-      : 'Check the biggest contributor above against the missions that ran this month. '
-      + 'A normal month is under $10, so this is ten times normal: look for a loop that is '
-      + 'not terminating, a key being used by someone else, or one study spiralling.',
+      : `${summaryLine(state)} Nothing has been stopped. A normal month is under $10, so this `
+      + 'is about ten times normal: check that call type against the missions that ran this '
+      + 'month, and look for a loop that is not terminating, a key being used by someone '
+      + 'else, or one study spiralling.',
   };
 }
 
@@ -378,6 +420,7 @@ async function spendAllowsNewWork({ supabase, now = Date.now, env = process.env,
 module.exports = {
   readConfig,
   monthKey,
+  monthLabel,
   monthStartIso,
   readMonthToDateSpend,
   checkMonthlyCeiling,
