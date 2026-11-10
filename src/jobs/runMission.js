@@ -248,7 +248,7 @@ async function runMission(missionId, opts = {}) {
           calls:          s.calls ?? null,
           biggest_contributor: s.topContributor
             ? {
-              call_type: s.topContributor.callType,
+              call_type: s.topContributor.call_type,
               spend_usd: s.topContributor.spendUsd,
               calls:     s.topContributor.calls,
             }

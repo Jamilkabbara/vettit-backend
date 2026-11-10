@@ -124,12 +124,25 @@ async function readMonthToDateSpend({ supabase = require('../../db/supabase'), n
   const month = monthKey(ts);
   const monthStart = monthStartIso(ts);
 
-  const { data, error } = await fetchAllRows(supabase, {
-    table: 'ai_calls',
-    columns: 'id, call_type, cost_usd',
-    build: (q) => q.gte('created_at', monthStart),
-    label: 'monthlySpendCeiling',
-  });
+  // THROWN, not just returned. A failed read reaches this code two different
+  // ways: PostgREST answering with an error object, and the client itself
+  // raising (a transport fault, a misconfigured client, an unexpected shape).
+  // Only the first is an `error` field. Both have to end up in the same place,
+  // because the caller is a gate that must fail OPEN - an exception escaping
+  // here would refuse every paid mission on a transient fault, which is a
+  // worse outage than the overspend this module exists to catch.
+  let data;
+  let error;
+  try {
+    ({ data, error } = await fetchAllRows(supabase, {
+      table: 'ai_calls',
+      columns: 'id, call_type, cost_usd',
+      build: (q) => q.gte('created_at', monthStart),
+      label: 'monthlySpendCeiling',
+    }));
+  } catch (err) {
+    error = { message: err?.message || 'ai_calls read threw', thrown: true };
+  }
 
   if (error) {
     return { month, monthStart, spendUsd: 0, calls: 0, byCallType: [], topContributor: null, error };
@@ -144,7 +157,7 @@ async function readMonthToDateSpend({ supabase = require('../../db/supabase'), n
     const usd = Number.isFinite(cost) ? cost : 0;
     spendUsd += usd;
     const key = row.call_type || 'unknown';
-    const prev = totals.get(key) || { callType: key, spendUsd: 0, calls: 0 };
+    const prev = totals.get(key) || { call_type: key, spendUsd: 0, calls: 0 };
     prev.spendUsd += usd;
     prev.calls += 1;
     totals.set(key, prev);
@@ -201,7 +214,7 @@ function alertPayload(state) {
     hard_limit_usd: state.hardLimitUsd,
     calls: state.calls,
     biggest_contributor: top
-      ? { call_type: top.callType, spend_usd: top.spendUsd, calls: top.calls }
+      ? { call_type: top.call_type, spend_usd: top.spendUsd, calls: top.calls }
       : null,
     measured_from: 'ai_calls.cost_usd, summed over the calendar month. Not missions.ai_cost_usd, '
                  + 'which misses every call with no mission_id (42% of real spend).',
@@ -336,7 +349,16 @@ async function spendAllowsNewWork({ supabase, now = Date.now, env = process.env,
   // written, and no spend figure justifies killing it.
   if (resume === true) return { allowed: true, reason: 'in_flight_run' };
 
-  const state = await checkMonthlyCeiling({ supabase, now, env });
+  // Belt and braces around the whole gate, not only the read. Nothing in this
+  // function is allowed to throw into a caller that is about to run a paid
+  // study: if the tripwire cannot answer, the answer is yes.
+  let state;
+  try {
+    state = await checkMonthlyCeiling({ supabase, now, env });
+  } catch (err) {
+    logger.warn('[spend-ceiling] gate failing OPEN: check threw', { err: err?.message });
+    return { allowed: true, reason: 'spend_unreadable' };
+  }
 
   if (state.failed) {
     logger.warn('[spend-ceiling] gate failing OPEN: spend not readable', { err: state.error?.message });

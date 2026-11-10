@@ -229,10 +229,10 @@ describe('it names the biggest contributor so the reader knows where to look', (
       ],
     });
     const out = await readMonthToDateSpend({ supabase, now });
-    expect(out.topContributor).toMatchObject({ callType: 'response_sim', calls: 10 });
+    expect(out.topContributor).toMatchObject({ call_type: 'response_sim', calls: 10 });
     expect(out.topContributor.spendUsd).toBeCloseTo(10, 6);
     // Most calls is not most money: the loudest row must be the costliest.
-    expect(out.byCallType[0].callType).toBe('response_sim');
+    expect(out.byCallType[0].call_type).toBe('response_sim');
   });
 
   test('an empty month has no contributor and no spend, and does not throw', async () => {
@@ -399,6 +399,23 @@ describe('above the hard limit, new work does not start', () => {
     const { supabase } = fakeDb({ aiCallsError: { message: 'connection reset' } });
     const out = await spendAllowsNewWork({ supabase, now, env: {} });
     expect(out).toMatchObject({ allowed: true, reason: 'spend_unreadable' });
+  });
+
+  test('a supabase client that THROWS also fails open, not closed', async () => {
+    // Caught by the existing runMission suites, not by this one, on the first
+    // build: a failed read arrives two ways - PostgREST answering with an
+    // error object, and the client raising. Only the first was handled, so an
+    // exception escaped the gate and refused every paid mission. Failing
+    // closed is the worse outage of the two this module sits between.
+    const exploding = { from: () => { throw new Error('client not configured'); } };
+    expect(await spendAllowsNewWork({ supabase: exploding, now, env: {} }))
+      .toMatchObject({ allowed: true, reason: 'spend_unreadable' });
+  });
+
+  test('a client that throws mid-query fails open too', async () => {
+    const halfBuilt = { from: () => ({ select: () => ({ gte: () => { throw new Error('boom'); } }) }) };
+    expect(await spendAllowsNewWork({ supabase: halfBuilt, now, env: {} }))
+      .toMatchObject({ allowed: true, reason: 'spend_unreadable' });
   });
 
   test('an unreadable log does not raise a spend alert either', async () => {

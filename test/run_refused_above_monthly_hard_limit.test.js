@@ -119,7 +119,7 @@ const OVER_HARD_LIMIT = {
   state: {
     month: '2026-11', spendUsd: 212.5, ceilingUsd: 50, hardLimitUsd: 150,
     calls: 14100, breached: true, hardBreached: true,
-    topContributor: { callType: 'response_sim', spendUsd: 198.2, calls: 13900 },
+    topContributor: { call_type: 'response_sim', spendUsd: 198.2, calls: 13900 },
   },
 };
 
